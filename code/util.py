@@ -24,6 +24,24 @@ class HuggingFaceChatModel(SimpleChatModel):
     # Other model params
     top_k: Optional[int] = None
 
+    _supports_system_prompt: Optional[bool] = None
+
+    @property
+    def supports_system_prompt(self) -> bool:
+        if self._supports_system_prompt is None:
+            if (
+                self.model.name_or_path 
+                and self.model.name_or_path.startswith(
+                    "mistralai/Mistral-7B-Instruct-"
+                )
+            ):
+                return False
+        return True
+    
+    # @supports_system_prompt.setter
+    # def supports_system_prompt(self, value: bool) -> None:
+    #     self._supports_system_prompt = value
+    
     @property
     def _llm_type(self) -> str:
         return "hf-chat"
@@ -60,6 +78,29 @@ class HuggingFaceChatModel(SimpleChatModel):
                 }
                 for message in messages
             ]
+
+            # When using the base mistral model, we will get an error if we try
+            # to use the system prompt (presumably because it is not a chat
+            # model). To fix this, we will just merge the system prompt with the
+            # the first message.
+            if not self.supports_system_prompt:
+                if messages_hf[0]["role"] == "system":
+                    messages_to_combine = [messages_hf.pop(0)]
+                    if len(messages_hf) > 0:
+                        messages_to_combine.append(messages_hf.pop(0))
+
+                    role = messages_to_combine[-1]["role"]
+                    if role == "system":
+                        role = "user"
+
+                    combined_message = {
+                        "role": role,
+                        "content": "\n\n".join(
+                            m["content"] for m in messages_to_combine
+                        )
+                    }
+
+                    messages_hf.insert(0, combined_message)
 
             input_ids = self.tokenizer.apply_chat_template(
                 messages_hf,
@@ -103,7 +144,12 @@ class HuggingFaceChatModel(SimpleChatModel):
                 generate_kwargs["do_sample"] = False
                 del generate_kwargs["temperature"]
 
-            results = self.model.generate(input_ids, pad_token_id=self.tokenizer.pad_token_id, **generate_kwargs)
+            results = self.model.generate(
+                input_ids, 
+                eos_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=self.tokenizer.pad_token_id, 
+                **generate_kwargs
+            )
 
             sequences = [s[len(input_ids[0]):] for s in results["sequences"]]
             sequences = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
