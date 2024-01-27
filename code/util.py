@@ -5,6 +5,7 @@ import asyncio
 
 from functools import partial
 from pathlib import Path
+import threading
 from typing import List, Optional, Any, Dict, Union, cast, final
 
 import torch
@@ -16,6 +17,7 @@ from langchain.text_splitter import TextSplitter
 from langchain.document_loaders import UnstructuredPDFLoader
 from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_core.language_models.base import LanguageModelInput
+from langchain_core.pydantic_v1 import Field, PrivateAttr
 from langchain_core.runnables import RunnableConfig, get_config_list
 from langchain_core.outputs import (
     ChatGeneration,
@@ -219,7 +221,7 @@ class ChatModelWithBatchSupport(BaseChatModel):
         run_managers = [
             callback_manager.on_chat_model_start(
                 dumpd(self),
-                conversation,
+                [conversation],
                 invocation_params=params,
                 options=options,
                 name=run_name,
@@ -393,7 +395,10 @@ def convert_langchain_messages_to_hf_conversation(messages: List[BaseMessage]) -
 
 
 class HuggingFaceChatModelWithBatchSupport(ChatModelWithBatchSupport):
-    pipeline: ConversationalPipeline
+    # pipeline: ConversationalPipeline
+    model: PreTrainedModel
+    tokenizer: PreTrainedTokenizerBase
+
     batch_size: int = 4
     max_new_tokens: int = 512
     top_k: Optional[int] = None
@@ -401,7 +406,17 @@ class HuggingFaceChatModelWithBatchSupport(ChatModelWithBatchSupport):
     temperature: Optional[float] = 0.8
     repetition_penalty: Optional[float] = None
     do_sample: Optional[bool] = False
+    num_return_sequences: int = 1
     model_kwargs: Dict[str, Any] = {}
+
+    _inference_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # This lock is to prevent parallel execution of chains from exhausting
+        # the GPU memory. We cannot just set the max_concurrency because some
+        # chains are fine to run in parallel... just not ones involving the GPU.
+        self._inference_lock = threading.Lock()
 
     @property
     def _llm_type(self) -> str:
@@ -409,18 +424,19 @@ class HuggingFaceChatModelWithBatchSupport(ChatModelWithBatchSupport):
     
     def _get_pipeline_params(self, **kwargs):
         prop_params = {
-            "batch_size": self.batch_size,
+            # "batch_size": self.batch_size,
             "max_new_tokens": self.max_new_tokens,
             "temperature": self.temperature,
             "top_k": self.top_k,
             "top_p": self.top_p,
             "repetition_penalty": self.repetition_penalty,
             "do_sample": self.do_sample,
+            "num_return_sequences": self.num_return_sequences,
         }
 
         token_params = {
-            "eos_token_id": self.pipeline.tokenizer.eos_token_id,
-            "pad_token_id": self.pipeline.tokenizer.pad_token_id, 
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "pad_token_id": self.tokenizer.pad_token_id, 
         }
 
         params = {
@@ -439,9 +455,37 @@ class HuggingFaceChatModelWithBatchSupport(ChatModelWithBatchSupport):
         
         return params
     
-    def _call_pipeline(self, conversations: List[Conversation], **kwargs):
-        params = self._get_pipeline_params(**kwargs)
-        return self.pipeline(conversations, **params)
+    def _preprocess_batch(self, conversations: List[Dict[str, str]]) -> Dict[str, torch.Tensor]:
+        template_applied = [
+            self.tokenizer.apply_chat_template(
+                conv, add_generation_prompt=True, tokenize=False
+            )
+            for conv in conversations
+        ]
+
+        return self.tokenizer(
+            template_applied,
+            return_tensors="pt",
+            add_special_tokens=False,
+            padding=True,
+            truncation=True,
+        )
+    
+    def _postprocess_batch(self, input_length:int, outputs: Dict[str, torch.Tensor]) -> List[str]:
+        sequences = [s[input_length:] for s in outputs["sequences"]]
+        return self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
+    
+    @torch.no_grad()
+    def _call_model(self, conversations: List[Conversation], **kwargs) -> List[str]:
+        batch = self._preprocess_batch(conversations)
+        input_length = batch["input_ids"].shape[1]
+
+        with self._inference_lock:
+            batch = batch.to(self.model.device)
+            params = self._get_pipeline_params(**kwargs)
+            results = self.model.generate(**batch, **params, return_dict_in_generate=True)
+
+        return self._postprocess_batch(input_length, results)        
 
     def _generate_with_batch(
         self,
@@ -450,23 +494,24 @@ class HuggingFaceChatModelWithBatchSupport(ChatModelWithBatchSupport):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> List[ChatResult]:
-        conversations = [convert_langchain_messages_to_hf_conversation(conv) for conv in messages]
+        conversations = [convert_langchain_messages_to_hf(conv) for conv in messages]
 
         results: List[ChatResult] = []
         for i in range(0, len(conversations), self.batch_size):
             batch = conversations[i:i+self.batch_size]
-            responses = self._call_pipeline(batch, **kwargs)
+            responses = self._call_model(batch, **kwargs)
             if not isinstance(responses, list):
                 responses = [responses]
-            for response in responses:
-                text = response[-1]["content"]
-                if stop:
-                    text = enforce_stop_tokens(text, stop)
-                results.append(
-                    ChatResult(generations=[
-                        ChatGeneration(message=AIMessage(content=text))
-                    ])
-                )
+            
+            # We need to account for the model returning multiple generations
+            # per input (for example, when `num_return_sequences` is set)
+            responses_per_item = len(responses) // len(batch)
+            for i in range(0, len(responses), responses_per_item):
+                generations = [
+                    ChatGeneration(message=AIMessage(content=response))
+                    for response in responses[i:i+responses_per_item]
+                ]
+                results.append(ChatResult(generations=generations))
 
         return results
     
@@ -480,8 +525,8 @@ class HuggingFaceChatModelWithBatchSupport(ChatModelWithBatchSupport):
         **kwargs: Any,
     ) -> HuggingFaceChatModelWithBatchSupport:
         _pipeline_kwargs = pipeline_kwargs or {}
-        pipeline = ConversationalPipeline(model=model, tokenizer=tokenizer, batch_size=batch_size, **_pipeline_kwargs)
-        return cls(pipeline=pipeline, batch_size=batch_size, **kwargs)
+        # pipeline = ConversationalPipeline(model=model, tokenizer=tokenizer, batch_size=batch_size, **_pipeline_kwargs)
+        return cls(model=model.eval(), tokenizer=tokenizer, batch_size=batch_size, **kwargs)
 
 
 class HuggingFaceChatModel(SimpleChatModel):
