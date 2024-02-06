@@ -1,0 +1,13 @@
+scipy
+matplotlib
+tqdm
+numpy
+# ipywidgets==7.7.1
+gradio==3.36.1
+langchain==0.0.349rc2
+transformers==4.36.0
+accelerate==0.21.0
+peft==0.4.0
+bitsandbytes==0.40.2
+datasets
+playwright==1.40.0
