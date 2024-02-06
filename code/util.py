@@ -34,8 +34,18 @@ from langchain_core.callbacks import (
     Callbacks,
 )
 from langchain_core.load import dumpd, dumps
-from transformers import PreTrainedModel, PreTrainedTokenizerBase
+from langchain_community.chat_models import ChatHuggingFace
+from langchain_community.llms import HuggingFaceTextGenInference
+
 from transformers.pipelines import ConversationalPipeline, Conversation
+from transformers import (
+    PreTrainedModel, 
+    PreTrainedTokenizerBase,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    AutoModel,
+)
 
 # BaseChatModel does not appear to have any particularly inspired way of
 # handling batches. You have a batch of 10 inputs? Great, that will be 10 calls
@@ -772,3 +782,64 @@ def parse_pdf(path:Path) -> List[Document]:
     documents = pages_to_documents(pages)
     documents = [fix_document_metadata(document) for document in documents]
     return documents
+
+
+def load_tokenizer(model_name:str) -> PreTrainedTokenizerBase:
+    # Load model and tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        device_map="auto"
+    )
+    if tokenizer.pad_token is None:
+        # For some reason, this isn't set in the config. For Mistral, it's just
+        # the EOS token (which is the default). However, with OpenHermes, the
+        # EOS token is a different token, but the padding token appears to still
+        # be </s>:
+        #
+        # https://huggingface.co/teknium/OpenHermes-2.5-Mistral-7B/blob/main/special_tokens_map.json
+        #
+        # So if it is not set, we just set it explicitly to </s> here.
+        tokenizer.pad_token = '</s>'
+    
+    return tokenizer
+
+
+class HuggingFaceChatModelLocal(ChatHuggingFace):
+    tokenizer: Any
+    
+    def _resolve_model_id(self):
+        pass
+
+
+def load_tgi_chat_model(**kwargs):
+    chat_model_keys = [
+        "system_message",
+        "tokenizer",
+        "callbacks",
+        "callback_manager",
+        "tags",
+        "metadata",
+    ]
+
+    llm_kwargs = {
+        k: v 
+        for k, v in kwargs.items() 
+        if k not in chat_model_keys
+    }
+    llm_model = HuggingFaceTextGenInference(
+        **llm_kwargs
+    )
+
+    chat_model_kwargs = {
+        k: v 
+        for k, v in kwargs.items() 
+        if k in chat_model_keys
+    }
+    chat_model = HuggingFaceChatModelLocal(
+        llm=llm_model,
+        **chat_model_kwargs,
+    )
+
+    return chat_model
+

@@ -1,0 +1,65 @@
+version: '3.9'
+
+name: mistral-rag-game-rules
+
+services:
+  tgi:
+    image: ghcr.io/huggingface/text-generation-inference:1.3
+    ipc: host
+    ports:
+    - 8080:80
+    # command: --model-id teknium/OpenHermes-2.5-Mistral-7B --quantize bitsandbytes-nf4 --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=5096
+    command: --model-id TheBloke/OpenHermes-2.5-Mistral-7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id TheBloke/Magicoder-S-DS-6.7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    volumes:
+    - ./cache:/data:cached
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities:
+              - gpu
+
+  jupyter:
+    build: ./services/jupyter
+    depends_on:
+    - tgi
+
+    # I find that the shared memory is likely to run out, so I switch ipc to
+    # host. We could also increase the amount of shared memory, but this seems
+    # like the most reliable way to avoid the issue, though it is less secure.
+    ipc: host
+
+    # Run as the host's user. This avoids permissions issues.
+    # While Bash generally defines the UID environment variable, we aren't so
+    # lucky with the primary GID. Often times this just ends up being the same
+    # as the UID, so we can cheat.
+    user: "${UID:-1000}:${GID:-${UID:-1000}}"
+    # user: "1000:1000"
+    
+    restart: always
+    command: tail -f /dev/null
+    ports:
+      # - 8888:8888 # Jupyter
+      - 7860:7860 # Gradio
+    
+    # VS Code does not seem to laod this automatically?
+    env_file:
+      - .env
+    
+    # Attach the GPU to the container. Use nvidia-smi to verify the GPU
+    # actually got attached. If at any point nvidia-smi throws an error, try
+    # rebuilding the devcontainer in vs code.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities:
+              - gpu
+    volumes:
+      - .:/workspaces/mistral-rag-game-rules:cached
+      - ./pretrained_models:/workspaces/mistral-rag-game-rules/code/pretrained_models:cached
+      # Any models jupyter downloads for us will be cached here (like VGG19)
+      - ./cache:/home/jupyter/.cache:cached
+      # You can override these paths with environment variables, for example
+      # by setting them in the .env file
