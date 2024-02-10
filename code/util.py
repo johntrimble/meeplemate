@@ -46,6 +46,7 @@ from transformers import (
     BitsAndBytesConfig,
     AutoModel,
 )
+from sklearn.metrics.pairwise import cosine_similarity
 
 # BaseChatModel does not appear to have any particularly inspired way of
 # handling batches. You have a batch of 10 inputs? Great, that will be 10 calls
@@ -843,3 +844,20 @@ def load_tgi_chat_model(**kwargs):
 
     return chat_model
 
+
+def load_jina_embedding_model() -> AutoModel:
+    model_name = 'jinaai/jina-embeddings-v2-base-en'
+    model = AutoModel.from_pretrained(
+        model_name, 
+        trust_remote_code=True, 
+        device_map='cpu'
+    ).eval()
+    if not hasattr(model, 'tokenizer') or model.tokenizer is None:
+        model.tokenizer = AutoTokenizer.from_pretrained(
+            model_name, 
+            trust_remote_code=True, 
+            device_map='cpu'
+        )
+    for parameter in model.parameters():
+        parameter.requires_grad = False
+    return model
