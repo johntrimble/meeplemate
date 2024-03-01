@@ -4,7 +4,7 @@ name: mistral-rag-game-rules
 
 services:
   tgi:
-    image: ghcr.io/huggingface/text-generation-inference:1.3
+    image: ghcr.io/huggingface/text-generation-inference:1.4.1
     ipc: host
     ports:
     - 8080:80
@@ -19,6 +19,22 @@ services:
           devices:
             - capabilities:
               - gpu
+  
+  vllm:
+    image: vllm/vllm-openai:latest
+    ipc: host
+    ports:
+    - 8001:8001
+    command: --model teknium/OpenHermes-2.5-Mistral-7B --tokenizer teknium/OpenHermes-2.5-Mistral-7B --dtype auto --gpu-memory-utilization 0.80 --max-model-len 6096 --host 0.0.0.0 --port 8001 --enforce-eager
+    volumes:
+    - ./vllm_cache:/root/.cache/:cached
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities:
+              - gpu
+
 
   jupyter:
     build: ./services/jupyter
@@ -57,8 +73,7 @@ services:
             - capabilities:
               - gpu
     volumes:
-      - .:/workspaces/mistral-rag-game-rules:cached
-      - ./pretrained_models:/workspaces/mistral-rag-game-rules/code/pretrained_models:cached
+      - .:/workspaces/mistral-rag-game-rules
       # Any models jupyter downloads for us will be cached here (like VGG19)
       - ./cache:/home/jupyter/.cache:cached
       # You can override these paths with environment variables, for example

@@ -8,6 +8,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import Runnable
+from langchain_core.language_models.base import LanguageModelInput
+from langchain_core.output_parsers import StrOutputParser
 
 system_prompt_template = """\
 As an AI Assistant specialized in board game rules, your primary goal is to provide users with precise, understandable explanations and interpretations of game rules. Follow these key principles:
@@ -114,6 +116,11 @@ def build_rag_chain(chat_chain, sampling_chain=None, prompt=DEFAULT_RAG_PROMPT, 
         | RunnablePassthrough.assign(
             answer=RunnablePassthrough() | prompt | sampling_chain
         )
+        # If sampling chain return a dict of answer and logprobs, we want to
+        # merge it into the main dict. Otherwise, it is just the answer, so 
+        # leave it as is.
+        | RunnableLambda(lambda x: {**x, **x["answer"]} if isinstance(x["answer"], dict) else x)
+        | RunnablePassthrough.assign(answer=(itemgetter("answer") | StrOutputParser()))
         | RunnablePassthrough.assign(
             answer=followup_chain
         )
@@ -142,10 +149,16 @@ DEFAULT_THREAD_OF_THOUGHT_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+# DEFAULT_THEREFORE_PROMPT = ChatPromptTemplate.from_messages(
+#     [
+#         ("assistant", "{answer}"),
+#         ("human", "Now revise your answer. Be concise and remove any unrelated information to the question.")
+#     ]
+# )
 DEFAULT_THEREFORE_PROMPT = ChatPromptTemplate.from_messages(
     [
         ("assistant", "{answer}"),
-        ("human", "Now revise your answer. Be concise and remove any unrelated information to the question.")
+        ("human", "And so the answer is:")
     ]
 )
 

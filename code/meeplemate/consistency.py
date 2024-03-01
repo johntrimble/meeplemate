@@ -171,7 +171,7 @@ def build_run_ntimes_chain(chain:Runnable, n:int) -> Runnable:
     return RunnableLambda(duplicate) | chain.map()
 
 
-SelectionStrategy = Literal["average_similarity", "centroid", "prompting", "prompting_with_context"]
+SelectionStrategy = Literal["average_similarity", "centroid", "prompting", "prompting_with_context", "highest_probability"]
 
 
 def format_responses(responses):
@@ -228,6 +228,47 @@ def build_universal_consistency_chain(embedding_model, target_chain:Runnable, ch
         response_index = response_strings.index(ranked_responses[0])
         return responses[response_index]
     
+    def find_highest_probability_response(data):
+        responses = data["responses"]
+        response_strings = [response[target_chain_response_key].content for response in responses]
+        response_logprobs = [response["logprobs"] for response in responses]
+        response_avg_prob = np.exp([np.mean(logprobs) / len(logprobs) for logprobs in response_logprobs])
+        print("*** Response probability ***")
+        for i, (p, response_string) in enumerate(zip(response_avg_prob, response_strings)):
+            print(f"{i} {p:.4f}: {response_string}")
+        response_index = np.argmax(response_avg_prob)
+        print("Selected response:", response_index)
+        return responses[response_index]
+    
+    def find_by_probability_and_similarity(data):
+        responses = data["responses"]
+        question = data["question"]
+        response_strings = [response[target_chain_response_key].content for response in responses]
+        embeddings = embed_responses(embedding_model, question, response_strings)
+        similarities = cosine_similarity(embeddings)
+        avg_similarity = np.mean(similarities, axis=1)
+        avg_similarity_max = np.max(avg_similarity)
+        avg_similarity_min = np.min(avg_similarity)
+        avg_similarity_range = avg_similarity_max - avg_similarity_min
+        avg_similarity = (avg_similarity - avg_similarity_min) / avg_similarity_range
+
+        response_logprobs = [response["logprobs"][:-1] for response in responses]
+        response_avg_prob = np.exp([np.mean(logprobs) / len(logprobs) for logprobs in response_logprobs])
+        avg_prob_max = np.max(response_avg_prob)
+        avg_prob_min = np.min(response_avg_prob)
+        avg_prob_range = avg_prob_max - avg_prob_min
+        response_avg_prob = (response_avg_prob - avg_prob_min) / avg_prob_range
+
+        product = response_avg_prob * avg_similarity
+
+        print("*** Response probability and similarity ***")
+        for i, (p, similarity, pr, response_string) in enumerate(zip(response_avg_prob, avg_similarity, product, response_strings)):
+            print(f"{i} {p:.4f} {similarity:.4f} {pr:.4f}: {response_string}")
+    
+        response_index = np.argmax(product)
+        print("Selected response:", response_index)
+        return responses[response_index]
+    
     # chain that takes a list of responses and a question and returns the majority consensus response
     if response_selection_strategy == "average_similarity":
         consensus_response_chain = RunnableLambda(find_majority_consensus_response)
@@ -235,6 +276,10 @@ def build_universal_consistency_chain(embedding_model, target_chain:Runnable, ch
         consensus_response_chain = build_prompting_selection_chain(chat_model, target_chain_response_key=target_chain_response_key)
     elif response_selection_strategy == "prompting_with_context":
         consensus_response_chain = build_prompting_selection_chain(chat_model, target_chain_response_key=target_chain_response_key, prompt=DEFAULT_CONSENSUS_WITH_CONTEXT_PROMPT)
+    elif response_selection_strategy == "highest_probability":
+        consensus_response_chain = RunnableLambda(find_highest_probability_response)
+    elif response_selection_strategy == "probability_and_similarity":
+        consensus_response_chain = RunnableLambda(find_by_probability_and_similarity)
 
     # consensus_response_chain = RunnableLambda(find_majority_consensus_response)
 
