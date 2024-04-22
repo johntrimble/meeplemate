@@ -26,6 +26,9 @@ from typing import Dict, Any
 from sentence_transformers import SentenceTransformer
 from text_generation.types import Details
 
+import requests
+from urllib.parse import urljoin
+
 class HuggingFaceChatModelLocal(ChatHuggingFace):
     """
     For whatever reason, the parent class makes assumptions about certain
@@ -36,7 +39,17 @@ class HuggingFaceChatModelLocal(ChatHuggingFace):
     tokenizer: Any
     
     def _resolve_model_id(self):
-        pass
+        info_endpoint_url = urljoin(self.llm.inference_server_url, "info")
+        info = requests.get(info_endpoint_url).json()
+        model_id = info.get("model_id")
+        if "Nous-Hermes-2-SOLAR-10.7B" in model_id:
+            model_id = "NousResearch/Nous-Hermes-2-SOLAR-10.7B"
+        elif "OpenHermes-2.5-Mistral-7B" in model_id:
+            model_id = "teknium/OpenHermes-2.5-Mistral-7B"
+        elif "Nous-Hermes-2-Yi-34B" in model_id:
+            model_id = "NousResearch/Nous-Hermes-2-Yi-34B"
+
+        self.model_id = model_id
 
     @staticmethod
     def _to_chat_result(llm_result: LLMResult) -> ChatResult:
@@ -44,7 +57,7 @@ class HuggingFaceChatModelLocal(ChatHuggingFace):
         chat_result = ChatHuggingFace._to_chat_result(llm_result)
         
         for g in chat_result.generations:
-            details = g.get("generation_info", {}).get("details")
+            details = g.generation_info.get("details")
             if details is not None:
                 tokens = details.get("tokens", [])
                 tokens = [token for token in tokens if not token.get("special", False)]
@@ -54,7 +67,7 @@ class HuggingFaceChatModelLocal(ChatHuggingFace):
                 g.message.additional_kwargs["token_ids"] = token_ids
                 g.message.additional_kwargs["token_texts"] = token_texts
                 g.message.additional_kwargs["token_logprobs"] = token_logprobs
-            del g.generation_info["details"]
+            # del g.generation_info["details"]
 
         return chat_result
 

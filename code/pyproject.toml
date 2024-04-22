@@ -9,6 +9,9 @@ description = "AI Assistant for answering board game questions"
 requires-python = ">=3.10"
 dependencies = []
 
+[project.scripts]
+meeplemate-cli = "meeplemate.cli:cli"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["meeplemate*"]

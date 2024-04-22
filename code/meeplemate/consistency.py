@@ -4,23 +4,31 @@ from operator import itemgetter
 from functools import partial
 from typing import Literal
 
+import structlog
+
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import normalize
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
+from langchain_core.callbacks.manager import CallbackManagerForChainRun
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, format_document
 from langchain_core.runnables import Runnable
 from langchain_core.runnables import RunnableLambda
 from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import chain
 from langchain.output_parsers.regex import RegexParser
 from langchain_core.output_parsers import StrOutputParser
+
+
+log = structlog.get_logger(__name__)
+
 
 def embed_responses(model:SentenceTransformer, question, responses):
     tokenizer = model.tokenizer
 
     # Combine each response with the question
-    responses = [f"{question}{tokenizer.sep_token}{response}" for response in responses]
+    # responses = [f"{question}{tokenizer.sep_token}{response}" for response in responses]
 
     return model.encode(responses, normalize_embeddings=True)
 
@@ -163,6 +171,40 @@ def _combine_documents(
     doc_strings = [format_document(doc, document_prompt) for doc in docs]
     return document_separator.join(doc_strings)
 
+
+def build_duplicate_chain(n:int) -> Runnable:
+    @chain
+    def duplicate(x):
+        return [copy.deepcopy(x) for _ in range(n)]
+    
+    return duplicate.with_config({"run_name": f"duplicate-{n}"})
+
+
+@chain
+def alternate_document_ordering_chain(contexts):
+    for i, context in enumerate(contexts):
+        documents = context["documents"]
+        if len(documents) < 2:
+            continue
+
+        if i % 3 == 0:
+            # use original ordering
+            pass
+        elif i % 3 == 1:
+            # middle-to-ends
+            midpoint = len(documents) // 2
+            first_half = documents[:midpoint]
+            second_half = documents[midpoint:]
+            documents = first_half[::-1] + second_half[::-1]
+        else:
+            # reversed
+            documents = documents[::-1]
+        
+        context["documents"] = documents
+    
+    return contexts
+
+
 def build_run_ntimes_chain(chain:Runnable, n:int) -> Runnable:
     def duplicate(x):
         # TODO: Should we do a deepcopy here or is that overkill?
@@ -208,12 +250,13 @@ def build_prompting_selection_chain(chat_model, target_chain_response_key="answe
     return chain
 
 
-def build_universal_consistency_chain(embedding_model, target_chain:Runnable, chat_model=None, target_chain_response_key="answer", samples=9, response_selection_strategy:SelectionStrategy="average_similarity") -> Runnable:
+def build_universal_consistency_chain(embedding_model, target_chain:Runnable, chat_model=None, target_chain_response_key="answer", target_chain_cot_response_key="cot_response", samples=9, response_selection_strategy:SelectionStrategy="average_similarity") -> Runnable:
     if ("prompting" in response_selection_strategy) and chat_model is None:
         raise ValueError("chat_model must be provided when using PROMPTING or PROMPTING_WITH_CONTEXT")
 
     # chain that runs target_chain n times and produces a list of responses
-    multiple_responses_chain = build_run_ntimes_chain(target_chain, samples)
+    multiple_responses_chain = build_duplicate_chain(samples) | alternate_document_ordering_chain | target_chain.map().with_config({"run_name": f"execute-target-chain-multiple-times-{samples}"})
+    multiple_responses_chain = multiple_responses_chain.with_config({"run_name": "sample-chain-multiple-times"})
 
     def find_majority_consensus_response(data):
         responses = data["responses"]
@@ -228,47 +271,92 @@ def build_universal_consistency_chain(embedding_model, target_chain:Runnable, ch
         response_index = response_strings.index(ranked_responses[0])
         return responses[response_index]
     
-    def find_highest_probability_response(data):
-        responses = data["responses"]
-        response_strings = [response[target_chain_response_key].content for response in responses]
-        response_logprobs = [response["logprobs"] for response in responses]
-        response_avg_prob = np.exp([np.mean(logprobs) / len(logprobs) for logprobs in response_logprobs])
-        print("*** Response probability ***")
-        for i, (p, response_string) in enumerate(zip(response_avg_prob, response_strings)):
-            print(f"{i} {p:.4f}: {response_string}")
-        response_index = np.argmax(response_avg_prob)
-        print("Selected response:", response_index)
-        return responses[response_index]
+    # def find_highest_probability_response(data):
+    #     responses = data["responses"]
+    #     response_strings = [response[target_chain_response_key].content for response in responses]
+    #     response_logprobs = [response["logprobs"] for response in responses]
+    #     response_avg_prob = np.exp([np.mean(logprobs) / len(logprobs) for logprobs in response_logprobs])
+    #     print("*** Response probability ***")
+    #     for i, (p, response_string) in enumerate(zip(response_avg_prob, response_strings)):
+    #         print(f"{i} {p:.4f}: {response_string}")
+    #     response_index = np.argmax(response_avg_prob)
+    #     print("Selected response:", response_index)
+    #     return responses[response_index]
     
-    def find_by_probability_and_similarity(data):
-        responses = data["responses"]
-        question = data["question"]
-        response_strings = [response[target_chain_response_key].content for response in responses]
-        embeddings = embed_responses(embedding_model, question, response_strings)
-        similarities = cosine_similarity(embeddings)
-        avg_similarity = np.mean(similarities, axis=1)
-        avg_similarity_max = np.max(avg_similarity)
-        avg_similarity_min = np.min(avg_similarity)
-        avg_similarity_range = avg_similarity_max - avg_similarity_min
-        avg_similarity = (avg_similarity - avg_similarity_min) / avg_similarity_range
+    # def find_by_probability_and_similarity(data):
+    #     responses = data["responses"]
+    #     question = data["question"]
+    #     response_strings = [response[target_chain_response_key].content for response in responses]
+    #     embeddings = embed_responses(embedding_model, question, response_strings)
+    #     similarities = cosine_similarity(embeddings)
+    #     avg_similarity = np.mean(similarities, axis=1)
+    #     avg_similarity_max = np.max(avg_similarity)
+    #     avg_similarity_min = np.min(avg_similarity)
+    #     avg_similarity_range = avg_similarity_max - avg_similarity_min
+    #     avg_similarity = (avg_similarity - avg_similarity_min) / avg_similarity_range
 
-        response_logprobs = [response["logprobs"][:-1] for response in responses]
-        response_avg_prob = np.exp([np.mean(logprobs) / len(logprobs) for logprobs in response_logprobs])
-        avg_prob_max = np.max(response_avg_prob)
-        avg_prob_min = np.min(response_avg_prob)
-        avg_prob_range = avg_prob_max - avg_prob_min
-        response_avg_prob = (response_avg_prob - avg_prob_min) / avg_prob_range
+    #     response_logprobs = [response["logprobs"][:-1] for response in responses]
+    #     response_avg_prob = np.exp([np.mean(logprobs) / len(logprobs) for logprobs in response_logprobs])
+    #     avg_prob_max = np.max(response_avg_prob)
+    #     avg_prob_min = np.min(response_avg_prob)
+    #     avg_prob_range = avg_prob_max - avg_prob_min
+    #     response_avg_prob = (response_avg_prob - avg_prob_min) / avg_prob_range
 
-        product = response_avg_prob * avg_similarity
+    #     product = response_avg_prob * avg_similarity
 
-        print("*** Response probability and similarity ***")
-        for i, (p, similarity, pr, response_string) in enumerate(zip(response_avg_prob, avg_similarity, product, response_strings)):
-            print(f"{i} {p:.4f} {similarity:.4f} {pr:.4f}: {response_string}")
+    #     print("*** Response probability and similarity ***")
+    #     for i, (p, similarity, pr, response_string) in enumerate(zip(response_avg_prob, avg_similarity, product, response_strings)):
+    #         print(f"{i} {p:.4f} {similarity:.4f} {pr:.4f}: {response_string}")
     
-        response_index = np.argmax(product)
-        print("Selected response:", response_index)
-        return responses[response_index]
-    
+    #     response_index = np.argmax(product)
+    #     print("Selected response:", response_index)
+    #     return responses[response_index]
+
+
+    def find_by_bigram_consistency(data, run_manager:CallbackManagerForChainRun):
+        from meeplemate.similarity import ngram_consistency_score, generalized_self_consistency_score, consensus_weighted_ngram_consistency_score
+
+        responses_raw = data["responses"]
+        
+        # Format responses for ngram_consistency_score
+        responses = []
+        for response in responses_raw:
+            message = response[target_chain_cot_response_key]
+            # text = message.content
+            # tokens = text.lower().split()
+            # logprobs = [0.0 for _ in tokens]
+            text = message.content
+            tokens = message.additional_kwargs["token_ids"]
+            logprobs = message.additional_kwargs["token_logprobs"]
+            responses.append({"text": text, "logprobs": logprobs, "tokens": tokens})
+
+        # Calculate bigram consistency scores
+        scores = consensus_weighted_ngram_consistency_score(responses, ngrams=2)
+        scores = generalized_self_consistency_score(scores)
+
+        # Sort indices by score (descending)
+        sorted_indices = np.argsort(scores)[::-1]
+
+        # Scores sorted by sorted_indices
+        sorted_scores = scores[sorted_indices]
+
+        # Responses sorted by sorted_indices
+        sorted_responses = [responses_raw[i] for i in sorted_indices]
+
+        log.info(
+            "rank_responses_bigram_consistency",
+            run_id=str(run_manager.run_id),
+            scores=list(sorted_scores),
+            responses=[
+                response[target_chain_response_key].content 
+                for response in sorted_responses
+            ]
+        )
+
+        # Return the response with the highest score
+        return sorted_responses[0]
+
+
     # chain that takes a list of responses and a question and returns the majority consensus response
     if response_selection_strategy == "average_similarity":
         consensus_response_chain = RunnableLambda(find_majority_consensus_response)
@@ -276,17 +364,20 @@ def build_universal_consistency_chain(embedding_model, target_chain:Runnable, ch
         consensus_response_chain = build_prompting_selection_chain(chat_model, target_chain_response_key=target_chain_response_key)
     elif response_selection_strategy == "prompting_with_context":
         consensus_response_chain = build_prompting_selection_chain(chat_model, target_chain_response_key=target_chain_response_key, prompt=DEFAULT_CONSENSUS_WITH_CONTEXT_PROMPT)
-    elif response_selection_strategy == "highest_probability":
-        consensus_response_chain = RunnableLambda(find_highest_probability_response)
-    elif response_selection_strategy == "probability_and_similarity":
-        consensus_response_chain = RunnableLambda(find_by_probability_and_similarity)
+    elif response_selection_strategy == "bigram_consistency":
+        consensus_response_chain = RunnableLambda(find_by_bigram_consistency).with_config({"run_name": "bigram-consistency"})
+    # elif response_selection_strategy == "highest_probability":
+    #     consensus_response_chain = RunnableLambda(find_highest_probability_response)
+    # elif response_selection_strategy == "probability_and_similarity":
+    #     consensus_response_chain = RunnableLambda(find_by_probability_and_similarity)
 
     # consensus_response_chain = RunnableLambda(find_majority_consensus_response)
 
     # put it all together
+    consensus_response_chain = consensus_response_chain.with_config({"run_name": "find-consensus-response"})
     consistency_chain = (
         {"responses": multiple_responses_chain, "question": itemgetter("question"), "documents": itemgetter("documents")}
         | consensus_response_chain
     )
 
-    return consistency_chain.with_config({"run_name": "universal-consistency"})
+    return consistency_chain.with_config({"run_name": "self-consistency"})

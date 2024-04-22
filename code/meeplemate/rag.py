@@ -114,15 +114,14 @@ def build_rag_chain(chat_chain, sampling_chain=None, prompt=DEFAULT_RAG_PROMPT, 
             context=RunnableLambda(itemgetter("documents")) | partial(_combine_documents, document_prompt=document_prompt)
         )
         | RunnablePassthrough.assign(
-            answer=RunnablePassthrough() | prompt | sampling_chain
+            cot_response=prompt | sampling_chain
         )
-        # If sampling chain return a dict of answer and logprobs, we want to
-        # merge it into the main dict. Otherwise, it is just the answer, so 
-        # leave it as is.
-        | RunnableLambda(lambda x: {**x, **x["answer"]} if isinstance(x["answer"], dict) else x)
-        | RunnablePassthrough.assign(answer=(itemgetter("answer") | StrOutputParser()))
         | RunnablePassthrough.assign(
-            answer=followup_chain
+            answer={
+                "answer": itemgetter("cot_response") | StrOutputParser(),
+                "question": RunnableLambda(itemgetter("question")),
+                "context": RunnableLambda(itemgetter("context")),
+            } | followup_chain
         )
     ).with_config({"run_name": "rag-chain"})
 
@@ -151,8 +150,9 @@ DEFAULT_THREAD_OF_THOUGHT_PROMPT = ChatPromptTemplate.from_messages(
 
 # DEFAULT_THEREFORE_PROMPT = ChatPromptTemplate.from_messages(
 #     [
+#         ("human", "{question}"),
 #         ("assistant", "{answer}"),
-#         ("human", "Now revise your answer. Be concise and remove any unrelated information to the question.")
+#         ("human", "Now revise your answer. Be concise and remove any unrelated information to the question. If the answer is self contradictory, remove the contradictory portion.")
 #     ]
 # )
 DEFAULT_THEREFORE_PROMPT = ChatPromptTemplate.from_messages(

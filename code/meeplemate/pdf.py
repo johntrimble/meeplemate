@@ -1,7 +1,14 @@
+import os
 from pathlib import Path
 from typing import List
 from langchain.schema import Document
 from langchain.document_loaders import UnstructuredPDFLoader
+
+# nltk is used for PDF processing. Here we ensure anything it downloads goes to
+# the cache folder, so it doesn't have to download again
+nltk_data_path = Path("~/.cache/nltk_data").expanduser()
+nltk_data_path.mkdir(parents=True, exist_ok=True)
+os.environ["NLTK_DATA"] = str(nltk_data_path)
 
 def has_sentence_end(s):
     s = s.strip()
@@ -26,7 +33,7 @@ def fix_dangling_sentences(elements):
 def organize_into_sections(elements):
     sections = [[]]
     for element in elements:
-        if element.metadata["category"] == "Title":
+        if element.metadata["category"] == "Title" and not (sections[-1] and sections[-1][-1].metadata["category"] == "Title"):
             sections.append([element])
         else:
             sections[-1].append(element)
@@ -75,12 +82,12 @@ def fix_document_metadata(document):
     return document
 
 
-def parse_pdf(path:Path) -> List[Document]:
+def parse_pdf(path:Path, strategy="ocr_only") -> List[Document]:
     # To parse the PDFs, there are three strategies available: "fast", "hi_res", and
     # "ocr_only". For the PDFs used here, "fast" retrieves a bunch of duplicate text
     # in the wrong order. "hi_res" doesn't handle columns of text well and produces
     # incoherent results. "ocr_only" seems to work reasonably well in this case.
-    loader = UnstructuredPDFLoader(path, mode="elements", strategy="ocr_only")
+    loader = UnstructuredPDFLoader(path, mode="elements", strategy=strategy, infer_table_structure=True)
     result = loader.load()
     result = fix_dangling_sentences(result)
     sections = organize_into_sections(result)
