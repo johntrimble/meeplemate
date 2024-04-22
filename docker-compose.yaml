@@ -9,8 +9,13 @@ services:
     ports:
     - 8080:80
     # command: --model-id teknium/OpenHermes-2.5-Mistral-7B --quantize bitsandbytes-nf4 --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=5096
-    command: --model-id TheBloke/OpenHermes-2.5-Mistral-7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id TheBloke/OpenHermes-2.5-Mistral-7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    command: --model-id TheBloke/Nous-Hermes-2-SOLAR-10.7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id TheBloke/Nous-Hermes-2-Yi-34B-AWQ --quantize awq --max-batch-prefill-tokens=3096 --max-input-length=3096 --max-total-tokens=5096
+    # command: --model-id TheBloke/OpenHermes-2.5-Mistral-7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
     # command: --model-id TheBloke/Magicoder-S-DS-6.7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id solidrust/Nous-Hermes-2-Mistral-7B-DPO-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id NousResearch/Nous-Hermes-2-Mistral-7B-DPO --quantize bitsandbytes-nf4 --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
     volumes:
     - ./cache:/data:cached
     deploy:

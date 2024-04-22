@@ -23,6 +23,7 @@ jupyterlab==4.0.8
 wheel==0.42.0
 seaborn==0.13.2
 openai==1.12.0
-'git+https://github.com/facebookresearch/detectron2.git'
+click==8.1.7
+git+https://github.com/facebookresearch/detectron2.git
 jq==1.6.0
 -e .
