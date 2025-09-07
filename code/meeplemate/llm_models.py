@@ -55,15 +55,23 @@ class HuggingFaceChatModelLocal(ChatHuggingFace):
     def _to_chat_result(llm_result: LLMResult) -> ChatResult:
         # Call super class method
         chat_result = ChatHuggingFace._to_chat_result(llm_result)
+
+        def attr_or_key(obj, attr, default=None):
+            if hasattr(obj, attr):
+                return getattr(obj, attr)
+            elif hasattr(obj, "__getitem__") and attr in obj:
+                return obj[attr]
+            else:
+                return default
         
         for g in chat_result.generations:
             details = g.generation_info.get("details")
             if details is not None:
-                tokens = details.get("tokens", [])
-                tokens = [token for token in tokens if not token.get("special", False)]
-                token_ids = [t["id"] for t in tokens]
-                token_texts = [t["text"] for t in tokens]
-                token_logprobs = [t["logprob"] for t in tokens]
+                tokens = attr_or_key(details, "tokens") or []
+                tokens = [token for token in tokens if not attr_or_key(token,"special", False)]
+                token_ids = [attr_or_key(token,"id") for token in tokens]
+                token_texts = [attr_or_key(token,"text") for token in tokens]
+                token_logprobs = [attr_or_key(token,"logprob") for token in tokens]
                 g.message.additional_kwargs["token_ids"] = token_ids
                 g.message.additional_kwargs["token_texts"] = token_texts
                 g.message.additional_kwargs["token_logprobs"] = token_logprobs
