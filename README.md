@@ -6,9 +6,9 @@ This project is for experimenting with various RAG techniques with respect to an
 
 ### Self-Consistency with Board Game Questions
 
-Notebook: [code/notebooks/self_consistency_board_game_questions.ipynb](code/notebooks/self_consistency_board_game_questions.ipynb)
+Notebook: [code/notebooks/self_consistency_board_game_questions.ipynb](code/notebooks/self_consistency.ipynb)
 
-This notebook explores the use of self-consistency in answering board game questions. In particular, it compares techniques for applying self-consistency to open-ended questions where it is harder to define a "consensus" answer.
+This notebook was part of a presentation I gave exploring the use of self-consistency in answering board game questions. In particular, it compares techniques for applying self-consistency to open-ended questions where it is harder to define a "consensus" answer.
 
 ## Running the code
 
