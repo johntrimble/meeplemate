@@ -19,6 +19,8 @@ RUN apt-get update -y && apt-get install -y python3.10 python3.10-dev python3.10
     update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
 
+RUN apt-get update -y && apt-get install -y poppler-utils tesseract-ocr
+
 # Needed for python 3.11
 # Install dlib, we use a hash after 19.24 due to incompatibilities with python 3.11
 # RUN git clone https://github.com/davisking/dlib.git && \
