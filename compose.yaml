@@ -1,0 +1,97 @@
+
+# Standard options we will include in our services.
+x-base-service: &base-service
+  # Include the .env file for environment variables (if it exists).
+  env_file:
+  - path: .env
+    required: false
+
+  # Make sure the container runs as the same user as the host to avoid
+  # permission issues with mounted volumes.
+  user: "${MY_UID}:${MY_GID}"
+
+  # Docker allocates 64MB of shared memory by default. This is sometimes 
+  # insufficient. Rather than mock around with settings here, we just set the
+  # IPC mode to use the host. Note that this is not recommended for production
+  # environments due to security concerns, but it is useful for development.
+  ipc: host
+
+services:
+  dev:
+    # The main development environment container.
+    # Inherits common settings from the base service anchor above.
+    <<: *base-service
+    depends_on:
+    - tgi
+    build:
+      # Build context is the pytorch Dockerfile directory
+      context: ./services/dev/
+      additional_contexts:
+        # Allows referencing the project root in the Dockerfile
+        workspace: .
+      args:
+        # Ensure the container user matches the host user for correct file permissions.
+        # These are set in the .env file, which is initialized by script/bootstrap.
+        UID: ${MY_UID}
+        GID: ${MY_GID}
+
+    # Mount the project root and data directory into the container.
+    # This allows code and data changes on the host to be reflected in the container.
+    volumes:
+    # Mount the project root as /workspace (source code, scripts, etc)
+    - .:/workspace:cached
+    # Persist data across container restarts (models, cache, etc)
+    - ./data:/data:cached
+
+    # Set the working directory to where the workspace folder is mounted.
+    working_dir: /workspace
+
+    # Keep the container running (useful for VS Code dev containers, debugging, etc).
+    command: tail -f /dev/null
+
+    # Uncomment below to run jupyter lab on startup
+    # command: jupyter lab --ip=0.0.0.0 --no-browser --NotebookApp.token='' --NotebookApp.password=''
+
+    ports:
+    - 8000:8000 # Chainlit
+
+    # Enable GPU access for PyTorch (NVIDIA only).
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            # If you want to expose all GPUs, you can comment out the device_ids line.
+            # Otherwise, specify the GPU IDs you want to use.
+            # device_ids: ['0', '1']
+            device_ids: ['0']
+            capabilities: [gpu]
+
+  tgi:
+    image: ghcr.io/huggingface/text-generation-inference:1.4.1
+    ipc: host
+    ports:
+    - 8080:80
+    # command: --model-id teknium/OpenHermes-2.5-Mistral-7B --quantize bitsandbytes-nf4 --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=5096
+    command: --model-id TheBloke/OpenHermes-2.5-Mistral-7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id TheBloke/Nous-Hermes-2-SOLAR-10.7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id TheBloke/Nous-Hermes-2-Yi-34B-AWQ --quantize awq --max-batch-prefill-tokens=3096 --max-input-length=3096 --max-total-tokens=5096
+    # command: --model-id TheBloke/OpenHermes-2.5-Mistral-7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id TheBloke/Magicoder-S-DS-6.7B-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id solidrust/Nous-Hermes-2-Mistral-7B-DPO-AWQ --quantize awq --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    # command: --model-id NousResearch/Nous-Hermes-2-Mistral-7B-DPO --quantize bitsandbytes-nf4 --cuda-memory-fraction 0.80 --max-input-length 4096 --max-total-tokens=6096
+    volumes:
+    - ./data/tgi_data:/data:cached
+    # Attach the GPU to the container. Use nvidia-smi to verify the GPU
+    # actually got attached. If at any point nvidia-smi throws an error, try
+    # rebuilding the devcontainer in vs code.
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            # If you want to expose all GPUs, you can comment out the device_ids line.
+            # Otherwise, specify the GPU IDs you want to use.
+            # device_ids: ['0', '1']
+            device_ids: ['1']
+            capabilities: [gpu]

@@ -1,0 +1,8 @@
+# Don't include any supporting files for setting up the dev environment.
+# Especially the data/ directory, which could be _huge_ and not needed for
+# creating any Docker images.
+/data
+/cache
+/services
+/script
+/.*

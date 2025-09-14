@@ -1,0 +1,22 @@
+scipy
+matplotlib
+tqdm
+numpy
+# ipywidgets==7.7.1
+gradio
+langchain
+langchain-community
+sentence-transformers
+text-generation
+transformers
+accelerate
+peft
+bitsandbytes
+datasets
+chainlit
+structlog
+sentencepiece
+faiss-cpu
+opencv-python-headless # Installs system dependencies needed by unstructured
+unstructured[pdf]
+-e .

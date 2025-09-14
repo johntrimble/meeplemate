@@ -1,0 +1,6 @@
+__pycache__
+.env
+pretrained_models
+munchkin_rules
+.venv
+/data

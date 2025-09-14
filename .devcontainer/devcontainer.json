@@ -1,0 +1,31 @@
+{
+  // Name for the dev container, which appears in the VS Code UI.
+  "name": "PyTorch Devcontainer",
+
+  // Points to the Docker Compose file that defines the services.
+  "dockerComposeFile": "../compose.yaml",
+
+  // The service within the Docker Compose file to use for the dev container.
+  "service": "dev",
+
+  // The folder to open in the container.
+  "workspaceFolder": "/workspace",
+
+  // VS Code specific customizations.
+  "customizations": {
+    "vscode": {
+      // Default settings for VS Code inside the container.
+      "settings": {
+        // Sets the default Python interpreter to the one in the virtual
+        // environment. This virtual environment is created by entrypoint.sh.
+        "python.defaultInterpreterPath": "${containerEnv:VENV_PATH}/bin/python"
+      },
+      // Extensions to install in VS Code inside the container.
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "github.copilot"
+      ]
+    }
+  }
+}

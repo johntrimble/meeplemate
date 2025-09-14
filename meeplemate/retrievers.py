@@ -113,6 +113,14 @@ def build_retriever_with_hypothetical_questions_for_documents(
     chunk_overlap:int=50,
     k:int=10
 ):
+    """
+    Builds a retriever that maps question vectors to documents.
+
+    For each document:
+    - Split the document into chunks
+    - Generate hypotetical questions for each chunk using the chat_model
+    - Map the question vectors to the related document chunks
+    """
     search_kwargs={"k": k, "fetch_k": int(k * 1.5)}
 
     text_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(

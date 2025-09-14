@@ -10,12 +10,12 @@ from meeplemate.vectorstores import build_vectorstore_faiss
 from meeplemate.qa import build_qa_chain
 from meeplemate.pdf import parse_pdf
 
-data_path = Path("./munchkin_rules/")
+rules_path = Path("./data/rules/munchkin_rules/")
 
 
 def load_docs():
     rule_docs = []
-    for filename in data_path.glob("*.pdf"):
+    for filename in rules_path.glob("*.pdf"):
         print(f"Processing {filename}")
         rule_docs.extend(parse_pdf(filename))
     return rule_docs
