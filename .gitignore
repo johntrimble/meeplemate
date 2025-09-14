@@ -4,3 +4,4 @@ pretrained_models
 munchkin_rules
 .venv
 /data
+*.egg-info
