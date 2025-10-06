@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Optional, Union
+from types import MethodType
+from typing import Any, Dict, List, Optional, Union, cast
 import inspect
 from langchain_core.outputs import Generation, GenerationChunk, LLMResult, RunInfo
 from langchain_core.callbacks import (
@@ -9,6 +10,7 @@ from langchain_core.callbacks import (
     CallbackManagerForLLMRun,
     Callbacks,
 )
+from langchain.embeddings.huggingface import HuggingFaceEmbeddings
 from langchain_core.language_models.llms import BaseLLM
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.language_models.chat_models import ChatResult, ChatGeneration
@@ -19,6 +21,7 @@ from transformers import (
     PreTrainedTokenizerBase,
     AutoTokenizer,
 )
+import langchain_huggingface.chat_models as hfcm
 from sentence_transformers import SentenceTransformer
 from langchain_core.embeddings import Embeddings
 from langchain_core.pydantic_v1 import BaseModel, Extra, Field
@@ -35,9 +38,7 @@ class HuggingFaceChatModelLocal(ChatHuggingFace):
     endpoints existing even when running Text Gen Inference locally. This
     class is a workaround for that.
     """
-    
-    tokenizer: Any
-    
+
     def _resolve_model_id(self):
         info_endpoint_url = urljoin(self.llm.inference_server_url, "info")
         info = requests.get(info_endpoint_url).json()
@@ -87,6 +88,14 @@ def tgi_details_to_generation_details(tgi_details:Details) -> Dict[str, Any]:
 
 
 class EnhancedHuggingFaceTextGenInference(HuggingFaceTextGenInference):
+    include_logprobs: bool = Field(
+        default=True,
+        description="Whether to include logprobs and token ids in the generation info.",
+    )
+
+    """
+    Subclass to add logprobs and token ids to the generation info.
+    """
     def _call(
         self,
         prompt: str,
@@ -126,7 +135,10 @@ class EnhancedHuggingFaceTextGenInference(HuggingFaceTextGenInference):
                 res.generated_text = res.generated_text[
                     : res.generated_text.index(stop_seq)
                 ]
-        generation_info = {"details": tgi_details_to_generation_details(res.details)}
+        if self.include_logprobs:
+            generation_info = {"details": tgi_details_to_generation_details(res.details)}
+        else:
+            generation_info = {}
         return Generation(text=res.generated_text, generation_info=generation_info)
 
     async def _acall_return_generation(
@@ -274,8 +286,16 @@ class VLLMOpenAIChatModel(BaseChatModel):
         return "vllm-openai-chat-wrapper"
 
 
+def get_tgi_model_info(tgi_url: str) -> dict:
+    response = requests.get(f"{tgi_url}/info")
+    response.raise_for_status()
+    return response.json()
+
 
 def load_tgi_chat_model(**kwargs):
+    from langchain_huggingface.chat_models import ChatHuggingFace
+    from langchain_huggingface.llms import HuggingFaceEndpoint
+
     # These keys should be passed to the chat model instead of the LLM model
     chat_model_keys = [
         "system_message",
@@ -292,7 +312,10 @@ def load_tgi_chat_model(**kwargs):
         for k, v in kwargs.items() 
         if k not in chat_model_keys
     }
-    llm_model = EnhancedHuggingFaceTextGenInference(
+    # llm_model = EnhancedHuggingFaceTextGenInference(
+    #     **llm_kwargs
+    # )
+    llm_model = HuggingFaceEndpoint(
         **llm_kwargs
     )
 
@@ -302,10 +325,26 @@ def load_tgi_chat_model(**kwargs):
         for k, v in kwargs.items() 
         if k in chat_model_keys
     }
-    chat_model = HuggingFaceChatModelLocal(
+
+    if "tokenizer" not in chat_model_kwargs or chat_model_kwargs["tokenizer"] is None:
+        endpoint_url = kwargs["endpoint_url"]
+        info = get_tgi_model_info(endpoint_url)
+        model_id = info["model_id"]
+        tokenizer = load_tokenizer(model_id)
+        chat_model_kwargs["tokenizer"] = tokenizer
+
+    # chat_model = HuggingFaceChatModelLocal(
+    #     llm=llm_model,
+    #     **chat_model_kwargs,
+    # )
+    chat_model = ChatHuggingFace(
         llm=llm_model,
         **chat_model_kwargs,
     )
+
+    # Patch the chat model if it does not support system prompts
+    if not _does_tokenizer_support_system_prompt(chat_model.tokenizer):
+        chat_model = monkey_patch_huggingface_chat_model_no_system_prompt(chat_model)
 
     return chat_model
 
@@ -359,7 +398,177 @@ def load_vllm_chat_model(inference_server_url, timeout=900, temperature=0, **kwa
     # )
 
 
+def _merge_system_prompt_into_first_user_message(
+    messages: List[Dict[str, str]],
+    separator: str = "\n\n"
+) -> List[Dict[str, str]]:
+    """
+    Some models do not support a system prompt. This function merges any leading
+    system messages into the first user message. The messages are modified
+    in place and also returned for convenience.
+    """
+    # Bail early if there is nothing to do
+    if len(messages) < 2:
+        return messages
+
+    # Scan for the first non-system message
+    idx_first_non_system = None
+    for i, message in enumerate(messages):
+        if message["role"] != "system":
+            idx_first_non_system = i
+            break
+
+    # Nothing to do if we only have system messages
+    if idx_first_non_system is None:
+        return messages
+    
+    # Nothing to do if the first non-system message is the first message
+    if idx_first_non_system == 0:
+        return messages
+    
+    # Nothing to do if the first non-system message is not a user message
+    if messages[idx_first_non_system]["role"] != "user":
+        return messages
+    
+    # Gather the leading system messages
+    system_messages = messages[:idx_first_non_system]
+
+    # Drop the leading system messages (mutating the list)
+    for _ in range(idx_first_non_system):
+        messages.pop(0)
+    
+    # Merge the system messages together and prepend to the first user message
+    system_prompt = separator.join([m["content"] for m in system_messages])
+    messages[0]["content"] = system_prompt + separator + messages[0]["content"]
+
+    return messages
+
+
+def _does_tokenizer_support_system_prompt(tokenizer:Any) -> bool:
+    # If already monkey patched, then we know the tokenizer does not support
+    # system prompts
+    if getattr(tokenizer, "_apply_chat_template_monkey_patched", False):
+        return False
+
+    # Attempt to apply a chat template with a system prompt. If it works,
+    # then we are good. If it raises an error, then we need to merge the
+    # system prompt into the first user message.
+    try:
+        tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello!"},
+            ],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def monkey_patch_huggingface_chat_model_no_system_prompt(chat_model:hfcm.ChatHuggingFace) -> hfcm.ChatHuggingFace:
+    original_create_message_dicts = chat_model._create_message_dicts
+    def _patched_create_message_dicts(
+        self, messages: list[BaseMessage], stop: Optional[list[str]]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        messages_dicts, params = original_create_message_dicts(messages, stop)
+        messages_dicts = _merge_system_prompt_into_first_user_message(messages_dicts)
+        return messages_dicts, params
+
+    chat_model._create_message_dicts = MethodType(_patched_create_message_dicts, chat_model)
+    return chat_model
+
+
+def maybe_wrap_tokenizer_no_system_prompt(tokenizer:Any) -> Any:
+    """
+    Some models do not support providing a system prompt. This function checks
+    and, if needed, wraps the tokenizer to merge any provided system prompt
+    into the user prompt.
+    """
+    original_apply_chat_template = tokenizer.apply_chat_template
+
+    def _patched_apply_chat_template(
+        self,
+        *args,
+        **kwargs,
+    ) -> Any:
+        if "conversation" in kwargs:
+            conversation = kwargs["conversation"]
+        else:
+            if len(args) == 0:
+                raise ValueError("No conversation provided")
+            conversation = args[0]
+        
+        # If there there are no messages, just delegate the call
+        if len(conversation) == 0:
+            return original_apply_chat_template(*args, **kwargs)
+        
+        # Check if the conversation is a batch
+        is_batch = isinstance(conversation[0], list)
+        if not is_batch:
+            conversation = [conversation]
+        
+        # Process each conversation in the batch
+        for messages in conversation:
+            # Mutate the messages in place
+            _merge_system_prompt_into_first_user_message(messages)
+
+        return original_apply_chat_template(*args, **kwargs)
+
+    if not _does_tokenizer_support_system_prompt(tokenizer):
+        tokenizer._apply_chat_template_monkey_patched = True
+        tokenizer.apply_chat_template = MethodType(_patched_apply_chat_template, tokenizer)
+
+    return tokenizer
+
+
+def remove_quantized_suffixes(model_id: str) -> str:
+    suffixes = ["-4bit", "-8bit", "-gptq", "-gguf", "-AWQ", "-INT4"]
+    
+    while True:
+        removed_suffix = False
+        for suffix in suffixes:
+            if model_id.endswith(suffix):
+                model_id = model_id[: -len(suffix)]
+                removed_suffix = True
+        if not removed_suffix:
+            break
+
+    return model_id
+
+
+def matches_cannonical_name(cannonical_name: str, model_id: str) -> bool:
+    cannonical_name = remove_quantized_suffixes(cannonical_name)
+    model_id = remove_quantized_suffixes(model_id)
+
+    # Exact match
+    if cannonical_name == model_id:
+        return True
+
+    _, cannon_suffix = cannonical_name.split("/")
+    _, model_suffix = model_id.split("/")
+
+    # Only a different repository name
+    if cannon_suffix.lower() == model_suffix.lower():
+        return True
+    
+    return False
+
+
 def load_tokenizer(model_name:str) -> PreTrainedTokenizerBase:
+    # Sometimes when models are repackaged they screw up the tokenizer config,
+    # so fix it here
+    cannonical_tokenizer_names = [
+        "teknium/OpenHermes-2.5-Mistral-7B",
+        "NousResearch/Nous-Hermes-2-SOLAR-10.7B"
+    ]
+
+    for cannonical_name in cannonical_tokenizer_names:
+        if matches_cannonical_name(cannonical_name, model_name):
+            model_name = cannonical_name
+            break
+
     # Load model and tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
@@ -376,8 +585,12 @@ def load_tokenizer(model_name:str) -> PreTrainedTokenizerBase:
         #
         # So if it is not set, we just set it explicitly to </s> here.
         tokenizer.pad_token = '</s>'
-    
+
+    # Wrap the tokenizer if it does not support system prompts
+    tokenizer = maybe_wrap_tokenizer_no_system_prompt(tokenizer)
+
     return tokenizer
+
 
 def load_jina_embedding_model() -> SentenceTransformer:
     """
@@ -394,6 +607,7 @@ def load_jina_embedding_model() -> SentenceTransformer:
         parameter.requires_grad = False
     
     return model
+
 
 class SentenceTransformerEmbeddings(Embeddings):
     """
@@ -435,10 +649,14 @@ class SentenceTransformerEmbeddings(Embeddings):
         """
         return self.embed_documents([text])[0]
 
-def sentence_transformer_to_hf_embeddings(model: SentenceTransformer, **kwargs) -> Embeddings:
+def sentence_transformer_to_hf_embeddings(model: SentenceTransformer, **kwargs) -> HuggingFaceEmbeddings:
     """
     Wrap the SentenceTransformer model so that it can be used as a langchain
     Embeddings model.
     """
-    # normalize_embeddings=True
-    return SentenceTransformerEmbeddings(model=model, encode_kwargs=kwargs)
+    # This isn't really a HuggingFaceEmbeddings, but it has the same interface
+    # so we can cast it for convenience
+    return cast(
+        HuggingFaceEmbeddings, 
+        SentenceTransformerEmbeddings(model=model, encode_kwargs=kwargs)
+    )

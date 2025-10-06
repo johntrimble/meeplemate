@@ -39,7 +39,7 @@ document_prompt_template = """{page_content}"""
 DEFAULT_DOCUMENT_PROMPT = PromptTemplate.from_template(document_prompt_template)
 
 rag_prompt_template = """\
-Answer the following board game question based on the given rules from the rulebook. Provide your step-by-step reasoning first followed by the answer. Each step should be a separate bullet point. Remember rules found in a board game rulebook generally hold unless there is an explicit exception.
+Answer the following board game question for the game {game_name} based on the given rules from the rulebook. Provide your step-by-step reasoning first followed by the answer. Each step should be a separate bullet point. Remember rules found in a board game rulebook generally hold unless there is an explicit exception.
 
 > Context:
 >>>
@@ -96,6 +96,7 @@ def build_rag_chain(chat_chain, sampling_chain=None, prompt=DEFAULT_RAG_PROMPT, 
     Inputs:
     - documents: A list of documents to use as context for the question.
     - question: The question to answer.
+    - game_name: The name of the game the question is about.
 
     Outputs:
     - context: The combined context of the documents.
@@ -119,6 +120,7 @@ def build_rag_chain(chat_chain, sampling_chain=None, prompt=DEFAULT_RAG_PROMPT, 
         | RunnablePassthrough.assign(
             answer={
                 "answer": itemgetter("cot_response") | StrOutputParser(),
+                "game_name": itemgetter("game_name"),
                 "question": RunnableLambda(itemgetter("question")),
                 "context": RunnableLambda(itemgetter("context")),
             } | followup_chain
@@ -129,7 +131,7 @@ build_basic_rag_chain = build_rag_chain
 
 
 thread_of_thought_template = """\
-Answer the question based only on the following board game rules. \
+Answer the question for the game {game_name} based only on the following board game rules. \
 Do not use any other information.
 
 > Rules:

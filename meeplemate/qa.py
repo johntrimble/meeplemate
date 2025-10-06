@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional
 from operator import itemgetter
+import re
 
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.runnables import Runnable
@@ -12,6 +13,7 @@ from meeplemate.rag import build_thread_of_thought_rag_chain, build_rag_chain
 from meeplemate.reword import build_reword_documents_chain, build_summarize_chain
 from meeplemate.consistency import build_universal_consistency_chain
 from langchain_core.language_models.base import BaseLanguageModel, LanguageModelInput
+from langchain.output_parsers.boolean import BooleanOutputParser
 
 
 def build_sampling_chain(chat_model:BaseChatModel, **kwargs):
@@ -42,6 +44,50 @@ def build_sampling_chain(chat_model:BaseChatModel, **kwargs):
     # return RunnableLambda(chat_model_output_with_logprobs)
 
 
+class BooleanOutputTrueOnErrorParser(BooleanOutputParser):
+    def parse(self, text: str) -> bool:
+        """Parse the output of an LLM call to a boolean.
+
+        Args:
+            text: output of a language model
+
+        Returns:
+            boolean
+        """
+        regexp = rf"\b({self.true_val}|{self.false_val})\b|^({self.true_val}|{self.false_val})"
+
+        truthy = {
+            val.upper() if isinstance(val, str) else val[0].upper()
+            for val in re.findall(regexp, text, flags=re.IGNORECASE | re.MULTILINE)
+        }
+        try:
+            if self.true_val.upper() in truthy:
+                if self.false_val.upper() in truthy:
+                    msg = (
+                        f"Ambiguous response. Both {self.true_val} and {self.false_val} "
+                        f"in received: {text}."
+                    )
+                    raise ValueError(msg)
+                return True
+            if self.false_val.upper() in truthy:
+                if self.true_val.upper() in truthy:
+                    msg = (
+                        f"Ambiguous response. Both {self.true_val} and {self.false_val} "
+                        f"in received: {text}."
+                    )
+                    raise ValueError(msg)
+                return False
+            # When in doubt, return True
+            return True
+        except:
+            return True
+
+    @property
+    def _type(self) -> str:
+        """Snake-case string identifier for an output parser type."""
+        return "boolean_output_true_on_error_parser"
+
+
 def build_qa_chain(
         chat_model, 
         retriever,
@@ -69,8 +115,10 @@ def build_qa_chain(
         retriever = retriever | RunnableLambda(lambda x: x[:limit_number_of_documents]).with_config({"run_name": "limit-documents"})
 
     if document_llm_filter:
-        from langchain.retrievers.document_compressors import LLMChainFilter
-        _filter = LLMChainFilter.from_llm(chat_model)
+        from langchain.retrievers.document_compressors.chain_filter import LLMChainFilter, _get_default_chain_prompt
+        filter_prompt = _get_default_chain_prompt()
+        filter_prompt.output_parser = BooleanOutputTrueOnErrorParser()
+        _filter = LLMChainFilter.from_llm(chat_model, prompt=filter_prompt)
         retriever = (
             {
                 "query": RunnablePassthrough(),
@@ -106,6 +154,9 @@ def build_qa_chain(
 
     full_chain = (
         {
+            # Make default game_name "Munchkin" for backwards compatibility
+            # TODO: Do not hardcode this
+            "game_name": lambda _: "Munchkin",
             "question": RunnablePassthrough(),
             "documents": retriever,
         }

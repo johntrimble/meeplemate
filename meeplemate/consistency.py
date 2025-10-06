@@ -250,6 +250,23 @@ def build_prompting_selection_chain(chat_model, target_chain_response_key="answe
     return chain
 
 
+def aimessage_to_tokens(message):
+    import blingfire as bf
+    import unicodedata as ud
+    import re
+
+    def normalize(t: str) -> str:
+        t = ud.normalize("NFKC", t).lower()
+        return re.sub(r"\s+", " ", t).strip()
+
+    def words(t: str) -> list[str]:
+        return bf.text_to_words(normalize(t)).split()
+
+    tokens = words(message.content)
+
+    return {"text": message.content, "tokens": tokens}
+
+
 def build_universal_consistency_chain(embedding_model, target_chain:Runnable, chat_model=None, target_chain_response_key="answer", target_chain_cot_response_key="cot_response", samples=9, response_selection_strategy:SelectionStrategy="average_similarity") -> Runnable:
     if ("prompting" in response_selection_strategy) and chat_model is None:
         raise ValueError("chat_model must be provided when using PROMPTING or PROMPTING_WITH_CONTEXT")
@@ -312,7 +329,6 @@ def build_universal_consistency_chain(embedding_model, target_chain:Runnable, ch
     #     print("Selected response:", response_index)
     #     return responses[response_index]
 
-
     def find_by_bigram_consistency(data, run_manager:CallbackManagerForChainRun):
         from meeplemate.similarity import ngram_consistency_score, generalized_self_consistency_score, consensus_weighted_ngram_consistency_score
 
@@ -322,16 +338,10 @@ def build_universal_consistency_chain(embedding_model, target_chain:Runnable, ch
         responses = []
         for response in responses_raw:
             message = response[target_chain_cot_response_key]
-            # text = message.content
-            # tokens = text.lower().split()
-            # logprobs = [0.0 for _ in tokens]
-            text = message.content
-            tokens = message.additional_kwargs["token_ids"]
-            logprobs = message.additional_kwargs["token_logprobs"]
-            responses.append({"text": text, "logprobs": logprobs, "tokens": tokens})
+            responses.append(aimessage_to_tokens(message))
 
         # Calculate bigram consistency scores
-        scores = consensus_weighted_ngram_consistency_score(responses, ngrams=2)
+        scores = ngram_consistency_score(responses, ngrams=2)
         scores = generalized_self_consistency_score(scores)
 
         # Sort indices by score (descending)

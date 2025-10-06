@@ -191,15 +191,15 @@ def build_run_ntimes_chain(chain_to_sample:Runnable[Input, Output], n:int) -> Ru
     return duplicate | chain_to_sample.map()
 
 
-def prepare_prompt_evaluation_inputs(test_case: QATestCaseWithPrediction) -> dict:
-    examples_str = format_examples(test_case.get("examples", []))
-    answers_str = format_answers(test_case["answers"], "TRUE ANSWER")
-    return {
-        "examples": examples_str,
-        "question": test_case["question"],
-        "prediction": test_case["prediction"],
-        "answers": answers_str,
-    }
+# def prepare_prompt_evaluation_inputs(test_case: QATestCaseWithPrediction) -> dict:
+#     examples_str = format_examples(test_case.get("examples", []))
+#     answers_str = format_answers(test_case["answers"], "TRUE ANSWER")
+#     return {
+#         "examples": examples_str,
+#         "question": test_case["question"],
+#         "prediction": test_case["prediction"],
+#         "answers": answers_str,
+#     }
 
 
 def build_correctness_evaluation_chain(chat_model:Runnable[LanguageModelInput, BaseMessage], prompt:ChatPromptTemplate=CORRECTNESS_EVALUATION_PROMPT, consistency_samples:int=5) -> Runnable[QATestCaseWithPrediction, ScoreResult]:
@@ -338,9 +338,13 @@ class EvaluatorResult(TypedDict):
     metadata: NotRequired[dict[str, Any]]
 
 
+UsageMetadata = Mapping[str, int | float]
+
+
 class EvaluateResult(TypedDict):
     evaluator_results: Mapping[str, Sequence[EvaluatorResult]]
     summary_results: NotRequired[Mapping[str, float | int]]
+    usage_metadata: NotRequired[Mapping[str, UsageMetadata]]
 
 
 Evaluator = Callable[[Sequence[Example[Input, Output]], Sequence[PredictionResult[Input, Output]]], Sequence[EvaluatorResult]|Sequence[Sequence[EvaluatorResult]]]
@@ -353,6 +357,16 @@ SummaryFunctions = Callable[
     ],
     Mapping[str, float | int]
 ]
+
+
+def summarize_mean_all(examples: Sequence[Example[Input, Output]], predictions: Sequence[PredictionResult[Input, Output]], evaluator_results: Mapping[str, Sequence[EvaluatorResult]]) -> Mapping[str, float]:
+    summary: dict[str, float] = {}
+    for key, results in evaluator_results.items():
+        scores = [result["score"] for result in results if "score" in result]
+        if scores:
+            mean_score = sum(scores) / len(scores)
+            summary[f"mean_{key}"] = mean_score
+    return summary
 
 
 def predict_for_examples(predict_fn: Callable[[Sequence[Input]], Sequence[Output]], examples: Sequence[Example[Input, Output]]) -> Sequence[PredictionResult[Input, Output]]:
@@ -371,6 +385,17 @@ def predict_for_examples(predict_fn: Callable[[Sequence[Input]], Sequence[Output
         results.append(result)
     
     return results
+
+
+def add_usage_dictionaries(a: Mapping[str, UsageMetadata], b: Mapping[str, UsageMetadata]) -> Mapping[str, UsageMetadata]:
+    keys = set(a.keys()).union(b.keys())
+    result: dict[str, dict[str, int | float]] = {}
+    for k in keys:
+        result[k] = {}
+        keys2 = set(a.get(k, {}).keys()).union(b.get(k, {}).keys())
+        for k2 in keys2:
+            result[k][k2] = a.get(k, {}).get(k2, 0) + b.get(k, {}).get(k2, 0)
+    return result
 
 
 def evaluate(
@@ -424,28 +449,23 @@ def evaluate(
             if summary.keys() & summary_results.keys():
                 raise ValueError(f"Summary function returned duplicate keys: {summary.keys() & summary_results.keys()}")
             summary_results.update(summary)
+    
+    # Collect usage metadata if available
+    usage_metadata = {}
+    for prediction in predictions:
+        if "usage_metadata" in prediction:
+            usage_metadata = add_usage_dictionaries(usage_metadata, prediction["usage_metadata"])
 
     # Return results
     return_value: EvaluateResult = {
         "evaluator_results": evaluator_results,
-        "summary_results": summary_results
+        "summary_results": summary_results,
+        "usage_metadata": usage_metadata
     }
     return return_value
 
 
-def build_llm_grader_evaluator(chat_model) -> Evaluator[Input, Output]:
-    eval_chain = build_correctness_evaluation_chain(chat_model)
-
-    def evaluator(examples: Sequence[Example[Input, Output]], predictions: Sequence[PredictionResult[Input, Output]]) -> Sequence[EvaluatorResult]:
-        test_cases: list[QATestCaseWithPrediction] = []
-        
-        # TODO: get grader examples from each example's metadata
-        pass
-
-    return evaluator
-
-
-def load_examples(path: str | Path) -> Sequence[Example[str, str]]:
+def load_qa_examples(path: str | Path) -> Sequence[Example[str, str]]:
     import hashlib
 
     qa_sets = load_question_answer_sets(path)
@@ -474,7 +494,7 @@ def load_examples(path: str | Path) -> Sequence[Example[str, str]]:
     return examples
 
 
-def _prepare_prompt_evaluation_inputs(example_prediction: Tuple[Example[Input, Output], PredictionResult[Input, Output]]) -> dict:
+def prepare_prompt_evaluation_inputs(example_prediction: Tuple[Example[Input, Output], PredictionResult[Input, Output]]) -> dict:
     example, prediction = example_prediction
     examples_str = format_examples(example.get("metadata", {}).get("grader_examples", []))
     answers_str = format_answers(example["reference_outputs"], "TRUE ANSWER")
@@ -513,7 +533,7 @@ def build_correctness_evaluation_chain(chat_model:Runnable[LanguageModelInput, B
         chat_model = chat_model.bind(temperature=0.7)
 
     score_result_eval_chain: Runnable[Tuple[Example[Input, Output], PredictionResult[Input, Output]], ScoreResult] = (
-        _prepare_prompt_evaluation_inputs
+        prepare_prompt_evaluation_inputs
         | prompt
         | chat_model
         | StrOutputParser()
@@ -535,3 +555,44 @@ def build_correctness_evaluation_chain(chat_model:Runnable[LanguageModelInput, B
     )
 
     return eval_chain
+
+
+def build_llm_grader_correctness_evaluator(chat_model) -> Evaluator[Input, Output]:
+    eval_chain = build_correctness_evaluation_chain(chat_model)
+
+    def evaluator(examples: Sequence[Example[Input, Output]], predictions: Sequence[PredictionResult[Input, Output]]) -> Sequence[EvaluatorResult]:
+        return eval_chain.batch(list(zip(examples, predictions)))
+
+    return evaluator
+
+
+def print_evaluation_result(result: EvaluateResult) -> None:
+    if "summary_results" in result:
+        print("Summary Results:")
+        for key, value in result["summary_results"].items():
+            print(f"{key}: {value}")
+        print()
+
+
+def print_detailed_evaluation_results(result: EvaluateResult, examples: Sequence[Example[Input, Output]], predictions: Sequence[PredictionResult[Input, Output]]) -> None:
+    evaluator_keys = list(result["evaluator_results"].keys())
+
+    for i, (example, prediction) in enumerate(zip(examples, predictions)):
+        print(f"Input: {example['input']}")
+        print(f"Prediction: {prediction['prediction']}")
+        print(f"Reference:")
+        for ref in example["reference_outputs"]:
+            print(f"- {ref}")
+
+        for key in evaluator_keys:
+            if key in result["evaluator_results"]:
+                evaluator_result = result["evaluator_results"][key][i]
+                if "metadata" in evaluator_result:
+                    if "reasoning" in evaluator_result["metadata"]:
+                        print(f"Reasoning: {evaluator_result['metadata']['reasoning']}")
+                    if "ratio_correct" in evaluator_result["metadata"]:
+                        print(f"Ratio Correct: {evaluator_result['metadata']['ratio_correct']}")
+                print(f"{key.capitalize()}: {evaluator_result.get('score', '')}")
+                print()
+
+        print_evaluation_result(result)
