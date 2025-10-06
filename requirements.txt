@@ -6,6 +6,8 @@ numpy
 gradio
 langchain
 langchain-community
+langchain-huggingface
+blingfire
 sentence-transformers
 text-generation
 transformers

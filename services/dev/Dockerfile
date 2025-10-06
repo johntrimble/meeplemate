@@ -1,12 +1,22 @@
 # --- Stage 1: Build virtual environment and install dependencies ---
-ARG BASE_IMAGE=pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
-FROM ${BASE_IMAGE} as builder
+# ARG BASE_IMAGE=pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+FROM ${BASE_IMAGE} AS builder
 
 ARG VENV_PATH=/opt/venv
 
-RUN python -m venv --system-site-packages ${VENV_PATH}
+# Install python3 and python3-venv if not already included in the base image
+RUN apt-get update && \
+    apt-get install -y python3 python3-venv python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv --system-site-packages ${VENV_PATH}
 ENV PATH="${VENV_PATH}/bin:$PATH"
 ENV VENV_PATH="${VENV_PATH}"
+
+# Install pytorch
+RUN ${VENV_PATH}/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
 # Install the requirements using BuildKit mount from the workspace context
 RUN --mount=type=bind,from=workspace,source=requirements.txt,target=/tmp/requirements.txt \
@@ -26,6 +36,18 @@ ARG VENV_PATH=/opt/venv
 
 USER root
 
+# Install nodejs (for claude)
+RUN apt-get update && \
+    apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install python3 and python3-venv if not already included in the base image
+RUN apt-get update && \
+    apt-get install -y python3 python3-venv python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install useful packages
 RUN apt-get update && \
     apt-get install -y \
@@ -33,7 +55,6 @@ RUN apt-get update && \
         wget \
         curl \
         sudo \
-        exa \
         fzf \
         jq \
         tree \
@@ -87,6 +108,13 @@ RUN echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} && ch
 # Create /workspace directory
 RUN mkdir -p /workspace && chown $USERNAME:$USERNAME /workspace
 
+# Ensure default user has access to /usr/local/share
+RUN mkdir -p /usr/local/share/npm-global && \
+  chown -R ${USERNAME}:${USERNAME} /usr/local/share
+
+# Create Claude directory
+RUN mkdir -p /home/${USERNAME}/.claude && chown $USERNAME:$USERNAME /home/$USERNAME/.claude
+
 # Add ENTRYPOINT script
 COPY . /docker/
 RUN chmod +x /docker/entrypoint.sh && chown $USERNAME:$USERNAME /docker/entrypoint.sh
@@ -98,8 +126,17 @@ COPY --from=builder --chown=${USERNAME}:${USERNAME} ${VENV_PATH} ${VENV_PATH}
 # Set the environment variable to use the virtual environment
 ENV PATH="${VENV_PATH}/bin:$PATH"
 ENV VENV_PATH="${VENV_PATH}"
+ENV DEVCONTAINER=true
 
 USER $USERNAME
+
+# Install global packages
+ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
+ENV PATH=$PATH:/usr/local/share/npm-global/bin
+ENV EDITOR=emacs
+
+# Install claude CLI tool
+RUN npm install -g @anthropic-ai/claude-code
 
 # Set the working directory
 WORKDIR /workspace
