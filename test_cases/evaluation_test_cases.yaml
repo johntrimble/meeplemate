@@ -1,0 +1,114 @@
+question_answer_sets:
+- game_id: "munchkin"
+  grader_examples:
+  - question: Can I carry multiple big items so long as only one is equipped?
+    prediction: A player can carry multiple big items, including Steeds, but only one can be equipped. If a player loses the ability to have more than one big item, they must correct the issue or discard all but one big item.
+    answers:
+    - No. You can only carry one big item at a time.
+    reasoning: The true answer states that you cannot carry more than one big item at a time. The student answer states a player can carray multiple big items. This contradicts the true answer. Therefore, the student answer is incorrect.
+    grade: INCORRECT
+  - question: How many players can join me in a combat?
+    prediction: In Munchkin, during combat against a monster, other players can help by adding their combat strength. Multiple players can contribute monsters to a fight using the Wandering Monster card. The player fighting the monster must defeat the combined combat strength of all the joined monsters. However, the rules do not explicitly state a maximum number of players who can contribute monsters to join a combat.
+    answers:
+    - Only one player can join you in combat.
+    reasoning: The true answer says that only one other player can join someone in combat. The student answer claims there is no maxiumum to the number of players who can join combat. Therefore, the student answer is incorrect.
+    grade: INCORRECT
+  - question: If a hireling is removed from play due to Bad Stuff, does the player retain any items the hireling was carrying?
+    prediction: If a Hireling is removed from play due to Bad Stuff or any other circumstances, the items the Hireling was carrying are lost, not retained by the player.
+    answers:
+    - No. When a hireling is removed from play due to bad stuff, any items the hireling was carrying are also removed from play.
+    reasoning: "The student answer explains that if a Hireling is removed from play for any reason, the items the Hireling was carrying are lost and not retained by the player. The true answer states that when a hireling is removed from play due to bad stuff, the items carried by the hireling are also removed from play. Both the student answer and the true answer convey the same core information: that the player does not retain the items when the hireling is removed from play."
+    grade: CORRECT
+  - question: When can I discard a Race card?
+    prediction: To discard a Race card in Munchkin, you can do so to sell for a level, trade with another player, give to a player who wants it, power a Class or Race ability, or comply with a Curse or monster's Bad Stuff effect.
+    answers:
+    - You can discard your Race card at any time.
+    reasoning: "The student answer explains that if a Hireling is removed from play for any reason, the items the Hireling was carrying are lost and not retained by the player. The true answer states that when a hireling is removed from play due to bad stuff, the items carried by the hireling are also removed from play. Both the student answer and the true answer convey the same core information: that the player does not retain the items when the hireling is removed from play."
+    grade: INCORRECT
+  - question: What is an item in play but not equipped called?
+    prediction: In Munchkin, an item that is in play but not equipped is referred to as an item turned sideways. These items are not being used during gameplay.
+    answers:
+    - An item in play but not equipped is called a carried item.
+    reasoning: The true answer states that an item in play but not equipped is called a carried item. The student answer makes no mention of a "carried item". Therefore, the student answer is incorrect.
+    grade: INCORRECT
+
+  question_answers:
+  - question: If a monster does not pursue me because my level is too low, can I still loot the room?
+    answers:
+    - No, you cannot loot the room.
+  - question: Can I sell items from my hand to go up a level, assuming I can sell 1,000 gold pieces worth?
+    answers:
+    - Yes. You can sell items from your hand to go up a level.
+  - question: If a hireling is removed from play due to Bad Stuff, does the player retain any items the hireling was carrying?
+    answers:
+    - No. When a hireling is removed from play due to bad stuff, any items the hireling was carrying are also removed from play.
+  - question: Can I have multiple steeds equipped at the same time?
+    answers:
+    - No. You can only have one steed equipped at a time.
+    - Based on the given rules, a player cannot have multiple Steeds equipped at the same time, unless using a Cheat! card. However, the Cheat! card does not explicitly state that it allows multiple Steeds to be equipped at the same time.
+    - No, you cannot have multiple Steeds equipped at the same time, unless you use a Cheat! card.
+    - Based on the provided rules, a player can only possess one Steed, unless they use a Cheat! card. Therefore, a player cannot have multiple Steeds equipped at the same time without using a Cheat! card.
+    - You can have multiple Steeds equipped at the same time only if you use a Cheat! card. Otherwise, you can possess only one Steed.
+    - A player can have multiple Steeds equipped at the same time if they have a Cheat! card. Otherwise, they can only have one Steed.
+  - question: Can I play a Go Up a Level card during combat on my turn?
+    answers:
+    - Yes. You can play a Go Up a Level card at any time.
+  - question: How many players can help me in a combat by adding their combat level?
+    answers:
+    - Only one player can help you with their combat level.
+  - question: Does a player retain their princess card in play if they die?
+    answers:
+    - Yes. A player retains their princess card in play if they die.
+  - question: Can I carry multiple big items so long as only one is equipped?
+    answers:
+    - No. You can only carry one big item at a time.
+    - Based on the context provided, a player can carry any number of Small items but only one Big item. There is no mention of being able to carry multiple Big items as long as only one is equipped. Therefore, the answer is no, you cannot carry multiple Big items so long as only one is equipped.
+    - Based on the provided rules, you cannot carry multiple big items so long as only one is equipped. The rule states that only one big item can be carried at a time, regardless of whether it is equipped or not.
+    - No, you cannot carry multiple Big items so long as only one is equipped. You can carry any number of Small items, but only one Big item at a time.
+    - Based on the given rules, you cannot carry multiple big items so long as only one is equipped. The rules state that you can carry any number of small items, but only one big one, regardless of their equipped status.
+    - Based on the provided rules, a player cannot carry multiple big items so long as only one is equipped. The rule states that a player can carry any number of small items but can only carry one big item at a time. There is no mention of an exception for equipped big items.
+  - question: What is an item in play but not equipped called?
+    answers:
+    - An item in play but not equipped is called a carried item.
+  - question: If after breaking down the door I draw a steed face up, what are my options?
+    answers:
+    - "If you draw a Steed face-up during the \"Kick Open The Door\" phase, you have two options: treat it as a monster or an Item. If you treat it as a monster, its Level is twice the combat bonus, and defeating it grants one Treasure and one level. Monster Enhancers can be played on Steeds being fought as monsters. If you treat it as an Item, you can add it to your hand and use it immediately or keep it for later."
+    - If you draw a Steed face-up during the "Kick Open The Door" phase, you can either treat it as a monster or a regular item. If treated as a monster, the Steed's Level is twice its combat bonus, and defeating it grants a Treasure and a level. Monster Enhancers can be played on Steeds being fought as monsters. If treated as a regular item, you can put it in your hand or play it immediately. Only one Steed can be possessed by a player, unless a Cheat! card is used.
+    - You can put the steed into your hand, equip it, or treat as a monster and fight it.
+  - question: When can I play a Super Munchkin card?
+    answers:
+    - You can play a Super Munchkin card whenever it is legal to play a Class card.
+  - question: Can I play a Super Munchkin card without a class card?
+    answers:
+    - No, you must have a class card to attach it to.
+  - question: What cards can I trade with other players?
+    answers:
+    - You can trade item cards with other players, as long as they are on the table and you are not in combat.
+    - You can trade Items with other players, as long as they are on the table and not in your hand. Trading is not allowed when you or the other player are in combat.
+    - You can trade any item cards in play (on the table) with other players.
+  - question: When can I play a Hireling?
+    answers:
+    - At any time.
+    - You can play a Hireling at any time during the game, as long as only one Hireling is in play. You can also put a face-up Hireling in your hand if you don't want to put it in play, or discard a Hireling at any time.
+  - question: Can I play a Hireling card if I already have a Hireling in play?
+    answers:
+    - No. You can only have one Hireling in play at a time.
+  - question: When I loot the room, is the door card drawn face up or face down?
+    answers:
+    - The door card is drawn face down.
+  - question: Can I use a card to compel another player to help me in combat if winning that combat would give me the winning level?
+    answers:
+    - No. You cannot compel another player to get the winning level.
+  - question: Can I play a Go Up a Level card on another player?
+    answers:
+    - Yes.
+  - question: Can I play a Curse while in combat?
+    answers:
+    - Yes. A curse may be played at any time.
+  - question: How can I get rid of my Class card?
+    answers:
+    - You can discard your Class card at any time.
+  - question: When can I discard a Race card?
+    answers:
+    - You can discard your Race card at any time.
+    - You can discard your Race card at any time, causing you to lose the abilities and bonuses provided by that Race card.
