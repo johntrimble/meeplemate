@@ -1,6 +1,6 @@
-from langchain.embeddings.huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores.faiss import FAISS
-from langchain.vectorstores import VectorStore
+from langchain_core.vectorstores import VectorStore
 from langchain_community.vectorstores.utils import DistanceStrategy
 from langchain_community.docstore.in_memory import InMemoryDocstore
 

@@ -13,7 +13,7 @@ from meeplemate.rag import build_thread_of_thought_rag_chain, build_rag_chain
 from meeplemate.reword import build_reword_documents_chain, build_summarize_chain
 from meeplemate.consistency import build_universal_consistency_chain
 from langchain_core.language_models.base import BaseLanguageModel, LanguageModelInput
-from langchain.output_parsers.boolean import BooleanOutputParser
+from langchain_classic.output_parsers import BooleanOutputParser
 
 
 def build_sampling_chain(chat_model:BaseChatModel, **kwargs):
@@ -115,7 +115,7 @@ def build_qa_chain(
         retriever = retriever | RunnableLambda(lambda x: x[:limit_number_of_documents]).with_config({"run_name": "limit-documents"})
 
     if document_llm_filter:
-        from langchain.retrievers.document_compressors.chain_filter import LLMChainFilter, _get_default_chain_prompt
+        from langchain_classic.retrievers.document_compressors.chain_filter import LLMChainFilter, _get_default_chain_prompt
         filter_prompt = _get_default_chain_prompt()
         filter_prompt.output_parser = BooleanOutputTrueOnErrorParser()
         _filter = LLMChainFilter.from_llm(chat_model, prompt=filter_prompt)

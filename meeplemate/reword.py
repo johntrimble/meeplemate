@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_core.runnables import Runnable
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables import chain

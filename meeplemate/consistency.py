@@ -17,7 +17,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.runnables import RunnableLambda
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.runnables import chain
-from langchain.output_parsers.regex import RegexParser
+from langchain_classic.output_parsers import RegexParser
 from langchain_core.output_parsers import StrOutputParser
 
 

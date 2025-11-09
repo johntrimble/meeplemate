@@ -2,27 +2,21 @@ import uuid
 from pathlib import Path
 from typing import Any, List, Union
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import VectorStore
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.vectorstores import VectorStore
 from transformers import (
     PreTrainedTokenizerBase,
 )
-from langchain.storage import (InMemoryStore, LocalFileStore)
-from langchain.retrievers import (ParentDocumentRetriever, MultiVectorRetriever)
-from langchain.text_splitter import TextSplitter
+from langchain_core.stores import InMemoryStore
+from langchain_classic.retrievers import ParentDocumentRetriever, MultiVectorRetriever
+from langchain_text_splitters import TextSplitter
 from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_core.runnables import Runnable
-from langchain.schema import Document
-from langchain.storage import InMemoryByteStore
+from langchain_core.documents import Document
+from langchain_core.stores import InMemoryByteStore, BaseStore
 
 from meeplemate.question_generation import build_questions_for_documents_chain
 
-class VectorStoreRetrieverWithTextSplitter(VectorStoreRetriever):
-    text_splitter: TextSplitter
-
-    def add_documents(self, documents: List[Document], **kwargs: Any) -> List[str]:
-        documents = self.text_splitter.split_documents(documents)
-        return super().add_documents(documents, **kwargs)
 
 class VectorStoreRetrieverWithTextSplitter(VectorStoreRetriever):
     text_splitter: TextSplitter
@@ -42,6 +36,7 @@ def build_retriever(
     child_chunk_size:int=125,
     child_chunk_overlap:int=12,
     k:int=10,
+    docstore:BaseStore|None=None,
 ):
     parent_chunk_size = parent_chunk_size
     parent_chunk_overlap = parent_chunk_overlap
@@ -62,7 +57,10 @@ def build_retriever(
             chunk_size=child_chunk_size,
             chunk_overlap=child_chunk_overlap
         )
-        store = InMemoryStore()
+        if docstore is not None:
+            store = docstore
+        else:
+            store = InMemoryStore()
         retriever = ParentDocumentRetriever(
             vectorstore=vectorstore,
             docstore=store,

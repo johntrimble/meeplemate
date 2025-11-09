@@ -1,8 +1,8 @@
 import os
 from pathlib import Path
 from typing import List
-from langchain.schema import Document
-from langchain.document_loaders import UnstructuredPDFLoader
+from langchain_core.documents import Document
+from langchain_community.document_loaders import UnstructuredPDFLoader
 
 # nltk is used for PDF processing. Here we ensure anything it downloads goes to
 # the cache folder, so it doesn't have to download again

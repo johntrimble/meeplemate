@@ -3,7 +3,7 @@ from typing import Optional
 from functools import partial
 
 from langchain_core.prompts import ChatPromptTemplate, BasePromptTemplate, format_document
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.prompts import PromptTemplate
