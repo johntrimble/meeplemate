@@ -23,7 +23,7 @@ This notebook was part of a presentation I gave exploring the use of self-consis
      ```
 6. Run chainlit app in the dev container terminal:
    ```
-   chainlit run main.py
+   chainlit run app.py
    ```
 7. Open the URL printed in the terminal (usually http://localhost:8000)
 
