@@ -21,4 +21,7 @@ sentencepiece
 faiss-cpu
 opencv-python-headless # Installs system dependencies needed by unstructured
 unstructured[pdf]
+langchain-astradb
+langgraph-checkpoint-cassandra @ git+https://github.com/johntrimble/langgraph-checkpoint-cassandra@main
+chainlit-cassandra-data-layer @ git+https://github.com/johntrimble/chainlit-cassandra-data-layer@main
 -e .

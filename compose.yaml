@@ -21,7 +21,12 @@ services:
     # Inherits common settings from the base service anchor above.
     <<: *base-service
     depends_on:
-    - tgi
+      tgi:
+        condition: service_started
+      cassandra:
+        condition: service_healthy
+      data-api:
+        condition: service_healthy
     build:
       # Build context is the pytorch Dockerfile directory
       context: ./services/dev/
@@ -159,5 +164,75 @@ services:
             device_ids: ['0']
             capabilities: [gpu]
 
+  # Single node Cassandra cluster
+  # cassandra:
+  #   image: cassandra:5.0
+  #   environment:
+  #     # Configure a single-node cluster
+  #     - CASSANDRA_CLUSTER_NAME=PythonCassandraCluster
+  #     - CASSANDRA_DC=datacenter1
+  #     - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+  #     # For development, we can reduce memory usage
+  #     - MAX_HEAP_SIZE=512M
+  #     - HEAP_NEWSIZE=100M
+  #   volumes:
+  #     # Persist Cassandra data
+  #     - cassandra_data:/var/lib/cassandra
+  #   healthcheck:
+  #     # Use cqlsh to check if Cassandra is ready to accept connections
+  #     test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 30
+  #     start_period: 60s
+
+  cassandra:
+    image: cr.dtsx.io/datastax/dse-server:6.9.15
+    platform: linux/amd64
+    mem_limit: 2500M
+    environment:
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+      - CLUSTER_NAME=dse-cluster
+      - DC=datacenter1
+      - DS_LICENSE=accept
+      - SNITCH=GossipingPropertyFileSnitch
+      - USE_BETA=true
+    volumes:
+    - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      # Use cqlsh to check if Cassandra is ready to accept connections
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+
+  data-api:
+    image: stargateio/data-api:v1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    mem_limit: 2G
+    environment:
+      - JAVA_MAX_MEM_RATIO=75
+      - JAVA_INITIAL_MEM_RATIO=50
+      - GC_CONTAINER_OPTIONS=-XX:+UseG1GC
+      - STARGATE_JSONAPI_OPERATIONS_DATABASE_CONFIG_CASSANDRA_END_POINTS=cassandra
+      - STARGATE_JSONAPI_OPERATIONS_DATABASE_CONFIG_LOCAL_DATACENTER=datacenter1
+      - QUARKUS_HTTP_ACCESS_LOG_ENABLED=true
+      - QUARKUS_LOG_LEVEL=INFO
+      - STARGATE_JSONAPI_OPERATIONS_VECTORIZE_ENABLED=true
+      - JAVA_OPTS_APPEND=-Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager
+    ports:
+      - 8181:8181
+    healthcheck:
+      test: curl -f http://localhost:8181/stargate/health || exit 1
+      interval: 5s
+      timeout: 10s
+      retries: 10
+
 volumes:
   claude_data:
+  cassandra_data:
