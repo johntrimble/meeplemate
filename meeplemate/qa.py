@@ -8,6 +8,7 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables import chain
 from langchain_core.language_models import BaseChatModel
+from langchain_core.embeddings import Embeddings
 
 from meeplemate.rag import build_thread_of_thought_rag_chain, build_rag_chain
 from meeplemate.reword import build_reword_documents_chain, build_summarize_chain
@@ -91,7 +92,7 @@ class BooleanOutputTrueOnErrorParser(BooleanOutputParser):
 def build_qa_chain(
         chat_model, 
         retriever,
-        embedding_model,
+        embedding_model:Embeddings,
         reword_documents=True,
         self_consistency=True,
         document_llm_filter=True,

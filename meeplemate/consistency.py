@@ -19,18 +19,21 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.runnables import chain
 from langchain_classic.output_parsers import RegexParser
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.embeddings import Embeddings
 
 
 log = structlog.get_logger(__name__)
 
 
-def embed_responses(model:SentenceTransformer, question, responses):
-    tokenizer = model.tokenizer
+def embed_responses(model:Embeddings, question, responses) -> np.ndarray:
+    # tokenizer = model.tokenizer
 
     # Combine each response with the question
     # responses = [f"{question}{tokenizer.sep_token}{response}" for response in responses]
+    _result = model.embed_documents(responses)
+    result = np.array(_result, dtype=np.float32)
 
-    return model.encode(responses, normalize_embeddings=True)
+    return result
 
 def find_centroid(embeddings):
     # Convert the list of embeddings to a 2D numpy array if it's not already
@@ -103,7 +106,7 @@ def sort_embedding_indices_by_avg_similarity(embeddings):
     
     return sorted_avg_similarity
 
-def rank_responses_by_majority_consensus(embedding_model, question, responses):
+def rank_responses_by_majority_consensus(embedding_model:Embeddings, question, responses):
     # Sort responses for reproducibility
     responses = responses[:]
     responses.sort()
@@ -267,7 +270,7 @@ def aimessage_to_tokens(message):
     return {"text": message.content, "tokens": tokens}
 
 
-def build_universal_consistency_chain(embedding_model, target_chain:Runnable, chat_model=None, target_chain_response_key="answer", target_chain_cot_response_key="cot_response", samples=9, response_selection_strategy:SelectionStrategy="average_similarity") -> Runnable:
+def build_universal_consistency_chain(embedding_model:Embeddings, target_chain:Runnable, chat_model=None, target_chain_response_key="answer", target_chain_cot_response_key="cot_response", samples=9, response_selection_strategy:SelectionStrategy="average_similarity") -> Runnable:
     if ("prompting" in response_selection_strategy) and chat_model is None:
         raise ValueError("chat_model must be provided when using PROMPTING or PROMPTING_WITH_CONTEXT")
 
