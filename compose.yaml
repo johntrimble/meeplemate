@@ -21,9 +21,13 @@ services:
     # Inherits common settings from the base service anchor above.
     <<: *base-service
     depends_on:
-      tgi:
+      tei:
+        condition: service_started
+      vllm:
         condition: service_started
       cassandra:
+        condition: service_healthy
+      dse:
         condition: service_healthy
       data-api:
         condition: service_healthy
@@ -55,9 +59,6 @@ services:
     # Keep the container running (useful for VS Code dev containers, debugging, etc).
     command: tail -f /dev/null
 
-    # Uncomment below to run jupyter lab on startup
-    # command: jupyter lab --ip=0.0.0.0 --no-browser --NotebookApp.token='' --NotebookApp.password=''
-
     ports:
     - 8000:8000 # Chainlit
 
@@ -73,56 +74,74 @@ services:
             device_ids: ['0']
             capabilities: [gpu]
 
-  tgi:
-    image: ghcr.io/huggingface/text-generation-inference:3.3.6
+  vllm:
+    image: vllm/vllm-openai:v0.10.2
     ipc: host
-    ports:
-    - 8080:80
+
     environment:
-      # LOG_LEVEL: debug
-      # SHARD_UDS_PATH: /data/text-generation-server
-      CUDA_MEMORY_FRACTION: "0.80"
-      MAX_INPUT_LENGTH: "5096"
-      MAX_TOTAL_TOKENS: "6096"
-      # CUDA_LAUNCH_BLOCKING: "1"
+      # HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN}"
+      VLLM_LOG_LEVEL: "INFO"
 
-      # DISABLE_CUSTOM_KERNELS: "true"
-      # CUDA_GRAPHS: "0"
-      
-      QUANTIZE: "awq"
-      MODEL_ID: "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"
-      TOKENIZER_CONFIG_PATH: "/tokenizer_configs/OpenHermes-2.5-Mistral-7B.json"
-
-      # QUANTIZE: "awq"
-      # MODEL_ID: "TheBloke/Nous-Hermes-2-SOLAR-10.7B-AWQ"
-      # TOKENIZER_CONFIG_PATH: "/tokenizer_configs/Nous-Hermes-2-SOLAR-10.7B.json"
-
-      # QUANTIZE: "bitsandbytes-nf4"
-      # MODEL_ID: "teknium/OpenHermes-2.5-Mistral-7B"
-      # TOKENIZER_CONFIG_PATH: "/tokenizer_configs/OpenHermes-2.5-Mistral-7B.json"
-
-      # QUANTIZE: "awq"
-      # MODEL_ID: "hugging-quants/gemma-2-9b-it-AWQ-INT4"
+    # vLLM is configured via CLI args instead of env vars
+    command:
+      - "--model"
+      - "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"
+      - "--served-model-name"
+      - "teknium/OpenHermes-2.5-Mistral-7B"
+      - "--quantization"
+      - "awq"
+      # AWQ in vLLM expects FP16 math
+      - "--dtype"
+      - "half"
+      # Like CUDA_MEMORY_FRACTION=0.80 in TGI
+      - "--gpu-memory-utilization"
+      - "0.8"
+      # Rough equivalent of MAX_TOTAL_TOKENS (prompt + completion)
+      - "--max-model-len"
+      - "6096"
+      - "--port"
+      - "8000"
+      # If you *really* want to force your custom tokenizer config path:
+      - "--tokenizer"
+      - "teknium/OpenHermes-2.5-Mistral-7B"
+      # - "/tokenizer_configs/OpenHermes-2.5-Mistral-7B.json"
 
     volumes:
-    - ./data/tgi_data:/data:cached
-    # mount services/tgi/tokenizer_configs as read-only to /tokenizer_configs
-    - ./services/tgi/tokenizer_configs:/tokenizer_configs:ro
-  
-    # Attach the GPU to the container. Use nvidia-smi to verify the GPU
-    # actually got attached. If at any point nvidia-smi throws an error, try
-    # rebuilding the devcontainer in vs code.
+      # vLLM uses HF cache under /root/.cache/huggingface in the official image
+      - ./data/vllm_data:/root/.cache/huggingface:cached
+      - ./services/tgi/tokenizer_configs:/tokenizer_configs:ro
+
+    # Same GPU reservation as your TGI service
     deploy:
       resources:
         reservations:
           devices:
-          - driver: nvidia
-            # If you want to expose all GPUs, you can comment out the device_ids line.
-            # Otherwise, specify the GPU IDs you want to use.
-            # device_ids: ['0', '1']
-            device_ids: ['1']
-            capabilities: [gpu]
-  
+            - driver: nvidia
+              # device_ids: ['0', '1']   # to expose multiple GPUs
+              device_ids: ['1']
+              capabilities: [gpu]
+
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    # CPU only: no GPU devices, no --gpus flag
+    ipc: host
+
+    # If the Jina model is gated/private, add HF_TOKEN here
+    environment: {}
+      # HF_TOKEN: "${HUGGINGFACE_HUB_TOKEN}"
+      # Optional: tweak TEI batch behavior via CLI flags instead of env
+
+    # TEI is configured via CLI args, like TGI/vLLM
+    command:
+      - "--model-id"
+      - "jinaai/jina-embeddings-v2-base-en"
+      - "--pooling"
+      - "mean"
+
+    volumes:
+      # Cache model weights so they aren't re-downloaded each start
+      - ./data/tei_data:/data:cached
+
   tgi2:
     image: ghcr.io/huggingface/text-generation-inference:3.3.4
     ipc: host
@@ -165,28 +184,28 @@ services:
             capabilities: [gpu]
 
   # Single node Cassandra cluster
-  # cassandra:
-  #   image: cassandra:5.0
-  #   environment:
-  #     # Configure a single-node cluster
-  #     - CASSANDRA_CLUSTER_NAME=PythonCassandraCluster
-  #     - CASSANDRA_DC=datacenter1
-  #     - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
-  #     # For development, we can reduce memory usage
-  #     - MAX_HEAP_SIZE=512M
-  #     - HEAP_NEWSIZE=100M
-  #   volumes:
-  #     # Persist Cassandra data
-  #     - cassandra_data:/var/lib/cassandra
-  #   healthcheck:
-  #     # Use cqlsh to check if Cassandra is ready to accept connections
-  #     test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 30
-  #     start_period: 60s
-
   cassandra:
+    image: cassandra:5.0
+    environment:
+      # Configure a single-node cluster
+      - CASSANDRA_CLUSTER_NAME=PythonCassandraCluster
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      # For development, we can reduce memory usage
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+    volumes:
+      # Persist Cassandra data
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      # Use cqlsh to check if Cassandra is ready to accept connections
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  dse:
     image: cr.dtsx.io/datastax/dse-server:6.9.15
     platform: linux/amd64
     mem_limit: 2500M
@@ -199,7 +218,7 @@ services:
       - SNITCH=GossipingPropertyFileSnitch
       - USE_BETA=true
     volumes:
-    - cassandra_data:/var/lib/cassandra
+    - dse_data:/var/lib/cassandra
     healthcheck:
       # Use cqlsh to check if Cassandra is ready to accept connections
       test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
@@ -207,7 +226,6 @@ services:
       timeout: 5s
       retries: 30
       start_period: 60s
-
 
   data-api:
     image: stargateio/data-api:v1
@@ -219,7 +237,7 @@ services:
       - JAVA_MAX_MEM_RATIO=75
       - JAVA_INITIAL_MEM_RATIO=50
       - GC_CONTAINER_OPTIONS=-XX:+UseG1GC
-      - STARGATE_JSONAPI_OPERATIONS_DATABASE_CONFIG_CASSANDRA_END_POINTS=cassandra
+      - STARGATE_JSONAPI_OPERATIONS_DATABASE_CONFIG_CASSANDRA_END_POINTS=dse
       - STARGATE_JSONAPI_OPERATIONS_DATABASE_CONFIG_LOCAL_DATACENTER=datacenter1
       - QUARKUS_HTTP_ACCESS_LOG_ENABLED=true
       - QUARKUS_LOG_LEVEL=INFO
@@ -236,3 +254,4 @@ services:
 volumes:
   claude_data:
   cassandra_data:
+  dse_data:

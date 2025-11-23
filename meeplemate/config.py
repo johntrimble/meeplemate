@@ -1,6 +1,6 @@
 from contextlib import AsyncExitStack, ExitStack
 from pathlib import Path
-from typing import Any, Literal, NotRequired, Protocol, TypedDict, runtime_checkable
+from typing import Any, Literal, Mapping, NotRequired, Protocol, TypedDict, runtime_checkable
 
 from langchain_astradb import AstraDBVectorStore
 from langchain_astradb.utils.astradb import HybridSearchMode
@@ -14,7 +14,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.stores import BaseStore
 from langchain_core.vectorstores import VectorStore
 
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import MessagesState
@@ -52,6 +52,10 @@ class Config(TypedDict):
     chat_max_new_tokens: int
     chat_timeout: int
     chat_api_key: NotRequired[str]
+    embedding_model: str
+    embedding_endpoint: str
+    embedding_api_key: str
+    qa_chain_config: Mapping[str, Any]
 
 
 def create_keyspace(data_api_endpoint:str, data_api_token:str, keyspace:str, replication_factor:int):
@@ -210,8 +214,13 @@ class Services:
             )
 
         # Load the embedding
-        self.embedding_model = sentence_transformer_to_hf_embeddings(load_jina_embedding_model(), normalize_embeddings=True)
-
+        self.embedding_model = OpenAIEmbeddings(
+            model=self.cfg["embedding_model"],
+            base_url=self.cfg["embedding_endpoint"],
+            api_key=self.cfg["embedding_api_key"],
+            tiktoken_enabled=False
+        )
+        
         # Setup vector store
         self.vector_store = buid_vectorstore_cassandra(
             embedding_model=self.embedding_model,
@@ -265,9 +274,7 @@ class Services:
             chat_model=chat_model,
             retriever=retriever,
             embedding_model=self.embedding_model,
-            reword_documents=True,
-            self_consistency=True,
-            thread_of_thought=True,
+            **self.cfg["qa_chain_config"]
         )
 
     async def stop(self):

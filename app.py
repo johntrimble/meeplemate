@@ -26,6 +26,17 @@ settings: Config = {
     "chat_max_new_tokens": 512,
     "chat_timeout": 900,
     "chat_api_key": "your_openai_api_key_here",
+    "embedding_api_key": "dummy",
+    "embedding_endpoint": "http://tei:80/v1",
+    "embedding_model": "jinaai/jina-embeddings-v2-base-en",
+    "qa_chain_config": {
+        "reword_documents": True,
+        "self_consistency": True,
+        "thread_of_thought": True,
+        "consistency_kwargs": {
+            "samples": 3,
+        }
+    }
 }
 
 services: Services = Services(settings)
