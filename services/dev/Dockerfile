@@ -1,59 +1,63 @@
 # --- Stage 1: Build virtual environment and install dependencies ---
 # ARG BASE_IMAGE=pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+ARG PYTHON_VERSION=3.12
 ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 FROM ${BASE_IMAGE} AS builder
 
 ARG VENV_PATH=/opt/venv
 
-# Install python3 and python3-venv if not already included in the base image
-RUN apt-get update && \
-    apt-get install -y python3 python3-venv python3-pip git && \
-    rm -rf /var/lib/apt/lists/*
+# Minimal build tools for native wheels; add git if your deps use VCS URLs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl build-essential pkg-config git \
+ && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m venv --system-site-packages ${VENV_PATH}
-ENV PATH="${VENV_PATH}/bin:$PATH"
-ENV VENV_PATH="${VENV_PATH}"
+# Install Python
+# Add Deadsnakes and install Python 3.12 + venv/dev headers
+ARG PYTHON_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg software-properties-common \
+  && add-apt-repository -y ppa:deadsnakes/ppa \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+      python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
+  && rm -rf /var/lib/apt/lists/*
 
-# Install pytorch
-RUN ${VENV_PATH}/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /bin/
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_TOOL_BIN_DIR=/opt/uv-bin/ \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_CACHE_DIR=/opt/uv-cache/ \
+    UV_PYTHON_INSTALL_DIR=/python \
+    UV_PYTHON_PREFERENCE=only-system
+RUN mkdir -p ${UV_TOOL_BIN_DIR} ${UV_PYTHON_CACHE_DIR}
 
-# Install the requirements using BuildKit mount from the workspace context
-RUN --mount=type=bind,from=workspace,source=requirements.txt,target=/tmp/requirements.txt \
-    grep -v "^[-]e" /tmp/requirements.txt > /tmp/requirements_no_editable.txt && \
-    ${VENV_PATH}/bin/python -m pip install --upgrade pip && \
-    ${VENV_PATH}/bin/python -m pip install --no-cache-dir -r /tmp/requirements_no_editable.txt
+# Install project dependencies
+WORKDIR /workspace
+COPY --from=workspace pyproject.toml ./
+COPY --from=workspace uv.lock* ./
+RUN uv sync --python /usr/bin/python${PYTHON_VERSION} --no-install-project
+WORKDIR /
 
 # --- Stage 2: Main image with user, tools, and venv from builder ---
 FROM ${BASE_IMAGE}
-
-# User and group IDs for the non-root user
-# These should match the host user to avoid permission issues with mounted volumes.
-ARG UID=1000
-ARG GID=1000
-ARG USERNAME=vscode
-ARG VENV_PATH=/opt/venv
-
-USER root
-
-# Install nodejs (for claude)
-RUN apt-get update && \
-    apt-get install -y curl && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install python3 and python3-venv if not already included in the base image
-RUN apt-get update && \
-    apt-get install -y python3 python3-venv python3-pip && \
-    rm -rf /var/lib/apt/lists/*
+# Install Python
+# Add Deadsnakes and install Python 3.12 + venv/dev headers
+ARG PYTHON_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg software-properties-common \
+  && add-apt-repository -y ppa:deadsnakes/ppa \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+      python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
+  && rm -rf /var/lib/apt/lists/*
 
 # Install useful packages
 RUN apt-get update && \
     apt-get install -y \
         git \
-        wget \
-        curl \
         sudo \
         fzf \
         jq \
@@ -61,7 +65,6 @@ RUN apt-get update && \
         bat \
         fd-find \
         ripgrep \
-        ca-certificates \
         lsb-release \
         emacs-nox \
         vim \
@@ -71,16 +74,20 @@ RUN apt-get update && \
     ln -s /usr/bin/batcat /usr/local/bin/bat && \
     rm -rf /var/lib/apt/lists/*
 
-# Install project system dependencies
+# Install Node.js (for claude copilot VSCode extension)
 RUN apt-get update && \
-    apt-get install -y \
-        ffmpeg libsm6 libxext6 \
-        tesseract-ocr \
-        poppler-utils && \
+    apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# Add non-root user with the same UID and GID as the host user
+# User and group IDs for the non-root user
+# These should match the host user to avoid permission issues with mounted volumes.
+ARG USERNAME=vscode
+ARG UID=1000
+ARG GID=1000
 ENV DOCKER_USER=${USERNAME}
+
 RUN set -eux; \
     EXISTING_GROUP=$(getent group $GID | cut -d: -f1 || true); \
     if [ -z "$EXISTING_GROUP" ]; then \
@@ -105,38 +112,51 @@ RUN set -eux; \
 # Allow the user to use sudo without a password
 RUN echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} && chmod 0440 /etc/sudoers.d/${USERNAME}
 
-# Create /workspace directory
-RUN mkdir -p /workspace && chown $USERNAME:$USERNAME /workspace
+# Persist bash history
+ENV HISTFILE=/commandhistory/.bash_history
+ENV HISTSIZE=10000
+ENV HISTFILESIZE=20000
+RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
+  && mkdir /commandhistory \
+  && touch /commandhistory/.bash_history \
+  && chown -R $USERNAME:$USERNAME /commandhistory
 
-# Ensure default user has access to /usr/local/share
-RUN mkdir -p /usr/local/share/npm-global && \
-  chown -R ${USERNAME}:${USERNAME} /usr/local/share
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /bin/
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_TOOL_BIN_DIR=/opt/uv-bin/ \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_CACHE_DIR=/opt/uv-cache/ \
+    UV_PYTHON_INSTALL_DIR=/python \
+    UV_PYTHON_PREFERENCE=only-system
 
-# Create Claude directory
-RUN mkdir -p /home/${USERNAME}/.claude && chown $USERNAME:$USERNAME /home/$USERNAME/.claude
+USER ${USERNAME}
+RUN ["/bin/bash", "-c", "mkdir /home/${USERNAME}/.claude && set -o pipefail && curl -fsSL https://claude.ai/install.sh | bash"]
+USER root
 
+# Copy over virtualenv
+COPY --from=builder --chown=${USERNAME}:${USERNAME} /opt/venv /opt/venv
+
+# Copy over other misc uv files
+COPY --from=builder --chown=${USERNAME}:${USERNAME} /opt/uv-bin /opt/uv-bin
+COPY --from=builder --chown=${USERNAME}:${USERNAME} /opt/uv-cache /opt/uv-cache
+
+# Create /workspace and /data directories
+RUN mkdir -p /workspace /data && chown -R $USERNAME:$USERNAME /workspace /data
+
+USER root
 # Add ENTRYPOINT script
 COPY . /docker/
 RUN chmod +x /docker/entrypoint.sh && chown $USERNAME:$USERNAME /docker/entrypoint.sh
 ENTRYPOINT ["/docker/entrypoint.sh"]
 
-# Copy the pre-built virtual environment from builder stage and set ownership
-COPY --from=builder --chown=${USERNAME}:${USERNAME} ${VENV_PATH} ${VENV_PATH}
-
 # Set the environment variable to use the virtual environment
-ENV PATH="${VENV_PATH}/bin:$PATH"
-ENV VENV_PATH="${VENV_PATH}"
+ENV PATH="${UV_PROJECT_ENVIRONMENT}/bin:/home/${USERNAME}/.local/bin:$PATH"
 ENV DEVCONTAINER=true
-
-USER $USERNAME
-
-# Install global packages
-ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
-ENV PATH=$PATH:/usr/local/share/npm-global/bin
 ENV EDITOR=emacs
 
-# Install claude CLI tool
-RUN npm install -g @anthropic-ai/claude-code
+USER $USERNAME
 
 # Set the working directory
 WORKDIR /workspace

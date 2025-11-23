@@ -1,17 +1,61 @@
-[build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "meeplemate"
 version = "0.1.0"
-description = "AI Assistant for answering board game questions"
-requires-python = ">=3.10"
-dependencies = []
+description = "Board Game AI Assistant"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "torchvision",
+    "scipy",
+    "matplotlib",
+    "tqdm",
+    "numpy",
+    "gradio",
+    "langchain",
+    "langchain-community",
+    "langchain-huggingface",
+    "langchain-openai",
+    "blingfire",
+    "sentence-transformers",
+    "text-generation",
+    "transformers",
+    "accelerate",
+    "peft",
+    "bitsandbytes",
+    "datasets",
+    "chainlit",
+    "structlog",
+    "sentencepiece",
+    "faiss-cpu",
+    "opencv-python-headless",
+    "unstructured[pdf]",
+    "langchain-astradb",
+    "langgraph>=1.0,<2.0",
+    "cassandra-driver>=3.29.0,<4.0",
+    "cassandra-asyncio-driver~=0.1.4",
+    "langgraph-checkpoint-cassandra @ git+https://github.com/johntrimble/langgraph-checkpoint-cassandra@main",
+    "chainlit-cassandra-data-layer @ git+https://github.com/johntrimble/chainlit-cassandra-data-layer@main",
+]
+
+[project.urls]
+Repository = "https://github.com/johntrimble/meeplemate"
+
+[build-system]
+requires = ["uv_build>=0.8.24,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
 
 [project.scripts]
 meeplemate-cli = "meeplemate.cli:cli"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["meeplemate*"]

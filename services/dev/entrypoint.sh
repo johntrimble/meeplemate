@@ -33,6 +33,8 @@ if [ ! -L "$DOCKER_USER_CACHE_DIR" ]; then
     ln -s "$DATA_CACHE_DIR" "$DOCKER_USER_CACHE_DIR"
 fi
 
+uv sync --quiet || true
+
 # Run any additional commands passed and replace the shell with the command
 if [ $# -gt 0 ]; then
     exec "$@"
