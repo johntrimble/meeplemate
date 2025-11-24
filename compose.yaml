@@ -82,43 +82,54 @@ services:
       # HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN}"
       VLLM_LOG_LEVEL: "INFO"
 
-    # vLLM is configured via CLI args instead of env vars
+    # Qwen 3 32B
     command:
-      - "--model"
-      - "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"
+      - --model
+      - RedHatAI/Qwen3-32B-NVFP4A16
       - "--served-model-name"
-      - "teknium/OpenHermes-2.5-Mistral-7B"
-      - "--quantization"
-      - "awq"
-      # AWQ in vLLM expects FP16 math
-      - "--dtype"
-      - "half"
-      # Like CUDA_MEMORY_FRACTION=0.80 in TGI
-      - "--gpu-memory-utilization"
-      - "0.8"
-      # Rough equivalent of MAX_TOTAL_TOKENS (prompt + completion)
-      - "--max-model-len"
-      - "6096"
-      - "--port"
+      - "Qwen/Qwen3-32B"
+      - --host
+      - 0.0.0.0
+      - --port
       - "8000"
-      # If you *really* want to force your custom tokenizer config path:
-      - "--tokenizer"
-      - "teknium/OpenHermes-2.5-Mistral-7B"
-      # - "/tokenizer_configs/OpenHermes-2.5-Mistral-7B.json"
+      - --max-model-len
+      - "32768"
+      - --gpu-memory-utilization
+      - "0.95"
+      - --max-num-seqs
+      - "4"
+  
+    # OpenHermes 7B
+    # command:
+    #   - "--model"
+    #   - "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"
+    #   - "--served-model-name"
+    #   - "teknium/OpenHermes-2.5-Mistral-7B"
+    #   - "--quantization"
+    #   - "awq"
+    #   - "--dtype"
+    #   - "half"
+    #   - "--gpu-memory-utilization"
+    #   - "0.8"
+    #   - "--max-model-len"
+    #   - "6096"
+    #   - "--port"
+    #   - "8000"
+    #   - "--tokenizer"
+    #   - "teknium/OpenHermes-2.5-Mistral-7B"
 
     volumes:
       # vLLM uses HF cache under /root/.cache/huggingface in the official image
       - ./data/vllm_data:/root/.cache/huggingface:cached
       - ./services/tgi/tokenizer_configs:/tokenizer_configs:ro
 
-    # Same GPU reservation as your TGI service
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               # device_ids: ['0', '1']   # to expose multiple GPUs
-              device_ids: ['1']
+              device_ids: ['0']
               capabilities: [gpu]
 
   tei:
@@ -142,46 +153,46 @@ services:
       # Cache model weights so they aren't re-downloaded each start
       - ./data/tei_data:/data:cached
 
-  tgi2:
-    image: ghcr.io/huggingface/text-generation-inference:3.3.4
-    ipc: host
-    ports:
-    - 8081:80
-    environment:
-      CUDA_MEMORY_FRACTION: "0.80"
-      MAX_INPUT_LENGTH: "4096"
-      MAX_TOTAL_TOKENS: "6096"
+  # tgi2:
+  #   image: ghcr.io/huggingface/text-generation-inference:3.3.4
+  #   ipc: host
+  #   ports:
+  #   - 8081:80
+  #   environment:
+  #     CUDA_MEMORY_FRACTION: "0.80"
+  #     MAX_INPUT_LENGTH: "4096"
+  #     MAX_TOTAL_TOKENS: "6096"
 
-      # QUANTIZE: "awq"
-      # MODEL_ID: "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"
-      # TOKENIZER_CONFIG_PATH: "/tokenizer_configs/OpenHermes-2.5-Mistral-7B.json"
+  #     # QUANTIZE: "awq"
+  #     # MODEL_ID: "TheBloke/OpenHermes-2.5-Mistral-7B-AWQ"
+  #     # TOKENIZER_CONFIG_PATH: "/tokenizer_configs/OpenHermes-2.5-Mistral-7B.json"
 
-      # QUANTIZE: "awq"
-      # MODEL_ID: "TheBloke/Nous-Hermes-2-SOLAR-10.7B-AWQ"
-      # TOKENIZER_CONFIG_PATH: "/tokenizer_configs/Nous-Hermes-2-SOLAR-10.7B.json"
+  #     # QUANTIZE: "awq"
+  #     # MODEL_ID: "TheBloke/Nous-Hermes-2-SOLAR-10.7B-AWQ"
+  #     # TOKENIZER_CONFIG_PATH: "/tokenizer_configs/Nous-Hermes-2-SOLAR-10.7B.json"
 
-      # QUANTIZE: "bitsandbytes-nf4"
-      # MODEL_ID: "teknium/OpenHermes-2.5-Mistral-7B"
-      # TOKENIZER_CONFIG_PATH: "/tokenizer_configs/OpenHermes-2.5-Mistral-7B.json"
+  #     # QUANTIZE: "bitsandbytes-nf4"
+  #     # MODEL_ID: "teknium/OpenHermes-2.5-Mistral-7B"
+  #     # TOKENIZER_CONFIG_PATH: "/tokenizer_configs/OpenHermes-2.5-Mistral-7B.json"
 
-      QUANTIZE: "awq"
-      MODEL_ID: "hugging-quants/gemma-2-9b-it-AWQ-INT4"
+  #     QUANTIZE: "awq"
+  #     MODEL_ID: "hugging-quants/gemma-2-9b-it-AWQ-INT4"
 
-    volumes:
-    - ./data/tgi_data2:/data:cached
-    # Attach the GPU to the container. Use nvidia-smi to verify the GPU
-    # actually got attached. If at any point nvidia-smi throws an error, try
-    # rebuilding the devcontainer in vs code.
-    deploy:
-      resources:
-        reservations:
-          devices:
-          - driver: nvidia
-            # If you want to expose all GPUs, you can comment out the device_ids line.
-            # Otherwise, specify the GPU IDs you want to use.
-            # device_ids: ['0', '1']
-            device_ids: ['0']
-            capabilities: [gpu]
+  #   volumes:
+  #   - ./data/tgi_data2:/data:cached
+  #   # Attach the GPU to the container. Use nvidia-smi to verify the GPU
+  #   # actually got attached. If at any point nvidia-smi throws an error, try
+  #   # rebuilding the devcontainer in vs code.
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #         - driver: nvidia
+  #           # If you want to expose all GPUs, you can comment out the device_ids line.
+  #           # Otherwise, specify the GPU IDs you want to use.
+  #           # device_ids: ['0', '1']
+  #           device_ids: ['0']
+  #           capabilities: [gpu]
 
   # Single node Cassandra cluster
   cassandra:

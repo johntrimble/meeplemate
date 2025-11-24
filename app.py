@@ -18,14 +18,22 @@ settings: Config = {
     "data_api_namespace": "meeplemate",
     "rules_path": "./data/rules/munchkin_rules/",
     "load_docs": False,
-    "model_name": "teknium/OpenHermes-2.5-Mistral-7B",
+    # "model_name": "teknium/OpenHermes-2.5-Mistral-7B",
     # "chat_endpoint_type": "tgi",
     # "chat_endpoint": "http://tgi:80",
+    # "chat_endpoint_type": "openai",
+    # "chat_endpoint": "http://vllm:8000/v1",
+    # "chat_max_new_tokens": 512,
+    # "chat_timeout": 900,
+    # "chat_api_key": "your_openai_api_key_here",
+    "model_name": "Qwen/Qwen3-32B",
     "chat_endpoint_type": "openai",
     "chat_endpoint": "http://vllm:8000/v1",
-    "chat_max_new_tokens": 512,
+    "chat_explicit_disable_thinking": True,
+    "chat_max_new_tokens": 1024,
     "chat_timeout": 900,
     "chat_api_key": "your_openai_api_key_here",
+
     "embedding_api_key": "dummy",
     "embedding_endpoint": "http://tei:80/v1",
     "embedding_model": "jinaai/jina-embeddings-v2-base-en",
@@ -107,4 +115,3 @@ async def main(message: cl.Message):
 
     # Send the final answer.
     await cl.Message(content=output["messages"][-1].content).send()
- 
