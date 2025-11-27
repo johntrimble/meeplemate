@@ -2,9 +2,9 @@ import chainlit as cl
 from chainlit.data.base import BaseDataLayer
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.utils import AnyMessage
+from langchain_core.runnables import RunnableConfig
 
 from meeplemate.config import Config, GameRulesAgentState, Services
-
 
 settings: Config = {
     "db_dc": "datacenter1",
@@ -107,7 +107,7 @@ async def main(message: cl.Message):
 
     thread_id = message.thread_id
     assert thread_id
-    config = {"configurable": {"thread_id": thread_id}}
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
 
     messages: list[AnyMessage] = [HumanMessage(content=message.content)]
     input: GameRulesAgentState  = {"messages": messages}
