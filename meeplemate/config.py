@@ -34,28 +34,45 @@ from meeplemate.qa import build_qa_chain
 from chainlit.data.base import BaseDataLayer
 
 
+class DBConfig(TypedDict):
+    dc: str
+    contact_points: list[str]
+    replication_factor: int
+    chainlit_keyspace: str
+    langgraph_keyspace: str
+    create_keyspaces: bool
+
+
+class DataAPIConfig(TypedDict):
+    token: str
+    endpoint: str
+    namespace: str
+
+
+class ChatServiceConfig(TypedDict):
+    model_name: str
+    endpoint_type: Literal["tgi", "openai"]
+    endpoint: str
+    max_new_tokens: int
+    timeout: int
+    api_key: NotRequired[str]
+    explicit_disable_thinking: NotRequired[bool]
+
+
+class EmbeddingServiceConfig(TypedDict):
+    model: str
+    endpoint: str
+    api_key: str
+
+
 class Config(TypedDict):
-    db_dc: str
-    db_contact_points: list[str]
-    db_replication_factor: int
-    db_chainlit_keyspace: str
-    db_langgraph_keyspace: str
-    db_create_keyspaces: bool
-    data_api_token: str
-    data_api_endpoint: str
-    data_api_namespace: str
+    db: DBConfig
+    data_api: DataAPIConfig
+    chat: ChatServiceConfig
+    embedding: EmbeddingServiceConfig
     rules_path: str
     load_docs: bool
     model_name: str
-    chat_endpoint_type: Literal["tgi", "openai"]
-    chat_endpoint: str
-    chat_max_new_tokens: int
-    chat_timeout: int
-    chat_api_key: NotRequired[str]
-    chat_explicit_disable_thinking: NotRequired[bool]
-    embedding_model: str
-    embedding_endpoint: str
-    embedding_api_key: str
     qa_chain_config: Mapping[str, Any]
 
 
@@ -178,63 +195,63 @@ class Services:
     async def start(self):
         # Create the db cluster and session
         self.db_cluster = Cluster(
-            contact_points=self.cfg["db_contact_points"],
-            load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=self.cfg["db_dc"]),
+            contact_points=self.cfg["db"]["contact_points"],
+            load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=self.cfg["db"]["dc"]),
         )
         self.db_session = self.stack.enter_context(self.db_cluster.connect())
         self.stack.callback(self.db_session.shutdown)
 
         # Setup chainlit datalayer
-        data_layer = CassandraDataLayer(session=self.db_session, storage_client=None, keyspace=self.cfg["db_chainlit_keyspace"])
-        data_layer.setup(replication_factor=self.cfg["db_replication_factor"])
+        data_layer = CassandraDataLayer(session=self.db_session, storage_client=None, keyspace=self.cfg["db"]["chainlit_keyspace"])
+        data_layer.setup(replication_factor=self.cfg["db"]["replication_factor"])
         self.stack.push_async_callback(data_layer.close)
         self.data_layer = data_layer
 
         # Setup the checkpointer
         checkpointer = CassandraSaver(
             thread_id_type="uuid",
-            keyspace=self.cfg["db_langgraph_keyspace"],
+            keyspace=self.cfg["db"]["langgraph_keyspace"],
             session=self.db_session,
         )
         checkpointer.setup()
         self.checkpointer = checkpointer
 
         # Create keyspaces for document stores and vector stores
-        if self.cfg["db_create_keyspaces"]:
+        if self.cfg["db"]["create_keyspaces"]:
             create_keyspace(
-                data_api_endpoint=self.cfg["data_api_endpoint"],
-                data_api_token=self.cfg["data_api_token"],
-                keyspace=self.cfg["db_chainlit_keyspace"],
-                replication_factor=self.cfg["db_replication_factor"],
+                data_api_endpoint=self.cfg["data_api"]["endpoint"],
+                data_api_token=self.cfg["data_api"]["token"],
+                keyspace=self.cfg["db"]["chainlit_keyspace"],
+                replication_factor=self.cfg["db"]["replication_factor"],
             )
             create_keyspace(
-                data_api_endpoint=self.cfg["data_api_endpoint"],
-                data_api_token=self.cfg["data_api_token"],
-                keyspace=self.cfg["db_langgraph_keyspace"],
-                replication_factor=self.cfg["db_replication_factor"],
+                data_api_endpoint=self.cfg["data_api"]["endpoint"],
+                data_api_token=self.cfg["data_api"]["token"],
+                keyspace=self.cfg["db"]["langgraph_keyspace"],
+                replication_factor=self.cfg["db"]["replication_factor"],
             )
 
         # Load the embedding
         self.embedding_model = OpenAIEmbeddings(
-            model=self.cfg["embedding_model"],
-            base_url=self.cfg["embedding_endpoint"],
-            api_key=self.cfg["embedding_api_key"],
+            model=self.cfg["embedding"]["model"],
+            base_url=self.cfg["embedding"]["endpoint"],
+            api_key=self.cfg["embedding"]["api_key"],
             tiktoken_enabled=False
         )
         
         # Setup vector store
         self.vector_store = buid_vectorstore_cassandra(
             embedding_model=self.embedding_model,
-            api_endpoint=self.cfg["data_api_endpoint"],
-            token=self.cfg["data_api_token"],
-            namespace=self.cfg["data_api_namespace"],
+            api_endpoint=self.cfg["data_api"]["endpoint"],
+            token=self.cfg["data_api"]["token"],
+            namespace=self.cfg["data_api"]["namespace"],
         )
 
         # Setup doc store
         self.docstore = build_docstore_cassandra(
-            api_endpoint=self.cfg["data_api_endpoint"],
-            token=self.cfg["data_api_token"],
-            namespace=self.cfg["data_api_namespace"],
+            api_endpoint=self.cfg["data_api"]["endpoint"],
+            token=self.cfg["data_api"]["token"],
+            namespace=self.cfg["data_api"]["namespace"],
         )
 
         # Load the tokenizer
@@ -249,31 +266,31 @@ class Services:
             retriever.add_documents(rule_docs)
 
         # Build the chat model
-        if self.cfg["chat_endpoint_type"] == "tgi":
+        if self.cfg["chat"]["endpoint_type"] == "tgi":
             chat_model = load_tgi_chat_model(
                 tokenizer=self.tokenizer,
-                endpoint_url=self.cfg["chat_endpoint"],
-                max_new_tokens=self.cfg["chat_max_new_tokens"],
-                timeout=self.cfg["chat_timeout"],
+                endpoint_url=self.cfg["chat"]["endpoint"],
+                max_new_tokens=self.cfg["chat"]["max_new_tokens"],
+                timeout=self.cfg["chat"]["timeout"],
                 do_sample=False,
                 temperature=0.01,
             )
-        elif self.cfg["chat_endpoint_type"] == "openai":
+        elif self.cfg["chat"]["endpoint_type"] == "openai":
             chat_model = ChatOpenAI(
                 model=self.cfg["model_name"],
-                max_tokens=self.cfg["chat_max_new_tokens"],
+                max_tokens=self.cfg["chat"]["max_new_tokens"],
                 temperature=0.0,
-                timeout=self.cfg["chat_timeout"],
-                base_url=self.cfg["chat_endpoint"],
-                api_key=self.cfg.get("chat_api_key", None),
+                timeout=self.cfg["chat"]["timeout"],
+                base_url=self.cfg["chat"]["endpoint"],
+                api_key=self.cfg["chat"].get("api_key", None),
                 extra_body={
                     "chat_template_kwargs": {
                         "enable_thinking": False,
                     }
-                } if self.cfg.get("chat_explicit_disable_thinking", False) else {}
+                } if self.cfg["chat"].get("explicit_disable_thinking", False) else {}
             )
         else:
-            raise ValueError(f"Unsupported chat endpoint type: {self.cfg['chat_endpoint_type']}")
+            raise ValueError(f"Unsupported chat endpoint type: {self.cfg['chat']['endpoint_type']}")
 
         # Build the qa chain
         self.chain = build_qa_chain(
