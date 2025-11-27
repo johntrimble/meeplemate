@@ -52,6 +52,7 @@ class Config(TypedDict):
     chat_max_new_tokens: int
     chat_timeout: int
     chat_api_key: NotRequired[str]
+    chat_explicit_disable_thinking: NotRequired[bool]
     embedding_model: str
     embedding_endpoint: str
     embedding_api_key: str
@@ -258,13 +259,18 @@ class Services:
                 temperature=0.01,
             )
         elif self.cfg["chat_endpoint_type"] == "openai":
-             chat_model = ChatOpenAI(
+            chat_model = ChatOpenAI(
                 model=self.cfg["model_name"],
                 max_tokens=self.cfg["chat_max_new_tokens"],
                 temperature=0.0,
                 timeout=self.cfg["chat_timeout"],
                 base_url=self.cfg["chat_endpoint"],
-                api_key=self.cfg.get("chat_api_key", None)
+                api_key=self.cfg.get("chat_api_key", None),
+                extra_body={
+                    "chat_template_kwargs": {
+                        "enable_thinking": False,
+                    }
+                } if self.cfg.get("chat_explicit_disable_thinking", False) else {}
             )
         else:
             raise ValueError(f"Unsupported chat endpoint type: {self.cfg['chat_endpoint_type']}")
