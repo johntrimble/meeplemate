@@ -231,7 +231,7 @@ def atee[Item](aiterable: AsyncIterable[Item], n:int=2) -> tuple[_atee[Item], ..
     return (t,) + tees
 
 
-async def amap[R](func: Callable[..., R], *aiterables: AsyncIterable) -> AsyncIterator[R]:
+async def amap[R](func: Callable[..., R]|Callable[..., Coroutine[Any, Any, R]], *aiterables: AsyncIterable) -> AsyncIterator[R]:
     aiterators = [aiter(aiterable) for aiterable in aiterables]
     while True:
         args = []
