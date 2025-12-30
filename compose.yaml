@@ -94,6 +94,7 @@ services:
       - "8000"
       - --max-model-len
       - "32768"
+      # - "16384"
       - --gpu-memory-utilization
       - "0.95"
       - --max-num-seqs
@@ -130,6 +131,38 @@ services:
             - driver: nvidia
               # device_ids: ['0', '1']   # to expose multiple GPUs
               device_ids: ['0']
+              capabilities: [gpu]
+  
+  vllm-ocr:
+    image: vllm/vllm-openai:v0.11.2
+    ipc: host
+
+    environment:
+      # HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN}"
+      VLLM_LOG_LEVEL: "INFO"
+
+    # DeepSeek OCR
+    # vllm serve deepseek-ai/DeepSeek-OCR --logits_processors vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor --no-enable-prefix-caching --mm-processor-cache-gb 0
+    command:
+      - deepseek-ai/DeepSeek-OCR
+      - --logits_processors
+      - vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor
+      - --no-enable-prefix-caching
+      - --mm-processor-cache-gb
+      - "0"
+
+    volumes:
+      # vLLM uses HF cache under /root/.cache/huggingface in the official image
+      - ./data/vllm_ocr_data:/root/.cache/huggingface:cached
+      - ./services/tgi/tokenizer_configs:/tokenizer_configs:ro
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # device_ids: ['0', '1']   # to expose multiple GPUs
+              device_ids: ['1']
               capabilities: [gpu]
 
   tei:

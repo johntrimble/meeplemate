@@ -36,10 +36,23 @@ dependencies = [
     "cassandra-asyncio-driver~=0.1.4",
     "langgraph-checkpoint-cassandra @ git+https://github.com/johntrimble/langgraph-checkpoint-cassandra@main",
     "chainlit-cassandra-data-layer @ git+https://github.com/johntrimble/chainlit-cassandra-data-layer@main",
+    "pydantic>=2.0,<3.0",
+    "pydantic-settings>=2.0,<3.0",
+    "pyyaml",
 ]
 
 [project.urls]
 Repository = "https://github.com/johntrimble/meeplemate"
+
+[dependency-groups]
+dev = [
+    "cqlsh",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "ruff>=0.8.6",
+    "mypy>=1.18.2",
+    "ipython"
+]
 
 [build-system]
 requires = ["uv_build>=0.8.24,<0.9.0"]

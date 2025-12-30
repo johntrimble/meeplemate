@@ -41,6 +41,7 @@ COPY --from=workspace uv.lock* ./
 RUN uv sync --python /usr/bin/python${PYTHON_VERSION} --no-install-project
 WORKDIR /
 
+
 # --- Stage 2: Main image with user, tools, and venv from builder ---
 FROM ${BASE_IMAGE}
 # Install Python
@@ -53,6 +54,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get install -y --no-install-recommends \
       python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
   && rm -rf /var/lib/apt/lists/*
+
+# Install required packages
+RUN apt-get update && \
+    apt-get install -y \
+        poppler-utils && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install useful packages
 RUN apt-get update && \

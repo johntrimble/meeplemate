@@ -1,0 +1,47 @@
+# Development Configuration for MeepleMate
+# This file contains non-secret configuration for local development.
+# Secrets should be defined in environment variables (see .env file).
+
+# Primary model name used for tokenizer and other purposes
+model_name: "Qwen/Qwen3-32B"
+
+# Chat/LLM Service Configuration
+chat:
+  model_name: "Qwen/Qwen3-32B"
+  endpoint_type: "openai"
+  endpoint: "http://vllm:8000/v1"
+  max_new_tokens: 10024
+  timeout: 900
+  explicit_disable_thinking: true
+
+# Embedding Service Configuration
+embedding:
+  model: "jinaai/jina-embeddings-v2-base-en"
+  endpoint: "http://tei:80/v1"
+
+# Data API Configuration
+data_api:
+  endpoint: "http://data-api:8181"
+  namespace: "meeplemate"
+
+# Database Configuration
+db:
+  dc: "datacenter1"
+  contact_points:
+    - "cassandra"
+  replication_factor: 1
+  chainlit_keyspace: "chainlit_meeplemate"
+  langgraph_keyspace: "meeplemate_checkpoints"
+  create_keyspaces: true
+
+# Application Settings
+rules_path: "./data/rules/munchkin_rules/"
+load_docs: false
+
+# QA Chain Configuration
+qa_chain_config:
+  reword_documents: true
+  self_consistency: true
+  thread_of_thought: true
+  consistency_kwargs:
+    samples: 3
