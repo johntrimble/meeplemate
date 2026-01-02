@@ -4,7 +4,19 @@
         "**/.git/subtree-cache/**": true,
         "**/node_modules/**": true,
         "**/.venv/**": true,
+        "/reference_repositories/**": true
     },
     "notebook.output.wordWrap": true,
-    "python.analysis.typeCheckingMode": "standard"
+    "python.analysis.typeCheckingMode": "standard",
+    "python.analysis.exclude": [
+        "**/node_modules",
+        "**/__pycache__",
+        ".git",
+        "reference_repositories/**"
+    ],
+    "python.analysis.packageIndexDepths": [
+        { "name": "langchain", "depth": 5 },
+        { "name": "langchain_core", "depth": 5 },
+        { "name": "langgraph", "depth": 5 }
+    ]
 }
