@@ -4,11 +4,12 @@ from typing import AsyncIterator, NotRequired, Sequence, TypedDict
 
 import yaml
 
-from meeplemate.util import amap, aslurp, aslurp_json
+from meeplemate.util import amap, aslurp, aslurp_json, spit_yaml
 from langchain_core.documents.base import Document
 
 class RulebookDescriptor(TypedDict):
     name: str
+    summary: NotRequired[str]
     path: str
     url: str
     document_key: str
@@ -20,6 +21,7 @@ class Manifest(TypedDict):
     name: str
     game_id: str
     rulebooks: Sequence[RulebookDescriptor]
+    summary: NotRequired[str]
 
 
 class GamePackage(Manifest, TypedDict):
@@ -52,6 +54,13 @@ def load_game_package(target_dir: Path) -> GamePackage:
         del manifest["path"]
     gp: GamePackage = GamePackage(**manifest, path=target_dir)
     return gp
+
+
+def save_manifest(gp: GamePackage) -> None:
+    manifest_path = gp["path"] / "rulebooks.yaml"
+    manifest_dict = dict(gp)
+    del manifest_dict["path"]
+    spit_yaml(manifest_dict, manifest_path)
 
 
 def get_page(gp:GamePackage, document_key: str, page_num: int) -> Page:
@@ -140,5 +149,5 @@ async def page_to_document(page: Page) -> Document:
     return Document(id=page_key, page_content=markdown, metadata=metadata)
 
 
-def get_document_page_aiter(gp: GamePackage) -> AsyncIterator[Document]:
-    return amap(page_to_document, get_pages_iter(gp))
+def get_document_page_aiter(gp: GamePackage, document_key: str|None = None) -> AsyncIterator[Document]:
+    return amap(page_to_document, get_pages_iter(gp, document_key=document_key))

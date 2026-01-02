@@ -75,17 +75,18 @@ services:
             capabilities: [gpu]
 
   vllm:
-    image: vllm/vllm-openai:v0.10.2
+    image: vllm/vllm-openai:v0.13.0
     ipc: host
 
     environment:
-      # HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN}"
       VLLM_LOG_LEVEL: "INFO"
+      # VLLM_NVFP4_GEMM_BACKEND: "cutlass"
 
     # Qwen 3 32B
     command:
       - --model
-      - RedHatAI/Qwen3-32B-NVFP4A16
+      # - RedHatAI/Qwen3-32B-NVFP4A16
+      - RedHatAI/Qwen3-32B-NVFP4
       - "--served-model-name"
       - "Qwen/Qwen3-32B"
       - --host
@@ -93,7 +94,8 @@ services:
       - --port
       - "8000"
       - --max-model-len
-      - "32768"
+      - "30000"
+      # - "32768"
       # - "16384"
       - --gpu-memory-utilization
       - "0.95"

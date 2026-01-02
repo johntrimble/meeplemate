@@ -14,7 +14,7 @@ from langchain_core.messages.utils import AnyMessage
 from langchain_core.runnables import RunnableConfig
 
 from meeplemate.component_system import StartedSystem, System, astart_system, astop_system
-from meeplemate.config import AppServices, Config, GameRulesAgentState, create_app_system
+from meeplemate.config import AppServices, Config, GameManifest, GameRulesAgentState, create_app_system
 from meeplemate.chainlit_utils import LangchainTracer
 from chainlit.types import ThreadDict
 
@@ -139,7 +139,7 @@ async def maybe_set_thread_name(name: str):
         cl.user_session.set("thread_meta", meta)
 
 
-async def get_current_game() -> dict | None:
+async def get_current_game() -> GameManifest | None:
     game_id = get_current_game_id()
     if game_id is None:
         return None
@@ -150,7 +150,7 @@ async def get_current_game() -> dict | None:
     else:
         game = None
 
-    return cast(dict, game) if game is not None else None
+    return cast(GameManifest, game) if game is not None else None
 
 
 async def maybe_prompt_user_select_game():
@@ -230,7 +230,7 @@ async def main(message: cl.Message):
     }
 
     messages: list[AnyMessage] = [HumanMessage(content=message.content)]
-    input: GameRulesAgentState  = {"messages": messages}
+    input: GameRulesAgentState  = {"messages": messages, "manifest": game}
     output = await agent_graph.ainvoke(input=input, config=config)
 
     # Send the final answer.

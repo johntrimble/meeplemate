@@ -1,3 +1,4 @@
+from functools import reduce
 import logging
 import asyncio
 import contextlib
@@ -96,14 +97,30 @@ async def aspit(text: str, path: Path | str) -> None:
     return await loop.run_in_executor(None, _write_file)
 
 
-async def aspit_yaml(obj: Any, path: Path | str) -> None:
+def spit_yaml(obj: Any, f: Path | str | TextIO) -> None:
     import yaml
 
+    opened_file = False
+    fp: TextIO
+    if hasattr(f, "write"):
+        # f is a file-like object (stream)
+        fp = f  # type: ignore
+    else:
+        # f is a path (str or Path)
+        assert isinstance(f, (str, Path))
+        fp = open(f, "w")
+        opened_file = True
+
+    try:
+        yaml.safe_dump(obj, fp)
+    finally:
+        if opened_file:
+            fp.close()
+
+
+async def aspit_yaml(obj: Any, path: Path | str) -> None:
     loop = asyncio.get_event_loop()
-    def _write_file():
-        with open(path, "w") as f:
-            yaml.safe_dump(obj, f)
-    await loop.run_in_executor(None, _write_file)
+    await loop.run_in_executor(None, spit_yaml, obj, path)
 
 
 def spit_json(obj, f):
@@ -384,8 +401,32 @@ async def pipeline(
         await sink.put(None)
 
 
-async def sink_into_queue(queue: asyncio.Queue, iterable: AsyncIterator[Any], add_sentinel=True):
-    async for item in iterable:
+async def sink_into_queue(queue: asyncio.Queue, iterable: AsyncIterable[Any]|Iterable[Any], add_sentinel=True):
+    # Is iterable not an async iterable? If so, wrap it
+    if not isinstance(iterable, AsyncIterable):
+        iterable = to_async_iter(iterable)
+
+    async for item in aiter(iterable):
         await queue.put(item)
     if add_sentinel:
         await queue.put(None)  # Signal completion
+
+
+async def queue_to_async_iter(queue: asyncio.Queue) -> AsyncIterator[Any]:
+    while True:
+        item = await queue.get()
+        if item is None:
+            queue.task_done()
+            break
+        yield item
+        queue.task_done()
+
+
+def compose(*functions):
+  """
+  Composes functions from right to left (mathematical composition order).
+  f(g(h(x))) == compose(f, g, h)(x)
+  """
+  def inner(arg):
+    return reduce(lambda acc, f: f(acc), reversed(functions), arg)
+  return inner

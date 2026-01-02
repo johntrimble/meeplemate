@@ -254,8 +254,20 @@ def load_docs(rules_path: Path) -> list[Document]:
     return rule_docs
 
 
+class RulebookDescriptor(TypedDict):
+    name: str
+    url: str
+    document_key: str
+
+
+class GameManifest(TypedDict):
+    name: str
+    game_id: str
+    rulebooks: Sequence[RulebookDescriptor]
+
+
 class GameRulesAgentState(MessagesState):
-    pass
+    manifest: GameManifest
 
 
 def build_graph(checkpoint_saver: BaseCheckpointSaver, chain: Runnable):
@@ -294,18 +306,6 @@ class AppServices(TypedDict):
     agent_graph: CompiledStateGraph[GameRulesAgentState, None, GameRulesAgentState, GameRulesAgentState]
     game_data_store: BaseStore
     full_page_store: BaseStore
-
-
-class RulebookDescriptor(TypedDict):
-    name: str
-    url: str
-    document_key: str
-
-
-class GameManifest(TypedDict):
-    name: str
-    game_id: str
-    rulebooks: Sequence[RulebookDescriptor]
 
 
 class GameInfoDao:
