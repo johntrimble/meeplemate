@@ -180,7 +180,7 @@ async def generate_summary_with_refinement(
         except:
             logger.exception("Failed to process pages")
 
-    return current_summary
+    return current_summary.strip()
 
 
 @dataclass
@@ -299,7 +299,6 @@ class GenerateGameReferenceJob:
         save_manifest(gp)
 
 
-
 EXTRACT_TERMINOLOGY_SYSTEM_TEMPLATE = """\
 You are an expert at board game design and rule analysis. Your goal is to extract and define key terminology used in the rules for the board game "{{game_name}}" based on the provided rulebook content. The extracted terminology should help players quickly understand important terms and concepts used in the game's rules. You will receive a current list of terminology definitions and one or more rulebook pages that should be used to update and improve the terminology list. This list will act as both a glossary and an index for the game's rules.
 """
@@ -414,4 +413,3 @@ class ExtractTerminologyJob:
                 print(f"Updated Summary:\n{current_summary}\n\n\n")
             except:
                 logger.exception("Failed to process pages")
-

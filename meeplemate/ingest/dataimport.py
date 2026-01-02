@@ -11,6 +11,9 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.stores import BaseStore
 
 from meeplemate.ingest.gamepackage import GamePackage, get_page, page_to_document
+from structlog import get_logger
+
+logger = get_logger(__name__)
 
 
 class ImportDocumentsServices(TypedDict):
@@ -51,9 +54,12 @@ def get_page_path_bases(gp: GamePackage, doc_key: str|None=None) -> list[Tuple[s
 
 async def import_game_data(job: ImportDocumentsJob) -> None:
     game_data = copy.deepcopy(job.gp)
+    game_data.pop("path")
     for rulebook in game_data["rulebooks"]:
         rulebook.pop("strategy", None)
         rulebook.pop("path", None)
+    
+    logger.info("Saving game data", game_data=game_data)
     
     await job.game_data_store.amset([(game_data["game_id"], game_data)])
 

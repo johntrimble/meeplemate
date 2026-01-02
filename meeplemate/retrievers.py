@@ -43,7 +43,8 @@ def build_retriever(
     parent_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
         tokenizer,
         chunk_size=parent_chunk_size,
-        chunk_overlap=parent_chunk_overlap
+        chunk_overlap=parent_chunk_overlap,
+        add_start_index=True,
     )
 
     search_kwargs={"k": k}
