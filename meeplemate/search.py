@@ -1,0 +1,462 @@
+from dataclasses import dataclass
+from operator import itemgetter
+from typing import Annotated, Any, Literal, NotRequired, Sequence, TypedDict, List, cast
+from langchain.messages import AIMessage
+from langchain_classic.retrievers import MultiVectorRetriever
+from langchain_classic.schema.runnable import ConfigurableField
+from langchain_classic.schema.vectorstore import VectorStoreRetriever
+from langchain_core.documents import Document
+from langchain_core.language_models import BaseChatModel
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_core.retrievers import BaseRetriever, RetrieverInput, RetrieverOutput
+from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda, RunnablePassthrough, RunnableSerializable, chain
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.state import CompiledStateGraph
+from langchain_core.runnables.config import patch_config
+
+from meeplemate.ingest.gamepackage import Manifest
+from meeplemate.util import select_keys, slugify
+
+
+system_prompt_template = """\
+You are an expert on the board game {{game_name}}. Your task is to assist users by providing clear and accurate explanations of the game's rules. Use the following game rules summary to better understand the game and questions users may have:
+
+<game_summary>
+{{game_summary}}
+</game_summary>
+"""
+
+
+select_relevant_results_template = """\
+Given the following chunks taken from the game rules, determine which chunks are relevant to answering the user query and why or why not.
+
+## Chunks
+
+<chunks>
+{{#chunks}}
+<chunk id="{{id}}" name="{{metadata.rulebook_name}}" page="{{metadata.page_num}}" offset="{{metadata.start_index}}">
+{{page_content}}
+</chunk>
+{{/chunks}}
+</chunks>
+
+## User Query
+
+<query>
+{{query}}
+</query>
+
+## Instructions
+
+- Carefully read the user query and each chunk, leveraging the game summary to understand the context.
+- Determine the relevance of each chunk to the user query.
+- Explain your reasoning for each chunk's relevance or irrelevance in detail.
+- Each explanation should consider:
+  - Whether the chunk directly addresses the topic of the user query.
+  - If the chunk provides necessary background information that aids in understanding the answer.
+  - The specificity of the chunk in relation to the user's needs.
+
+## Response Format
+
+Provide your response in JSON format as follows (excluding backticks):
+
+```json
+{
+    "chunks": [
+        {
+            "id": "<chunk_id>",
+            "reasoning": "<detailed_explanation>",
+            "is_relevant": true/false
+        },
+        // ... repeat for each chunk ...
+    ]
+}
+```
+"""
+
+
+resolve_response_errors_template = """\
+The response you provided has some errors. Return a corrected version of the response with the below errors fixed.
+
+## Errors
+
+<errors>
+{{#errors}}
+<error>
+{{.}}
+</error>
+{{/errors}}
+</errors>
+
+## Response Format
+
+Provide your response in JSON format as follows (excluding backticks):
+
+```json
+{
+    "chunks": [
+        {
+            "id": "<chunk_id>",
+            "reasoning": "<detailed_explanation>",
+            "is_relevant": true/false
+        },
+        // ... repeat for each chunk ...
+    ]
+}
+```
+"""
+
+
+SELECT_RELEVANT_RESULTS_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", system_prompt_template),
+        ("user", select_relevant_results_template),
+    ],
+    template_format="mustache"
+)
+
+
+SELECT_RELEVANT_RESULTS_ERRORS_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", system_prompt_template),
+        ("user", select_relevant_results_template),
+        ("placeholder", "{ai_response}"),
+        ("user", resolve_response_errors_template),
+    ],
+    template_format="mustache"
+)
+
+
+class ChunkRelevanceResult(TypedDict):
+    id: Annotated[str, ..., "The unique identifier of the chunk."]
+    reasoning: Annotated[str, ..., "A detailed explanation of why the chunk is relevant or not relevant to the user query."]
+    is_relevant: Annotated[bool, ..., "Indicates whether the chunk is relevant (true) or not relevant (false) to the user query."]
+
+
+class ChunksRelevanceResults(TypedDict):
+    chunks: Annotated[list[ChunkRelevanceResult], ..., "A list of chunk relevance results."]
+
+
+class ChunkSearchOverallState(TypedDict):
+    game_id: str
+    game_name: str
+    game_summary: str
+    chunks: list[Document]
+    relevance: ChunksRelevanceResults
+    errors: list[str]
+    attempts: int
+    max_attempts: int
+    query: str
+    user_main_query: str
+    ai_response: AIMessage
+
+
+class ChunkSearchInputState(TypedDict):
+    game_id: str
+    game_name: str
+    game_summary: str
+    query: str
+    user_main_query: str
+
+
+class ChunkSearchOutputState(TypedDict):
+    chunks: list[Document]
+    relevance: ChunksRelevanceResults
+
+
+def add_chunk_ids(documents: list[Document]) -> list[Document]:
+    for doc in documents:
+        chunk_id = get_chunk_id(doc)
+        doc.id = chunk_id
+    return documents
+
+
+def get_chunk_id(doc: Document | dict) -> str:
+    if isinstance(doc, Document):
+        metadata = doc.metadata
+    else:
+        metadata = doc.get("metadata", {})
+    rulebook_name = metadata.get("rulebook_name", "unknown_rulebook")
+    page_number = metadata.get("page_num", "unknown_page")
+    start_index = metadata.get("start_index", "unknown_start_index")
+    chunk_id = f"{slugify(rulebook_name)}::{page_number}::{start_index}"
+    return chunk_id
+
+
+def prepare_documents_for_prompt(documents: list[Document]) -> list[dict]:
+    prepared_docs = []
+    for i, doc in enumerate(documents):
+        data = doc.model_dump()
+        prepared_docs.append(data)
+    return prepared_docs
+
+
+def validate_relevance_results(documents: list[Document], relevance_results: ChunksRelevanceResults) -> Sequence[str]:
+    errors: list[str] = []
+
+    # Do we have exactly one result per chunk?
+    for document in documents:
+        chunk_id = document.id
+        matching_results = [result for result in relevance_results["chunks"] if result["id"] == chunk_id]
+        if len(matching_results) == 0:
+            errors.append(f"Expected exactly one result per chunk. No relevance result found for chunk ID: {chunk_id}.")
+        if len(matching_results) > 1:
+            errors.append(f"Expected exactly one result per chunk. Multiple relevance results found for chunk ID: {chunk_id}.")
+
+    # Ensure we don't have any extra results
+    for result in relevance_results["chunks"]:
+        chunk_id = result["id"]
+        matching_documents = [doc for doc in documents if doc.id == chunk_id]
+        if len(matching_documents) == 0:
+            errors.append(f"Relevance result found for unknown chunk ID: {chunk_id}.")
+    return errors    
+
+
+def build_chunk_search_graph(
+    checkpoint_saver: BaseCheckpointSaver,
+    chat_model: BaseChatModel,
+    retriever: MultiVectorRetriever|VectorStoreRetriever,
+    select_chunks_prompt: ChatPromptTemplate=SELECT_RELEVANT_RESULTS_PROMPT,
+    select_chunks_errors_prompt: ChatPromptTemplate=SELECT_RELEVANT_RESULTS_ERRORS_PROMPT,
+    max_attempts=5
+) -> CompiledStateGraph[ChunkSearchOverallState, None, ChunkSearchInputState, ChunkSearchOutputState]:
+
+    # Make the search_kwargs configurable so that we can set the game_id in the
+    # filter expression
+    search_kwargs = dict(retriever.search_kwargs)
+    dynamic_retriever = retriever.configurable_fields(
+        search_kwargs=ConfigurableField(id="retriever_search_kwargs")
+    )
+
+
+    class RetrieveChunksInput(TypedDict):
+        query: str
+        game_id: str
+    
+
+    class RetrieveChunksOutput(TypedDict):
+        chunks: list[Document]
+
+
+    async def retrieve_chunks(state: RetrieveChunksInput, config: RunnableConfig) -> RetrieveChunksOutput:
+        # Setup config to filter by game_id
+        config = patch_config(
+            config,
+            configurable={
+                "retriever_search_kwargs": {
+                    **search_kwargs,
+                    "filter": {"game_id": state["game_id"]},
+                },
+            }
+        )
+
+        chain = ( dynamic_retriever | add_chunk_ids )
+        document_chunks = await chain.ainvoke(state["query"], config=config)
+        return {"chunks": document_chunks}
+    
+
+    class DetermineChunkRelevanceInput(TypedDict):
+        query: str
+        game_name: str
+        game_summary: str
+        chunks: list[Document]
+
+
+    class DetermineChunkRelevanceOutput(TypedDict):
+        ai_response: AIMessage
+        relevance: NotRequired[ChunksRelevanceResults]
+        errors: list[str]
+
+
+    async def determine_chunk_relevance(state: DetermineChunkRelevanceInput) -> DetermineChunkRelevanceOutput:
+        chain = (
+            RunnablePassthrough.assign(
+                chunks=RunnableLambda(itemgetter("chunks")) | prepare_documents_for_prompt,
+            )
+            | select_chunks_prompt
+            | chat_model.with_structured_output(ChunksRelevanceResults, method="json_schema", include_raw=True)
+        )
+
+        # Execute the chain
+        input = select_keys(state, DetermineChunkRelevanceInput)
+        result = await chain.ainvoke(input)
+        
+        # Pick apart the result
+        assert isinstance(result, dict), "Expected result to be a dict since `include_raw=True` used."
+        base_message = result["raw"]
+        parsed: ChunksRelevanceResults | None = result["parsed"] if "parsed" in result else None
+        error = result["parsing_error"] if "parsing_error" in result else None
+
+        # Build output
+        output: DetermineChunkRelevanceOutput = {"errors": [], "ai_response": base_message}
+        if error:
+            output["errors"].append(str(error))
+        
+        if parsed:
+            output["relevance"] = parsed
+            # Validate the results to make sure the LLM actually analyzed
+            # every chunk
+            output["errors"].extend(validate_relevance_results(state["chunks"], parsed))
+
+        return output
+
+
+    class ResolveErrorsInput(TypedDict):
+        query: str
+        game_name: str
+        game_summary: str
+        chunks: list[Document]
+        errors: list[str]
+        attempts: NotRequired[int]
+        ai_response: AIMessage
+
+
+    class ResolveErrorsOutput(TypedDict):
+        relevance: NotRequired[ChunksRelevanceResults]
+        errors: list[str]
+        attempts: int
+
+
+    async def resolve_errors(state: ResolveErrorsInput) -> ResolveErrorsOutput:
+        assert state["errors"], "Expected errors to be present in the state and not empty."
+
+        # Build the input
+        input = {
+            "query": state["query"],
+            "game_name": state["game_name"],
+            "game_summary": state["game_summary"],
+            "chunks": state["chunks"],
+            "errors": state["errors"],
+            "ai_response": [state["ai_response"]],
+        }
+
+        chain = (
+            RunnablePassthrough.assign(
+                chunks=RunnableLambda(itemgetter("chunks")) | prepare_documents_for_prompt,
+            )
+            | select_chunks_errors_prompt
+            | chat_model.with_structured_output(ChunksRelevanceResults, method="json_schema", include_raw=True)
+        )
+
+        # Execute the chain
+        result = await chain.ainvoke(input)
+        
+        # Pick apart the result
+        assert isinstance(result, dict), "Expected result to be a dict since `include_raw=True` used."
+        parsed: ChunksRelevanceResults | None = result["parsed"] if "parsed" in result else None
+        error = result["parsing_error"] if "parsing_error" in result else None
+
+        # Build output
+        output: ResolveErrorsOutput = {"errors": [], "attempts": state.get("attempts", 0) + 1}
+        if error:
+            output["errors"].append(str(error))
+        
+        if parsed:
+            output["relevance"] = parsed
+            # Validate the results to make sure the LLM actually analyzed
+            # every chunk
+            output["errors"].extend(validate_relevance_results(state["chunks"], parsed))
+
+        return output
+
+
+    class SkipSelectionInput(TypedDict):
+        chunks: list[Document]
+
+
+    class SkipSelectionOutput(TypedDict):
+        relevance: ChunksRelevanceResults
+
+
+    async def skip_selection(state: SkipSelectionInput) -> SkipSelectionOutput:
+        # For some reason we couldn't get the LLM to analyze the chunks properly.
+        # Just assume everything is relevant.
+        relevance_results: ChunksRelevanceResults = {
+            "chunks": [
+                ChunkRelevanceResult(
+                    id=get_chunk_id(doc),
+                    reasoning="Assumed relevant since chunk relevance selection was skipped.",
+                    is_relevant=True,
+                )
+                for doc in state["chunks"]
+            ]
+        }
+        
+        return {"relevance": relevance_results}
+
+
+    class CheckResponseErrorsInput(TypedDict):
+        attempts: NotRequired[int]
+        errors: NotRequired[list[str]]
+
+
+    async def check_response_errors(state: CheckResponseErrorsInput) -> Literal["resolve_errors", "skip_selection", "__end__"]:
+        if "errors" in state and state["errors"]:
+            if state.get("attempts", 0) < max_attempts:
+                return "resolve_errors"
+            else:
+                return "skip_selection"
+        return "__end__"
+
+
+    builder = StateGraph(
+        ChunkSearchOverallState,
+        input_schema=ChunkSearchInputState,
+        output_schema=ChunkSearchOutputState
+    )
+
+    # Add nodes
+    builder.add_node("retrieve", retrieve_chunks)
+    builder.add_node("determine_relevance", determine_chunk_relevance)
+    builder.add_node("resolve_errors", resolve_errors)
+    builder.add_node("skip_selection", skip_selection)
+
+    # Add edges
+    builder.add_edge(START, "retrieve")
+    builder.add_edge("retrieve", "determine_relevance")
+    builder.add_conditional_edges("determine_relevance", check_response_errors)
+    builder.add_conditional_edges("resolve_errors", check_response_errors)
+    builder.add_edge("skip_selection", END)
+
+    graph = builder.compile(checkpointer=checkpoint_saver)
+    return graph
+
+
+class ChunkSearchServiceInput(TypedDict):
+    manifest: Manifest
+    query: str
+    user_main_query: NotRequired[str]
+
+
+ChunkSearchService = Runnable[ChunkSearchServiceInput, ChunkSearchOutputState]
+
+
+def build_chunk_search_service(
+    checkpoint_saver: BaseCheckpointSaver,
+    chat_model: BaseChatModel,
+    retriever: MultiVectorRetriever|VectorStoreRetriever,
+    max_attempts=5
+) -> Runnable[ChunkSearchServiceInput, ChunkSearchOutputState]:
+    graph = build_chunk_search_graph(
+        checkpoint_saver=checkpoint_saver,
+        chat_model=chat_model,
+        retriever=retriever,
+        max_attempts=max_attempts
+    )
+
+    @chain
+    async def chain_func(input: ChunkSearchServiceInput, config: RunnableConfig|None = None) -> ChunkSearchOutputState:
+        
+        graph_input: ChunkSearchInputState = {
+            "game_id": input["manifest"]["game_id"],
+            "game_name": input["manifest"]["name"],
+            "game_summary": input["manifest"].get("summary", ""),
+            "query": input["query"],
+            "user_main_query": input.get("user_main_query") or input["query"],
+        }
+        output = await graph.ainvoke(input=graph_input, config=config)
+        
+        return cast(ChunkSearchOutputState, output)
+
+    return chain_func

@@ -3,6 +3,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Collection, Iterable, Iterator, Literal, Mapping, Protocol, Sequence, Tuple, TypedDict, Unpack, cast, runtime_checkable, ContextManager, AsyncContextManager
 import os
+from torch import chunk
 import yaml
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, ConfigDict
@@ -35,7 +36,9 @@ from sentence_transformers import SentenceTransformer
 
 from meeplemate.cassandra_util import AstraDBSerializableStore
 from meeplemate.chainlit_utils import LangchainTracer
+from meeplemate.chatloop import ChatLoopService, build_chatloop_service
 from meeplemate.component_system import System, factory
+from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.retrievers import build_retriever
 from meeplemate.llm_models import load_jina_embedding_model, load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings
 from meeplemate.pdf import parse_pdf
@@ -43,6 +46,8 @@ from meeplemate.qa import build_qa_chain
 from chainlit.data.base import BaseDataLayer
 
 from chainlit.types import Pagination, PaginatedResponse, PageInfo
+
+from meeplemate.search import ChunkSearchService, build_chunk_search_service
 
 
 class IngestConfig(BaseModel):
@@ -306,6 +311,9 @@ class AppServices(TypedDict):
     agent_graph: CompiledStateGraph[GameRulesAgentState, None, GameRulesAgentState, GameRulesAgentState]
     game_data_store: BaseStore
     full_page_store: BaseStore
+    chunk_search_service: ChunkSearchService
+    chatloop_service: ChatLoopService
+    qa_service: QAService
 
 
 class GameInfoDao:
@@ -477,6 +485,31 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 ),
                 []
             ),
+            "chunk_search_service": (
+                factory(build_chunk_search_service)(),
+                {
+                    "checkpoint_saver": "checkpointer",
+                    "chat_model": "chat_model",
+                    "retriever": "retriever",
+                }
+            ),
+            "qa_service": (
+                factory(build_qa_service)(),
+                {
+                    "checkpoint_saver": "checkpointer",
+                    "chat_model": "chat_model",
+                    "full_page_store": "full_page_store",
+                    "chunk_search_service": "chunk_search_service",
+                }
+            ),
+            "chatloop_service": (
+                factory(build_chatloop_service)(),
+                {
+                    "checkpoint_saver": "checkpointer",
+                    "chat_model": "chat_model",
+                    "qa_service": "qa_service",
+                }
+            )
         }
     )
     return system

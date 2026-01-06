@@ -62,17 +62,17 @@ services:
     ports:
     - 8000:8000 # Chainlit
 
-    # Enable GPU access for PyTorch (NVIDIA only).
-    deploy:
-      resources:
-        reservations:
-          devices:
-          - driver: nvidia
-            # If you want to expose all GPUs, you can comment out the device_ids line.
-            # Otherwise, specify the GPU IDs you want to use.
-            # device_ids: ['0', '1']
-            device_ids: ['0']
-            capabilities: [gpu]
+    # # Enable GPU access for PyTorch (NVIDIA only).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #       - driver: nvidia
+    #         # If you want to expose all GPUs, you can comment out the device_ids line.
+    #         # Otherwise, specify the GPU IDs you want to use.
+    #         # device_ids: ['0', '1']
+    #         device_ids: ['0']
+    #         capabilities: [gpu]
 
   vllm:
     image: vllm/vllm-openai:v0.13.0
@@ -89,13 +89,17 @@ services:
       - RedHatAI/Qwen3-32B-NVFP4
       - "--served-model-name"
       - "Qwen/Qwen3-32B"
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - hermes
       - --host
       - 0.0.0.0
       - --port
       - "8000"
       - --max-model-len
-      - "30000"
-      # - "32768"
+      # - "20000"
+      # - "24000"
+      - "32768"
       # - "16384"
       - --gpu-memory-utilization
       - "0.95"

@@ -5,9 +5,9 @@ import contextlib
 import itertools
 import json
 from pathlib import Path
-from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Generator, Iterable, TextIO
+from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Generator, Iterable, TextIO, Type, cast
 
-from literalai import Optional, TypeVar
+from literalai import Optional, TypeVar, TypedDict
 from pyparsing import Sequence
 
 def dump_jsonl(obj_list, fp):
@@ -430,3 +430,25 @@ def compose(*functions):
   def inner(arg):
     return reduce(lambda acc, f: f(acc), reversed(functions), arg)
   return inner
+
+
+def select_keys(d: Any, keys: Iterable[str]|Type) -> dict:
+    if isinstance(keys, type) and hasattr(keys, "__annotations__"):
+        _type: Type[dict] = keys
+        keys = set()
+        for base in _type.__mro__:
+            if hasattr(base, "__annotations__"):
+                keys.update(base.__annotations__.keys())
+
+    keys = cast(Iterable[str], keys)
+    return {k: d[k] for k in keys if k in d}
+
+
+def slugify(text: str) -> str:
+    # Lower case everything
+    text = text.lower()
+    # Replace spaces with hyphens
+    text = text.replace(" ", "-")
+    # Remove any characters that are not alphanumeric or hyphens
+    text = ''.join(char for char in text if char.isalnum() or char == '-')
+    return text

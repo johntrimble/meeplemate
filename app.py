@@ -9,14 +9,18 @@ import chainlit.auth as cl_auth
 from chainlit.user import PersistedUser
 
 from chainlit.data.base import BaseDataLayer
+from langchain_classic.schema import output
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.utils import AnyMessage
 from langchain_core.runnables import RunnableConfig
 
+from meeplemate.chatloop import ChatLoopServiceInput
 from meeplemate.component_system import StartedSystem, System, astart_system, astop_system
 from meeplemate.config import AppServices, Config, GameManifest, GameRulesAgentState, create_app_system
 from meeplemate.chainlit_utils import LangchainTracer
 from chainlit.types import ThreadDict
+
+from meeplemate.ingest.gamepackage import Manifest
 
 
 @cl.password_auth_callback
@@ -139,7 +143,7 @@ async def maybe_set_thread_name(name: str):
         cl.user_session.set("thread_meta", meta)
 
 
-async def get_current_game() -> GameManifest | None:
+async def get_current_game() -> Manifest | None:
     game_id = get_current_game_id()
     if game_id is None:
         return None
@@ -150,7 +154,7 @@ async def get_current_game() -> GameManifest | None:
     else:
         game = None
 
-    return cast(GameManifest, game) if game is not None else None
+    return cast(Manifest, game) if game is not None else None
 
 
 async def maybe_prompt_user_select_game():
@@ -211,27 +215,47 @@ async def main(message: cl.Message):
     """
     if await maybe_prompt_user_select_game():
         return
-    
+
     game = await get_current_game()
     assert game is not None, "Game should be selected by this point"
 
     # await maybe_set_thread_name(game["name"])
 
-    agent_graph = services()["agent_graph"]
-    assert agent_graph is not None
+    chatloop_service = services()["chatloop_service"]
+    assert chatloop_service is not None
 
     thread_id = message.thread_id
     assert thread_id
 
     tracer = LangchainTracer(stream_final_answer=True)
     config: RunnableConfig = {
-        "configurable": {"thread_id": thread_id},
         "callbacks": [tracer],
     }
 
-    messages: list[AnyMessage] = [HumanMessage(content=message.content)]
-    input: GameRulesAgentState  = {"messages": messages, "manifest": game}
-    output = await agent_graph.ainvoke(input=input, config=config)
+    input: ChatLoopServiceInput = ChatLoopServiceInput(
+        messages=[HumanMessage(content=message.content)],
+        manifest=game,
+        thread_id=thread_id,
+    )
+
+    output = await chatloop_service.ainvoke(input=input, config=config)
+
+    # Old graph code here for simple RAG
+    # agent_graph = services()["agent_graph"]
+    # assert agent_graph is not None
+
+    # thread_id = message.thread_id
+    # assert thread_id
+
+    # tracer = LangchainTracer(stream_final_answer=True)
+    # config: RunnableConfig = {
+    #     "configurable": {"thread_id": thread_id},
+    #     "callbacks": [tracer],
+    # }
+
+    # messages: list[AnyMessage] = [HumanMessage(content=message.content)]
+    # input: GameRulesAgentState  = {"messages": messages, "manifest": game}
+    # output = await agent_graph.ainvoke(input=input, config=config)
 
     # Send the final answer.
-    await cl.Message(content=output["messages"][-1].content).send()
+    await cl.Message(content=output["messages"][-1].text).send()

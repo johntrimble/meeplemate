@@ -16,6 +16,7 @@ from langchain_core.documents import Document
 from langchain_core.stores import InMemoryByteStore, BaseStore
 
 from meeplemate.question_generation import build_questions_for_documents_chain
+from meeplemate.text_splitters import FixedRecursiveCharacterTextSplitter
 
 
 class VectorStoreRetrieverWithTextSplitter(VectorStoreRetriever):
@@ -40,7 +41,7 @@ def build_retriever(
 ):
     parent_chunk_size = parent_chunk_size
     parent_chunk_overlap = parent_chunk_overlap
-    parent_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+    parent_splitter = FixedRecursiveCharacterTextSplitter.from_huggingface_tokenizer(
         tokenizer,
         chunk_size=parent_chunk_size,
         chunk_overlap=parent_chunk_overlap,
@@ -53,7 +54,7 @@ def build_retriever(
 
     if child_chunk_size > 0:
         child_chunk_overlap = child_chunk_overlap
-        child_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+        child_splitter = FixedRecursiveCharacterTextSplitter.from_huggingface_tokenizer(
             tokenizer,
             chunk_size=child_chunk_size,
             chunk_overlap=child_chunk_overlap
