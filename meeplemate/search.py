@@ -270,12 +270,13 @@ def build_chunk_search_graph(
 
 
     async def determine_chunk_relevance(state: DetermineChunkRelevanceInput) -> DetermineChunkRelevanceOutput:
+        _chat_model_structured_output = chat_model.with_structured_output(ChunksRelevanceResults, method="json_schema", include_raw=True).bind(streaming=False)
         chain = (
             RunnablePassthrough.assign(
                 chunks=RunnableLambda(itemgetter("chunks")) | prepare_documents_for_prompt,
             )
             | select_chunks_prompt
-            | chat_model.with_structured_output(ChunksRelevanceResults, method="json_schema", include_raw=True)
+            | _chat_model_structured_output
         )
 
         # Execute the chain
@@ -320,6 +321,7 @@ def build_chunk_search_graph(
 
     async def resolve_errors(state: ResolveErrorsInput) -> ResolveErrorsOutput:
         assert state["errors"], "Expected errors to be present in the state and not empty."
+        _chat_model_structured_output = chat_model.with_structured_output(ChunksRelevanceResults, method="json_schema", include_raw=True).bind(streaming=False)
 
         # Build the input
         input = {
@@ -336,7 +338,7 @@ def build_chunk_search_graph(
                 chunks=RunnableLambda(itemgetter("chunks")) | prepare_documents_for_prompt,
             )
             | select_chunks_errors_prompt
-            | chat_model.with_structured_output(ChunksRelevanceResults, method="json_schema", include_raw=True)
+            | _chat_model_structured_output
         )
 
         # Execute the chain

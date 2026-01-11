@@ -10,6 +10,7 @@ from chainlit.user import PersistedUser
 
 from chainlit.data.base import BaseDataLayer
 from langchain_classic.schema import output
+from langchain_core.callbacks import Callbacks
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.utils import AnyMessage
 from langchain_core.runnables import RunnableConfig
@@ -21,6 +22,7 @@ from meeplemate.chainlit_utils import LangchainTracer
 from chainlit.types import ThreadDict
 
 from meeplemate.ingest.gamepackage import Manifest
+from meeplemate.util import aenumerate
 
 
 @cl.password_auth_callback
@@ -90,7 +92,8 @@ async def on_action(action: cl.Action):
     game = await get_current_game()
     assert game is not None, "Selected game should exist"
     # Acknowledge the action
-    await cl.Message(content=f"You've selection {game['name']}").send()
+    await cl.Message(content=f"Your selection {game['name']}").send()
+    await maybe_set_thread_name(game["name"])
 
 
 @cl.on_settings_update
@@ -133,14 +136,11 @@ async def maybe_set_thread_name(name: str):
     if is_named:
         return
     
-    dl = get_data_layer()
-    if dl:
-        await dl.update_thread(
-            thread_id=thread_id,
-            name=name,
-        )
-        meta["is_named"] = True
-        cl.user_session.set("thread_meta", meta)
+    print(f"Setting thread name to {name} for thread {thread_id}")
+    await cl.context.emitter.init_thread(name)
+
+    meta["is_named"] = True
+    cl.user_session.set("thread_meta", meta)
 
 
 async def get_current_game() -> Manifest | None:
@@ -219,17 +219,18 @@ async def main(message: cl.Message):
     game = await get_current_game()
     assert game is not None, "Game should be selected by this point"
 
-    # await maybe_set_thread_name(game["name"])
-
     chatloop_service = services()["chatloop_service"]
     assert chatloop_service is not None
 
     thread_id = message.thread_id
     assert thread_id
 
-    tracer = LangchainTracer(stream_final_answer=True)
+    # Keep LangchainTracer for step visibility (non-streaming)
+    callbacks: Callbacks = []
+    callbacks.append(LangchainTracer())
+
     config: RunnableConfig = {
-        "callbacks": [tracer],
+        "callbacks": callbacks,
     }
 
     input: ChatLoopServiceInput = ChatLoopServiceInput(
@@ -238,24 +239,12 @@ async def main(message: cl.Message):
         thread_id=thread_id,
     )
 
-    output = await chatloop_service.ainvoke(input=input, config=config)
+    # Create Chainlit message for streaming
+    streaming_msg = cl.Message(content="")
 
-    # Old graph code here for simple RAG
-    # agent_graph = services()["agent_graph"]
-    # assert agent_graph is not None
-
-    # thread_id = message.thread_id
-    # assert thread_id
-
-    # tracer = LangchainTracer(stream_final_answer=True)
-    # config: RunnableConfig = {
-    #     "configurable": {"thread_id": thread_id},
-    #     "callbacks": [tracer],
-    # }
-
-    # messages: list[AnyMessage] = [HumanMessage(content=message.content)]
-    # input: GameRulesAgentState  = {"messages": messages, "manifest": game}
-    # output = await agent_graph.ainvoke(input=input, config=config)
-
-    # Send the final answer.
-    await cl.Message(content=output["messages"][-1].text).send()
+    async for index, chunk in aenumerate(chatloop_service.astream_response(input=input, config=config)):
+        # Extract token content from the chunk
+        # The service already filters for final answer only
+        if hasattr(chunk, 'content') and chunk.content:
+            await streaming_msg.stream_token(chunk.content)
+    await streaming_msg.send()

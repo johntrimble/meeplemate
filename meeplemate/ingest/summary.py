@@ -278,7 +278,12 @@ class GenerateGameReferenceJob:
         # Update the manifest with summaries
         gp = self.gp
         summary_items_iter = queue_to_async_iter(done_queue)
-        async for document_key, summary, short_summary in summary_items_iter:
+        async for item in summary_items_iter:
+            if isinstance(item, Exception):
+                raise item
+            if not isinstance(item, (tuple, list)) or len(item) != 3:
+                raise ValueError(f"Invalid summary item received: {item}")
+            document_key, summary, short_summary = item
             # Update the game summary
             if document_key is None:
                 gp["summary"] = summary

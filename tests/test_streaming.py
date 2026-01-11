@@ -11,11 +11,10 @@ import pytest
 from typing import AsyncIterator, Any, Sequence, Callable
 from unittest.mock import AsyncMock, MagicMock
 
-from langchain_core.messages import AIMessage, HumanMessage, AIMessageChunk, ToolCall
-from langchain_core.runnables import RunnableConfig
+from langchain_core.messages import AIMessage, HumanMessage, AIMessageChunk
+from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.stores import InMemoryStore
-from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -25,110 +24,61 @@ from meeplemate.search import build_chunk_search_service, ChunkSearchService
 from meeplemate.ingest.gamepackage import Manifest
 
 
-class FakeStreamingChatModel(BaseChatModel):
+def create_fake_chat_model(response_text: str = "The answer to your question is forty-two."):
     """
-    A fake chat model that simulates token-by-token streaming.
+    Create a fake streaming chat model that returns the given response word-by-word.
 
-    This is crucial for testing - it simulates what a real LLM does when streaming.
+    Uses LangChain's built-in FakeListChatModel as a base but overrides _astream
+    to simulate token-by-token streaming.
     """
+    class FakeStreamingChatModel(FakeListChatModel):
+        async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+            """Override to stream word-by-word instead of all at once."""
+            from langchain_core.outputs import ChatGenerationChunk
 
-    # Define as Pydantic fields since BaseChatModel is a Pydantic model
-    response_text: str = "This is a test response."
-    call_count: int = 0
+            # Get the response from the parent class
+            response_index = self.i
+            response = self.responses[response_index % len(self.responses)]
+            self.i += 1
 
-    @property
-    def _llm_type(self) -> str:
-        return "fake_streaming_chat_model"
+            # Split into words and stream them
+            words = response.split()
+            for i, word in enumerate(words):
+                # Add space before word (except first one)
+                content = word if i == 0 else f" {word}"
+                chunk = AIMessageChunk(content=content)
+                yield ChatGenerationChunk(message=chunk)
 
-    def _generate(self, *args, **kwargs):
-        """Sync generation - not used in our async tests."""
-        raise NotImplementedError("Use async methods")
+        def with_structured_output(self, schema, **kwargs):
+            """Mock implementation of with_structured_output."""
+            async def generate_structured(input_val):
+                """Generate a simple structured response."""
+                # For the RefinedQuery schema, just return the refined_query field
+                if hasattr(schema, '__annotations__') and 'refined_query' in schema.__annotations__:
+                    # Extract the user query from messages
+                    if isinstance(input_val, list):
+                        messages = input_val
+                    elif hasattr(input_val, 'messages'):
+                        messages = input_val.messages
+                    elif hasattr(input_val, 'to_messages'):
+                        messages = input_val.to_messages()
+                    else:
+                        messages = []
 
-    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
-        """Async generation without streaming."""
-        self.call_count += 1
+                    user_message = next((m for m in reversed(messages) if hasattr(m, 'content')), None)
+                    query = user_message.content if user_message else "test query"
 
-        # Simulate a response
-        message = AIMessage(content=self.response_text)
+                    return {"refined_query": query}
 
-        from langchain_core.outputs import ChatGeneration, ChatResult
-        generation = ChatGeneration(message=message)
-        return ChatResult(generations=[generation])
+                return {}
 
-    async def _astream(
-        self,
-        messages,
-        stop=None,
-        run_manager: CallbackManagerForLLMRun | None = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[AIMessageChunk]:
-        """
-        Stream the response token-by-token.
+            return RunnableLambda(generate_structured)
 
-        This simulates real LLM streaming behavior.
-        """
-        self.call_count += 1
+        def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+            """Mock implementation of bind_tools - just return self."""
+            return self
 
-        # Split response into "tokens" (words for simplicity)
-        tokens = self.response_text.split()
-
-        for i, token in enumerate(tokens):
-            # Add space before token (except first one)
-            content = token if i == 0 else f" {token}"
-
-            # Yield token as AIMessageChunk
-            yield AIMessageChunk(content=content)
-
-    def with_structured_output(self, schema, **kwargs):
-        """
-        Mock implementation of with_structured_output.
-
-        Returns a simple mock that generates structured output based on the schema.
-        """
-        from langchain_core.runnables import RunnableLambda
-
-        async def generate_structured(input_val):
-            """Generate a simple structured response."""
-            # For the RefinedQuery schema, just return the refined_query field
-            if hasattr(schema, '__annotations__') and 'refined_query' in schema.__annotations__:
-                # Extract the user query from messages
-                if isinstance(input_val, list):
-                    messages = input_val
-                elif hasattr(input_val, 'messages'):
-                    # ChatPromptValue has a messages attribute
-                    messages = input_val.messages
-                elif hasattr(input_val, 'to_messages'):
-                    messages = input_val.to_messages()
-                else:
-                    messages = []
-
-                user_message = next((m for m in reversed(messages) if hasattr(m, 'content')), None)
-                query = user_message.content if user_message else "test query"
-
-                # Return structured output
-                return {"refined_query": query}
-
-            # Fallback: return empty dict
-            return {}
-
-        return RunnableLambda(generate_structured)
-
-    def bind_tools(
-        self,
-        tools: Sequence[dict | type | Callable | BaseTool],
-        *,
-        tool_choice: str | None = None,
-        **kwargs: Any,
-    ):
-        """
-        Mock implementation of bind_tools.
-
-        Returns self since we're just testing streaming, not tool calling.
-        In our test, we'll make the fake model not make any tool calls.
-        """
-        # Return a version of this model that won't make tool calls
-        # This simplifies testing - we just want to test streaming
-        return self
+    return FakeStreamingChatModel(responses=[response_text])
 
 
 class FakeChunkSearchService:
@@ -167,9 +117,9 @@ def fake_stores():
 
 
 @pytest.fixture
-def fake_chat_model() -> FakeStreamingChatModel:
+def fake_chat_model():
     """Create a fake streaming chat model."""
-    return FakeStreamingChatModel(
+    return create_fake_chat_model(
         response_text="The answer to your question is forty-two."
     )
 
@@ -195,10 +145,10 @@ async def test_chatloop_service_streaming_current_implementation(
     checkpoint_saver,
 ):
     """
-    Test that astream() works on chatloop_service with CURRENT implementation.
+    Test that astream() works on chatloop_service with REFACTORED implementation.
 
-    Current behavior: Should yield at least the final result (all at once).
-    This test verifies the plumbing is correct before refactoring.
+    After refactoring, this should yield message chunks token-by-token.
+    This test is now identical to test_chatloop_service_streaming_refactored_implementation.
     """
     full_page_store, game_data_store = fake_stores
 
@@ -226,29 +176,30 @@ async def test_chatloop_service_streaming_current_implementation(
 
     # Collect streamed chunks
     chunks = []
+    token_chunks = []
+
     async for chunk in chatloop_service.astream(input=input_data, config=None):
         chunks.append(chunk)
+        if hasattr(chunk, 'content') and chunk.content:
+            token_chunks.append(chunk.content)
 
-    # Assertions for CURRENT implementation
-    print(f"\n=== Current Implementation Test ===")
-    print(f"Number of chunks yielded: {len(chunks)}")
-    print(f"Chunks: {chunks}")
+    # Assertions
+    print(f"\n=== Streaming Implementation Test ===")
+    print(f"Total chunks yielded: {len(chunks)}")
+    print(f"Token chunks: {token_chunks}")
 
-    # Current implementation should yield at least 1 chunk (the final result)
-    assert len(chunks) >= 1, "Should yield at least the final result"
+    # Should yield MULTIPLE chunks (one per token)
+    assert len(token_chunks) > 1, (
+        f"Should yield multiple token chunks, got {len(token_chunks)}. "
+        f"Expected streaming of individual tokens."
+    )
 
-    # The last chunk should contain the final messages
-    final_chunk = chunks[-1]
-    assert "messages" in final_chunk, "Final chunk should contain messages"
-    assert len(final_chunk["messages"]) > 0, "Should have at least one message"
+    # Reconstruct full message from tokens
+    full_text = "".join(token_chunks)
+    assert "forty-two" in full_text.lower(), "Reconstructed text should match expected"
 
-    # The last message should be an AI message with our expected content
-    last_message = final_chunk["messages"][-1]
-    assert isinstance(last_message, AIMessage), "Last message should be AIMessage"
-    assert "forty-two" in last_message.content.lower(), "Should contain expected response"
-
-    print(f"✓ Current implementation yields final result correctly")
-    print(f"✓ Final message content: {last_message.content}")
+    print(f"✓ Implementation streams tokens incrementally")
+    print(f"✓ Full reconstructed text: {full_text}")
 
 
 @pytest.mark.asyncio
@@ -304,7 +255,6 @@ async def test_chatloop_service_ainvoke_still_works(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="This test is for AFTER refactoring - skip for now")
 async def test_chatloop_service_streaming_refactored_implementation(
     fake_chat_model,
     fake_chunk_search_service,
@@ -349,10 +299,12 @@ async def test_chatloop_service_streaming_refactored_implementation(
     token_chunks = []
 
     async for chunk in chatloop_service.astream(input=input_data, config=None):
+        print(f"DEBUG: Received chunk type={type(chunk)}, chunk={chunk}")
         chunks.append(chunk)
 
         # Track chunks that contain content (tokens)
         if hasattr(chunk, 'content') and chunk.content:
+            print(f"DEBUG: Token content={chunk.content}")
             token_chunks.append(chunk.content)
 
     # Assertions for REFACTORED implementation
@@ -448,7 +400,7 @@ if __name__ == "__main__":
     }
 
     stores = (InMemoryStore(), InMemoryStore())
-    chat_model = FakeStreamingChatModel()
+    chat_model = create_fake_chat_model()
     chunk_search = FakeChunkSearchService()
     checkpointer = MemorySaver()
 

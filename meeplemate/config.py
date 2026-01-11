@@ -227,6 +227,7 @@ def build_vectorstore_cassandra(*, embedding_model: Embeddings, api_endpoint: st
             token=token,
             namespace=namespace,
             hybrid_search=HybridSearchMode.OFF,
+            bulk_insert_batch_concurrency=1,
         )
     return vector_store
 
@@ -366,10 +367,13 @@ def create_app_system(cfg: Config) -> System[AppServices]:
             chat_model = ChatOpenAI(
                 model=config.model_name,
                 max_tokens=config.max_new_tokens,
-                temperature=0.0,
+                presence_penalty=1.5,
+                temperature=0.7,
+                top_p=0.8,
                 timeout=config.timeout,
                 base_url=config.endpoint,
                 api_key=api_key,
+                streaming=True,
                 extra_body={
                     "chat_template_kwargs": {
                         "enable_thinking": False,
@@ -398,7 +402,8 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     model=cfg.embedding.model,
                     base_url=cfg.embedding.endpoint,
                     api_key=cfg.embedding.api_key.get_secret_value(),
-                    tiktoken_enabled=False
+                    tiktoken_enabled=False,
+                    chunk_size=10,
                 ),
                 []
             ),

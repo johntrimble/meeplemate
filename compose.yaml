@@ -79,6 +79,7 @@ services:
     ipc: host
 
     environment:
+      GPU_MEMORY_UTILIZATION: 0.95
       VLLM_LOG_LEVEL: "INFO"
       # VLLM_NVFP4_GEMM_BACKEND: "cutlass"
 
@@ -99,10 +100,12 @@ services:
       - --max-model-len
       # - "20000"
       # - "24000"
-      - "32768"
+      - "29000"
+      # - "32768"
       # - "16384"
-      - --gpu-memory-utilization
-      - "0.95"
+      
+      # - "0.90"
+      # - "0.95"
       - --max-num-seqs
       - "4"
   
@@ -258,7 +261,7 @@ services:
   dse:
     image: cr.dtsx.io/datastax/dse-server:6.9.15
     platform: linux/amd64
-    mem_limit: 2500M
+    mem_limit: 16G
     environment:
       - MAX_HEAP_SIZE=512M
       - HEAP_NEWSIZE=100M

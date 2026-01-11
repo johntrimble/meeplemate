@@ -19,7 +19,7 @@ def cli():
     pass
 
 
-# uv run python -m meeplemate.ingest process --input ./data/rules/munchkin_rules/ --output ./data/ingested/munchkin_rules/
+# uv run python -m meeplemate.ingest process ./data/rules/munchkin_rules/ ./data/ingested/munchkin_rules/
 
 @cli.command()
 @click.argument("input", type=Path)
@@ -63,6 +63,7 @@ def process(input: Path, output: Path):
     
     asyncio.run(_run())
 
+# uv run python -m meeplemate.ingest import-documents ./data/rules/munchkin_rules/ ./data/ingested/munchkin_rules/
 
 @cli.command()
 @click.argument("input", type=Path)
@@ -79,7 +80,7 @@ def import_documents(input: Path, output: Path):
                     input_dir=input,
                     output_dir=output,
                     gp=load_game_package(output),
-                    concurrency=100,
+                    concurrency=1,
                 ),
                 {
                     "retriever": "retriever",
@@ -97,6 +98,8 @@ def import_documents(input: Path, output: Path):
 
     asyncio.run(_import_documents())
 
+
+# uv run python -m meeplemate.ingest generate-reference ./data/ingested/munchkin_rules/
 
 @cli.command()
 @click.argument("output", type=Path)

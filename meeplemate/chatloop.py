@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 import operator
-from typing import Annotated, TypedDict, cast
+from typing import Annotated, Any, AsyncIterator, Protocol, TypedDict, cast, runtime_checkable
+from backoff import runtime
 from langchain.chat_models import BaseChatModel
-from langchain.messages import AIMessage
+from langchain.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda, chain, patch_config
@@ -65,7 +66,7 @@ class RefinedQuery(TypedDict):
     refined_query: str
 
 
-def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT):
+def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> CompiledStateGraph[ChatLoopState, ChatLoopContext, ChatLoopInputState, ChatLoopOutputState]:
     
     async def refine_query(state: ChatLoopState, *, runtime: Runtime[ChatLoopContext]) -> dict:
         manifest = runtime.context.manifest
@@ -95,6 +96,11 @@ def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Base
             "query": refined_query,
             "manifest": runtime.context.manifest,
         }
+
+        # For streaming to work through nested services, we need to use ainvoke here
+        # The streaming happens at a lower level (in the QA service's astream method)
+        # When the outer chatloop service calls astream with stream_mode="messages",
+        # it will capture the message chunks from the inner QA graph
         result: GameAgentOutputState = await qa_service.ainvoke(input=input)
         response_text = result["response"]
         response = AIMessage(content=response_text)
@@ -129,7 +135,20 @@ class ChatLoopServiceInput(MessagesState):
     thread_id: str
 
 
-ChatLoopService = Runnable[ChatLoopServiceInput, ChatLoopOutputState]
+@runtime_checkable
+class ChatLoopService(Protocol):
+    def astream_response(self, input: ChatLoopServiceInput, config: RunnableConfig | None = None) -> Any: # AsyncIterator[AIMessageChunk]:
+        """Asynchronously streams response chunks based on the input.
+
+        Args:
+            input: The input data for the chat loop service.
+            config: Optional configuration for the runnable.
+
+        Yields:
+            Chunks of the response as they are generated.
+        """
+        ...
+
 
 def build_chatloop_service(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> ChatLoopService:
     agent_graph = build_chatloop_graph(
@@ -139,16 +158,48 @@ def build_chatloop_service(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
         refine_prompt=refine_prompt,
     )
 
-    async def chain_func(input: ChatLoopServiceInput, *, config: RunnableConfig|None = None) -> ChatLoopOutputState:
-        thread_config = {"thread_id": input["thread_id"]}
-        config = patch_config(config, configurable=thread_config)
-        context = ChatLoopContext(
-            manifest=input["manifest"],
-        )
-        graph_input: ChatLoopInputState = {
-            "messages": input["messages"],
-        }
-        output = await agent_graph.ainvoke(input=graph_input, context=context, config=config)
-        return cast(ChatLoopOutputState, output)
+    class _ChatLoopService(ChatLoopService):
+        def __init__(self, graph: CompiledStateGraph[ChatLoopState, ChatLoopContext, ChatLoopInputState, ChatLoopOutputState]):
+            self.graph = graph
 
-    return RunnableLambda(chain_func, name="ChatLoopService")
+        async def astream_response(self, input: ChatLoopServiceInput, config: RunnableConfig | None = None) -> AsyncIterator[AIMessageChunk]:
+            thread_config = {"thread_id": input["thread_id"]}
+            config = patch_config(config, configurable=thread_config)
+            context = ChatLoopContext(manifest=input["manifest"])
+            graph_input: ChatLoopInputState = {"messages": input["messages"]}
+
+            # It's actually the QA service that produces the streaming messages,
+            # so we need to filter the graph output to yield only those
+            # messages here.
+            async for item in self.graph.astream(
+                graph_input,
+                context=context,
+                stream_mode="messages",
+                subgraphs=True,
+                config=config
+            ):
+                namespace, (message, metadata) = item
+                # Check the namespace
+                if len(namespace) != 1 or not namespace[0].startswith("respond_to_query:"):
+                    continue
+
+                # Ignore tool calls
+                if getattr(message, "tool_calls", None) or getattr(message, "invalid_tool_calls", None):
+                    continue
+
+                # Ignore tool messages
+                if isinstance(message, ToolMessage):
+                    continue
+
+                # Only include messages from the llm_call node
+                if not metadata.get("langgraph_node") == "llm_call":
+                    continue
+
+                # Skip empty messages
+                if not message.content:
+                    continue
+
+                if isinstance(message, AIMessageChunk):
+                    yield message
+
+    return _ChatLoopService(agent_graph)
