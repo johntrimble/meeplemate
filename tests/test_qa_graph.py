@@ -57,7 +57,6 @@ def test_dedupe_chunks_in_message_history():
         ],
         metadata={"related_tool_messages": tool_messages},
     )
-    
 
     message_edits = dedupe_chunks_in_message_history([ai_message] + tool_messages)
     assert len(message_edits) == 1
