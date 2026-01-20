@@ -36,7 +36,7 @@ def build_retriever(
     parent_chunk_overlap:int=50,
     child_chunk_size:int=125,
     child_chunk_overlap:int=12,
-    k:int=10,
+    k:int=20,
     docstore:BaseStore|None=None,
 ):
     parent_chunk_size = parent_chunk_size
