@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 import json
 from typing import Literal, Sequence, Tuple, TypedDict, cast
-from langchain.messages import AIMessage, ToolMessage
+from langchain.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.load import Serializable
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda, chain
 from langchain_core.stores import BaseStore
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -28,8 +28,9 @@ You are an expert on the board game {{game_name}}. Your task is to assist users 
 </game_summary>
 """
 
-qa_template = """\
-Read the user query below carefully. Your goal is to provide a detailed and accurate answer based on the official rules of the game {{game_name}}.
+
+breakdown_rules_required_template = """\
+Read the user query below carefully. Your goal is to determine which rules need to be looked up in order to provide a complete and comprehensive anser. Do NOT provide the final answer yet.
 
 ## User Query
 
@@ -38,13 +39,9 @@ Read the user query below carefully. Your goal is to provide a detailed and accu
 </query>
 
 ## Instructions
-
-- Analyze the user query step by step, breakind down the components of the question.
-- Gather relevant rules and information by using the provided tools: `list_rulebooks`, `retrieve_page`, and `search_chunks`.
-- Base your responses on the official rulebooks or authoritative sources, recognizing that these rules hold in all standard situations unless an explicit exception is stated. Avoid assumptions and unofficial variations unless specifically requested by the user.
-- Consider the gameplay context in your interpretations, including game phases, player counts, and specific scenarios that might impact rule application.
-- Highlight rule variants and exceptions clearly, explaining how they alter standard gameplay and under what circumstances they apply.
-- Attempt to understand user intent, focusing on the aspect of the rule they might find confusing or the specific information they seek.
+- Analyze the user query step by step.
+- Determine which rules are related to the user query.
+- Consider the gameplay context in your interprestations, including game phases, player counts, and specific scenarios that might impact rule application.
 
 ## Available Tools
 
@@ -58,13 +55,61 @@ These tools can be used together to find the most relevant information. For exam
 
 ## Response Format
 
-Respond using markdown. Start with a step-by-step reasoning process under the heading `# Step-by-Step Reasoning`, using bullet points for each step. Always quote the relevant rule or section from the rulebook that supports your reasoning. After your reasoning, under the heading `# Final Answer`, provide a clear and concise answer to the user's questions.
+Respond using markdown. Start with a step-by-step reasoning process under the heading `# Step-by-Step Reasoning`, using bullet points for each step. After your reasoning, under the heading `# Rules to Look Up`, provide a list of rules that need to be looked up to answer the user's question.
+"""
+
+
+lookup_rules_answer_template = """\
+Now look up the rules identified and answer the user's question comprehensively.
+
+## Response Format
+
+Respond using markdown. Start with a step-by-step reasoning process under the heading `# Step-by-Step Reasoning`, using bullet points for each step. ALWAYS quote the relevant rule or section from the rulebook that supports your reasoning. NEVER paraphrase a rule. After your reasoning, under the heading `# Final Answer`, provide a clear and concise answer to the user's questions and ALWAYS include citations to the rulebook name and page number and ALWAYS quote the relevant rule(s) from the rulebook(s).
+"""
+
+
+qa_template = """\
+Read the user query below carefully. Your goal is to provide a detailed and accurate answer based on the official rules of the game {{game_name}}.
+
+## User Query
+
+<query>
+{{query}}
+</query>
+
+## Instructions
+
+- Analyze the user query step by step and break it down into which rules need to be looked up in order to provide a complete and accurate answer.
+- Gather relevant rules and information by using the provided tools: `list_rulebooks`, `retrieve_page`, and `search_chunks`.
+- Base your responses on the official rulebooks or authoritative sources, recognizing that these rules hold in all standard situations unless an explicit exception is stated. Avoid assumptions and unofficial variations unless specifically requested by the user.
+- Consider the gameplay context in your interpretations, including game phases, player counts, and specific scenarios that might impact rule application.
+- Highlight rule variants and exceptions clearly, explaining how they alter standard gameplay and under what circumstances they apply.
+- Attempt to understand user intent, focusing on the aspect of the rule they might find confusing or the specific information they seek.
+- When providing answers, NEVER use the word "chunk". Instead, refer to "sections", "passages", or "excerpts" from the rulebooks.
+- When providing answers, ALWAYS quote the relevant rule or section from the rulebook that supports your reasoning and ALWAYS cite the rulebook name and page number. Do NOT paraphrase the rule; quote it verbatim.
+- When quoting, ALWAYS use quotation marks or blockquote formatting to clearly indicate the quoted text.
+
+
+## Available Tools
+
+You have access to the following tools to help you gather information:
+
+- `search_chunks` - Search for relevant chunks of text from the rulebooks based on a given query. You may need to break down a query into multiple sub-queries to find all relevant information.
+- `retrieve_page` - Retrieve a specific page from a rulebook.
+- `list_rulebooks` - List all available rulebooks for the game.
+
+These tools can be used together to find the most relevant information. For example, the chunks returned by `search_chunks` have sufficient information to call `retrieve_page` if more context is needed. The `list_rulebooks` tool can help identify which rulebooks are available for reference and their total number of pages, which can then be used to retrieve specific pages from those rulebooks.
+
+## Response Format
+
+Respond using markdown. Start with a step-by-step reasoning process under the heading `# Step-by-Step Reasoning`, using bullet points for each step. ALWAYS quote the relevant rule or section from the rulebook that supports your reasoning. NEVER paraphrase a rule. After your reasoning, under the heading `# Final Answer`, provide a clear and concise answer to the user's questions and ALWAYS include citations to the rulebook name and page number and ALWAYS quote the relevant rule(s) from the rulebook(s).
 """
 
 qa_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", system_prompt_template),
-        ("user", qa_template),
+        # ("user", qa_template),
+        ("user", breakdown_rules_required_template),
         ("placeholder", "{messages}"),
 
     ],
@@ -171,6 +216,11 @@ async def search_chunks(search_terms: str|list[str], runtime: ToolRuntime[GameAg
         for relevance_result in chunk_search_result["relevance"]["chunks"]:
             reasoning = relevance_result["reasoning"]
             chunk_id = relevance_result["id"]
+            is_relevant = relevance_result["is_relevant"]
+
+            if not is_relevant:
+                continue
+
             chunk_document = None
             for chunk in chunk_search_result["chunks"]:
                 if chunk.id == chunk_id:
@@ -221,6 +271,7 @@ class GameAgentOutputState(TypedDict):
 class GameAgentOverallState(MessagesState):
     query: str
     response: str
+    ready_to_answer: bool
 
 
 def dedupe_chunks_in_message_history(messages):
@@ -265,6 +316,14 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
     tools = [list_rulebooks, retrieve_page, search_chunks]
     tool_node = ToolNode(tools)
 
+    async def ask_to_answer(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext]) -> dict:
+        message_str = PromptTemplate.from_template(lookup_rules_answer_template).format()
+        message = HumanMessage(content=message_str)
+        return {
+            "ready_to_answer": True,
+            "messages": [message]
+        }
+
     async def llm_call(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
         manifest = runtime.context.manifest
 
@@ -303,7 +362,7 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
             "messages": message_edits
         }
     
-    async def should_continue(state: GameAgentOverallState) -> Literal["tool_node", "response"]:
+    async def should_continue(state: GameAgentOverallState) -> Literal["tool_node", "ask_to_answer", "response"]:
         """Decide if we should continue the loop or stop based upon whether the LLM made a tool call"""
 
         messages = state["messages"]
@@ -313,12 +372,31 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
         if getattr(last_message, "tool_calls", None):
             return "tool_node"
 
+        if not state.get("ready_to_answer", False):
+            return "ask_to_answer"
+
         # Otherwise, we stop (reply to the user)
         return "response"
     
     async def populate_response(state: GameAgentOverallState) -> dict:
         """Extract the final response from the messages"""
         messages = state["messages"]
+        for message in messages:
+            if isinstance(message, ToolMessage):
+                print("================================= Tool Message =================================")
+                print(f"Name: {message.name}")
+                data = json.loads(message.text)
+                for relevance_result in data:
+                    chunk: Chunk = relevance_result["chunk"]
+                    reason: str = relevance_result["relevance_reason"]
+                    print(f"--- Chunk from {chunk['rulebook_name']} page {chunk['page']} offset {chunk['offset']} ---")
+                    print(f"Relevance Reason: {reason}")
+                    print()
+                    print(chunk["content"])
+                    print("-----------------------------------------------------")
+                # print("================================= End Tool Message =================================")
+            else:
+                message.pretty_print()
         last_message = messages[-1]
         return {
             "response": last_message.content
@@ -335,6 +413,7 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
     # Add nodes
     # NOTE: The node name "llm_call" is used by the QA service for streaming filtering.
     # If you rename this node, update the streaming logic in build_qa_service.
+    agent_builder.add_node("ask_to_answer", ask_to_answer)
     agent_builder.add_node("llm_call", llm_call)
     agent_builder.add_node("tool_node", tool_node)
     agent_builder.add_node("dedupe_chunks", dedupe_chunks)
@@ -346,6 +425,7 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
         "llm_call",
         should_continue
     )
+    agent_builder.add_edge("ask_to_answer", "llm_call")
     agent_builder.add_edge("tool_node", "dedupe_chunks")
     agent_builder.add_edge("dedupe_chunks", "llm_call")
     agent_builder.add_edge("response", END)
