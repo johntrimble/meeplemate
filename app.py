@@ -1,27 +1,20 @@
-import uuid
-from datetime import datetime, timezone
 from typing import AsyncIterator, Sequence, cast
-from urllib.parse import unquote
 
 import chainlit as cl
-import chainlit.socket as cl_socket
-import chainlit.auth as cl_auth
-from chainlit.user import PersistedUser
 
 from chainlit.data.base import BaseDataLayer
-from langchain_classic.schema import output
 from langchain_core.callbacks import Callbacks
 from langchain_core.messages import HumanMessage
-from langchain_core.messages.utils import AnyMessage
 from langchain_core.runnables import RunnableConfig
 
 from meeplemate.chatloop import ChatLoopServiceInput
 from meeplemate.component_system import StartedSystem, System, astart_system, astop_system
-from meeplemate.config import AppServices, Config, GameManifest, GameRulesAgentState, create_app_system
-from meeplemate.chainlit_utils import LangchainTracer
+from meeplemate.config import AppServices, Config, create_app_system
 from chainlit.types import ThreadDict
 
-from meeplemate.ingest.gamepackage import Manifest
+from chainlit.langchain.callbacks import LangchainTracer
+
+from meeplemate.ingest.gamepackage import Manifest, get_game_key_for_id_version
 from meeplemate.util import aenumerate
 
 
@@ -74,21 +67,19 @@ def get_data_layer() -> BaseDataLayer:
     return dl
 
 
-async def add_mock_user():
-    # Create and set mock user
-    mock_user = cl.User(
-        identifier="mock_user_001",
-        display_name="Mock Developer",
-        metadata={"environment": "development"}
-    )
-    cl.context.session.user = mock_user
+@cl.on_settings_update
+async def setup_agent(settings):
+    print("on_settings_update", settings)
+    await cl.Message(content=f"You've changed settings {settings}").send()
 
 
 @cl.action_callback("game_select")
 async def on_action(action: cl.Action):
     game_id = action.payload.get("game_id")
+    game_version = action.payload.get("game_version", "")
     assert isinstance(game_id, str), "game_id should be a string"
-    set_current_game_id(game_id)
+    assert isinstance(game_version, str), "game_version should be a string"
+    set_current_game_id_version(game_id, game_version)
     game = await get_current_game()
     assert game is not None, "Selected game should exist"
     # Acknowledge the action
@@ -96,32 +87,84 @@ async def on_action(action: cl.Action):
     await maybe_set_thread_name(game["name"])
 
 
-@cl.on_settings_update
-async def setup_agent(settings):
-    print("on_settings_update", settings)
-    await cl.Message(content=f"You've changed settings {settings}").send()
-
-
 async def get_all_games() -> Sequence[dict]:
-    # Get all the games we support
-    data_store = services()["game_data_store"]
-    # pylance struggles with the types here
-    keys_iter = cast(AsyncIterator[str], data_store.ayield_keys())
-    game_ids = [id async for id in keys_iter]
-    games = await data_store.amget(game_ids)
+    # Get the current versions of all games we support
+    version_store = services()["game_version_store"]
+    game_keys_iter = cast(AsyncIterator[str], version_store.ayield_keys())
+    game_ids = [id async for id in game_keys_iter]
+    game_current_keys = await version_store.amget(game_ids)
+
+    # Get the game data for the current version of each game
+    game_data_store = services()["game_data_store"]
+    games = await game_data_store.amget(game_current_keys)
     games = cast(Sequence[dict], games)
     return games
 
 
-def get_current_game_id() -> str | None:
+def get_current_game_id_version() -> tuple[str | None, str | None]:
     meta: dict = cast(dict, cl.user_session.get("thread_meta", {}))
-    return meta.get("game_id")
+    return meta.get("game_id"), meta.get("game_version")
 
 
-def set_current_game_id(game_id: str):
+def set_current_game_id_version(game_id: str, game_version: str):
     meta: dict = cast(dict, cl.user_session.get("thread_meta", {}))
     meta["game_id"] = game_id
+    meta["game_version"] = game_version
     cl.user_session.set("thread_meta", meta)
+
+
+async def get_current_version_for_game(game_id: str) -> str:
+    version_store = services()["game_version_store"]
+    results = await version_store.amget([game_id])
+    assert len(results) == 1 and results[0] is not None, "No version found for game_id"
+    version = results[0]
+    return str(version)
+
+
+async def get_game(game_id: str, game_version: str|None = None) -> Manifest | None:
+    if game_id is None:
+        return None
+
+    # Use the latest version if not provided
+    if not game_version:
+        game_version = await get_current_version_for_game(game_id)
+    
+    # Construct the game key
+    game_key = get_game_key_for_id_version(game_id, game_version)
+
+    data_store = services()["game_data_store"]
+
+    # Fetch the game manifest
+    manifest = data_store.mget([game_key])[0]
+
+    # If the manifest not found, fallback to latest version
+    if manifest is None:
+        game_version = await get_current_version_for_game(game_id)
+        game_key = get_game_key_for_id_version(game_id, game_version)
+        manifest = data_store.mget([game_key])[0]
+
+    # Return the manifest if found
+    return cast(Manifest, manifest) if manifest is not None else None
+
+
+async def get_current_game() -> Manifest | None:
+    # Get the current game ID and version from the user session
+    game_id, game_version = get_current_game_id_version()
+
+    # Bail if no game is selected
+    if game_id is None:
+        return None
+    
+    # Fetch the game manifest
+    manifest = await get_game(game_id, game_version)
+
+    # If the version is different than requested, update the session
+    if manifest is not None:
+        actual_version = manifest.get("game_version", "")
+        if game_version != actual_version:
+            set_current_game_id_version(game_id, actual_version)
+    
+    return manifest
 
 
 async def maybe_set_thread_name(name: str):
@@ -141,20 +184,6 @@ async def maybe_set_thread_name(name: str):
 
     meta["is_named"] = True
     cl.user_session.set("thread_meta", meta)
-
-
-async def get_current_game() -> Manifest | None:
-    game_id = get_current_game_id()
-    if game_id is None:
-        return None
-    data_store = services()["game_data_store"]
-    game = await data_store.amget([game_id])
-    if len(game) > 0:
-        game = game[0]
-    else:
-        game = None
-
-    return cast(Manifest, game) if game is not None else None
 
 
 async def maybe_prompt_user_select_game():
@@ -177,7 +206,7 @@ async def maybe_prompt_user_select_game():
             cl.Action(
                 name="game_select",
                 icon="gamepad",
-                payload={"game_id": game["game_id"]},
+                payload={"game_id": game["game_id"], "game_version": game.get("game_version", "")},
                 label=game["name"]
             ) for game in games if game is not None
         ]
