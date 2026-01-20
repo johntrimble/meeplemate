@@ -7,7 +7,7 @@ from langchain_core.load import dumpd, load
 from astrapy.authentication import TokenProvider
 from astrapy.api_options import APIOptions
 
-class AstraDBSerializableStore(AstraDBBaseStore[Serializable | None]):
+class AstraDBSerializableStore[T: Serializable](AstraDBBaseStore[T]):
     def __init__(
         self,
         collection_name: str,
@@ -35,9 +35,9 @@ class AstraDBSerializableStore(AstraDBBaseStore[Serializable | None]):
         )
 
     @override
-    def decode_value(self, value: Any) -> Serializable | None:
+    def decode_value(self, value: Any) -> T | None:
         return load(value) if value is not None else None
 
     @override
-    def encode_value(self, value: Serializable | None) -> Any:
+    def encode_value(self, value: T | None) -> Any:
         return dumpd(value) if value is not None else None

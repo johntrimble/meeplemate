@@ -29,7 +29,7 @@ You are an expert on the board game {{game_name}}. Your task is to assist users 
 
 
 select_relevant_results_template = """\
-Given the following chunks taken from the game rules, determine which chunks are relevant to answering the user query and why or why not.
+Given the following chunks taken from the game rules, determine which chunks are relevant to answering the user query and why or why not. A chunk is considered relevant if it pertains to any aspect of the user query, either directly answering it or providing necessary context to understand the answer.
 
 ## Chunks
 
@@ -140,6 +140,7 @@ class ChunksRelevanceResults(TypedDict):
 
 class ChunkSearchOverallState(TypedDict):
     game_id: str
+    game_version: str
     game_name: str
     game_summary: str
     chunks: list[Document]
@@ -154,6 +155,7 @@ class ChunkSearchOverallState(TypedDict):
 
 class ChunkSearchInputState(TypedDict):
     game_id: str
+    game_version: str
     game_name: str
     game_summary: str
     query: str
@@ -233,6 +235,7 @@ def build_chunk_search_graph(
     class RetrieveChunksInput(TypedDict):
         query: str
         game_id: str
+        game_version: str
     
 
     class RetrieveChunksOutput(TypedDict):
@@ -246,7 +249,7 @@ def build_chunk_search_graph(
             configurable={
                 "retriever_search_kwargs": {
                     **search_kwargs,
-                    "filter": {"game_id": state["game_id"]},
+                    "filter": {"game_id": state["game_id"], "game_version": state["game_version"]},
                 },
             }
         )
@@ -452,6 +455,7 @@ def build_chunk_search_service(
         
         graph_input: ChunkSearchInputState = {
             "game_id": input["manifest"]["game_id"],
+            "game_version": input["manifest"].get("game_version", ""),
             "game_name": input["manifest"]["name"],
             "game_summary": input["manifest"].get("summary", ""),
             "query": input["query"],

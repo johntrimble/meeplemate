@@ -185,7 +185,7 @@ async def generate_summary_with_refinement(
 
 @dataclass
 class GenerateGameReferenceJob:
-    output_dir: Path
+    path: Path
     gp: GamePackage
     chat_model: BaseChatModel
     tokenizer: Any

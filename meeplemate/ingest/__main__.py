@@ -6,10 +6,12 @@ import structlog
 
 from meeplemate.component_system import System, afactory, factory, subsystem
 from meeplemate.config import Config, create_app_system
+from meeplemate.ingest.chunkbuild import BuildChunksJob
 from meeplemate.ingest.dataimport import ImportDocumentsJob, run_import_documents
 from meeplemate.ingest.gamepackage import load_game_package
-from meeplemate.ingest.ocr import IngestJob
-from meeplemate.ingest.summary import ExtractTerminologyJob, GenerateGameReferenceJob
+from meeplemate.ingest.initgp import InitGamePackageJob
+from meeplemate.ingest.ocr import OcrJob
+from meeplemate.ingest.summary import ExtractTerminologyJob, GenerateGameReferenceJob, save_manifest
 
 logger = structlog.get_logger(__name__)
 
@@ -19,12 +21,39 @@ def cli():
     pass
 
 
-# uv run python -m meeplemate.ingest process ./data/rules/munchkin_rules/ ./data/ingested/munchkin_rules/
-
 @cli.command()
 @click.argument("input", type=Path)
 @click.argument("output", type=Path)
-def process(input: Path, output: Path):
+def init_game_package(input: Path, output: Path):
+    settings: Config = Config()
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "init_gp_job": (
+                afactory(
+                    InitGamePackageJob,
+                    astart=InitGamePackageJob.run,
+                )(
+                    input_dir=input,
+                    output_dir=output,
+                ),
+                []
+            )
+        }
+    )
+    async def _run():
+        async with system.astart() as services:
+            pass
+    
+    asyncio.run(_run())
+
+
+# uv run python -m meeplemate.ingest process ./data/rules/munchkin_rules/ ./data/ingested/munchkin_rules/
+
+@cli.command()
+@click.argument("path", type=Path)
+def ocr(path: Path):
     settings: Config = Config()
     app_system: System = create_app_system(settings)
     system = subsystem(
@@ -38,13 +67,12 @@ def process(input: Path, output: Path):
                 ),
                 []
             ),
-            "ingest_job": (
+            "ocr_job": (
                 afactory(
-                    IngestJob,
-                    astart=IngestJob.run
+                    OcrJob,
+                    astart=OcrJob.run
                 )(
-                    input_dir=input,
-                    output_dir=output,
+                    path=path,
                     max_size=2_000,
                     chunk_size=settings.ingest.chunk_size,
                     chunk_overlap=settings.ingest.chunk_overlap,
@@ -63,12 +91,43 @@ def process(input: Path, output: Path):
     
     asyncio.run(_run())
 
-# uv run python -m meeplemate.ingest import-documents ./data/rules/munchkin_rules/ ./data/ingested/munchkin_rules/
 
 @cli.command()
-@click.argument("input", type=Path)
-@click.argument("output", type=Path)
-def import_documents(input: Path, output: Path):
+@click.argument("path", type=Path)
+def build_chunks(path: Path):
+    settings: Config = Config()
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "build_chunks_job": (
+                afactory(
+                    BuildChunksJob,
+                    astart=BuildChunksJob.run,
+                )(
+                    path=path,
+                    parent_chunk_size=500,
+                    parent_chunk_overlap=50,
+                    child_chunk_size=125,
+                    child_chunk_overlap=12,
+                ),
+                {
+                    "tokenizer": "tokenizer"
+                }
+            )
+        }
+    )
+    async def _run():
+        async with system.astart() as services:
+            pass
+    
+    asyncio.run(_run())
+
+# uv run python -m meeplemate.ingest import-documents ./data/ingested/munchkin_rules/
+
+@cli.command()
+@click.argument("path", type=Path)
+def import_documents(path: Path):
     settings: Config = Config()
     app_system: System = create_app_system(settings)
     system = subsystem(
@@ -77,13 +136,14 @@ def import_documents(input: Path, output: Path):
             **app_system._components,
             "import_job": (
                 factory(ImportDocumentsJob)(
-                    input_dir=input,
-                    output_dir=output,
-                    gp=load_game_package(output),
-                    concurrency=1,
+                    path=path,
+                    gp=load_game_package(path),
+                    concurrency=10,
                 ),
                 {
-                    "retriever": "retriever",
+                    "vector_store": "vector_store",
+                    "game_version_store": "game_version_store",
+                    "chunk_store": "docstore",
                     "full_page_store": "full_page_store",
                     "game_data_store": "game_data_store"
                 },
@@ -99,11 +159,21 @@ def import_documents(input: Path, output: Path):
     asyncio.run(_import_documents())
 
 
+@cli.command()
+@click.argument("path", type=Path)
+def update_version(path: Path):
+    from uuid_utils import uuid7
+    manifest = load_game_package(path)
+    new_version = str(uuid7())
+    manifest["game_version"] = new_version
+    save_manifest(manifest)
+
+
 # uv run python -m meeplemate.ingest generate-reference ./data/ingested/munchkin_rules/
 
 @cli.command()
-@click.argument("output", type=Path)
-def generate_reference(output: Path):
+@click.argument("path", type=Path)
+def generate_reference(path: Path):
     settings: Config = Config()
     app_system: System = create_app_system(settings)
     system = subsystem(
@@ -114,8 +184,8 @@ def generate_reference(output: Path):
                     GenerateGameReferenceJob,
                     astart=GenerateGameReferenceJob.run,
                 )(
-                    gp=load_game_package(output),
-                    output_dir=output,
+                    gp=load_game_package(path),
+                    path=path,
                 ),
                 {
                     "chat_model": "chat_model",

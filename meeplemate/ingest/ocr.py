@@ -351,9 +351,8 @@ async def write_fixed_structure_and_page_markdown(gp: GamePackage, document_key:
 
 
 @dataclass
-class IngestJob:
-    input_dir: Path
-    output_dir: Path
+class OcrJob:
+    path: Path
     ocr_client: AsyncOpenAI
     _gp: GamePackage | None = None
     max_size: int | None = 2000
@@ -372,14 +371,10 @@ class IngestJob:
         # We lazy load this as it may not exist until init_game_pacakge
         # is called
         if self._gp is None:
-            self._gp = load_game_package(self.output_dir)
+            self._gp = load_game_package(self.path)
         return self._gp
 
-
     async def run(self):
-        # Initialize the game package directory
-        await self.init_game_package()
-
         # Load PDF images
         pages_and_images = self.all_page_and_pdf_images_iter()
 
@@ -423,47 +418,10 @@ class IngestJob:
         return page
 
 
-    async def init_game_package(self):
-        # Load the partial manifest from the source directory
-        rulebooks_yaml_path = self.input_dir / "rulebooks.yaml"
-        manifest = yaml.safe_load(rulebooks_yaml_path.read_text())
-
-        # Update each rulebook descriptor with a document_key if needed
-        rulebooks = manifest["rulebooks"]
-        for rulebook in rulebooks:
-            if "document_key" not in rulebook:
-                path = rulebook["path"]
-                document_key = base64.b64encode(path.encode()).decode()
-                rulebook["document_key"] = document_key
-    
-        # Update each rulebook descriptor with a page count
-        rulebooks = manifest["rulebooks"]
-        for rulebook in rulebooks:
-            relative_path = Path(rulebook["path"])
-            pdf_path = (self.input_dir / relative_path).resolve()
-            rulebook["page_count"] = get_page_count(pdf_path)
-
-        # Determine path of the manifest
-        manifest_target_path = self.output_dir / "rulebooks.yaml"
-
-        # Ensure output directory exists
-        if not self.output_dir.exists():
-            self.output_dir.mkdir()
-        
-        # Ensure all document directories exist
-        for document_key in document_keys(manifest):
-            document_dir = self.output_dir / document_key
-            if not document_dir.exists():
-                document_dir.mkdir()
-
-        # Write the manifest
-        await aspit_yaml(manifest, manifest_target_path)
-    
-
     def all_page_and_pdf_images_iter(self) -> AsyncIterator[Tuple[Page, Image.Image]]:
         pdf_image_iterables = []
         for rulebook in self.gp["rulebooks"]:
-            pdf_path = (self.input_dir / rulebook["path"])
+            pdf_path = (self.gp["path"] / "raw_documents" / rulebook["path"])
 
             # Save the pdf images
             pages_and_images = page_and_image_iter(self.gp, rulebook["document_key"], pdf_path)

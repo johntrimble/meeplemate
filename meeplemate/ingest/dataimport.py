@@ -5,13 +5,19 @@ from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
 import re
-from typing import Any, Coroutine, Tuple, TypedDict
+from typing import Any, AsyncIterator, Coroutine, Tuple, TypedDict
 
+from langchain_core.documents.base import Document
+from langchain_core.load import dumps, loads
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.stores import BaseStore
+from langchain_core.vectorstores.base import VectorStore
 
-from meeplemate.ingest.gamepackage import GamePackage, get_page, page_to_document
+from meeplemate.ingest.chunkbuild import ChildChunkDescriptor, ChunkDescriptor, child_chunks_for_chunk_iter, chunks_for_page_iter, get_child_chunk_path, get_chunk_path
+from meeplemate.ingest.gamepackage import GamePackage, get_page, get_pages_iter, page_to_document, get_game_key
 from structlog import get_logger
+
+from meeplemate.util import amap, achain_from_aiterable, aslurp, sem_guard
 
 logger = get_logger(__name__)
 
@@ -23,11 +29,13 @@ class ImportDocumentsServices(TypedDict):
 @dataclass
 class ImportDocumentsJob:
     gp: GamePackage
-    retriever: BaseRetriever
-    full_page_store: BaseStore
-    game_data_store: BaseStore
-    input_dir: Path
-    output_dir: Path
+    # retriever: BaseRetriever
+    vector_store: VectorStore
+    full_page_store: BaseStore[str, Document]
+    game_data_store: BaseStore[str, Any]
+    game_version_store: BaseStore[str, Any]
+    chunk_store: BaseStore[str, Document]
+    path: Path
     concurrency: int
 
 
@@ -61,34 +69,77 @@ async def import_game_data(job: ImportDocumentsJob) -> None:
     
     logger.info("Saving game data", game_data=game_data)
     
-    await job.game_data_store.amset([(game_data["game_id"], game_data)])
+    await job.game_data_store.amset([(get_game_key(job.gp), game_data)])
+
+
+def get_all_chunks_iter(gp: GamePackage) -> AsyncIterator[ChunkDescriptor]:
+    pages_iter = get_pages_iter(gp)
+    chunks_iter = achain_from_aiterable(
+        amap(chunks_for_page_iter, pages_iter)
+    )
+    return chunks_iter
+
+
+def get_all_child_chunks_iter(gp: GamePackage) -> AsyncIterator[ChildChunkDescriptor]:
+    all_chunks = get_all_chunks_iter(gp)
+    all_child_chunks = achain_from_aiterable(
+        amap(child_chunks_for_chunk_iter, all_chunks)
+    )
+    return all_child_chunks
+    
+
+async def aslurp_document(path: Path) -> Document:
+    content = await aslurp(path)
+    document = loads(content)
+    return document
 
 
 async def run_import_documents(job: ImportDocumentsJob) -> None:
-    async def process_page(doc_key: str, page_num: int):
-        # Get the page content
-        page = get_page(job.gp, doc_key, page_num)
-        # Get document for the page
-        document = await page_to_document(page)
-        # Add to retriever which will chunk and store in vector store
-        assert hasattr(job.retriever, "aadd_documents"), "Retriever must support aadd_documents"
-        await job.retriever.aadd_documents([document])
-        # Also store full page in full page store
-        await job.full_page_store.amset([(document.id, document)])
-
-    concurrency = job.concurrency
-    sem = asyncio.Semaphore(concurrency)
-
-    async def sem_guard(coro: Coroutine[Any, Any, Any], sem: asyncio.Semaphore) -> Any:
-        async with sem:
-            return await coro
-
-    doc_page_number_bases = get_page_path_bases(job.gp)
-
     tasks = []
-    for doc_key, page_num, page_base in doc_page_number_bases:
-        coro = sem_guard(process_page(doc_key, page_num), sem)
-        tasks.append(asyncio.create_task(coro))
+    sem = asyncio.Semaphore(job.concurrency)
 
+    def add_sem_guarded_task(coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+        task = asyncio.create_task(sem_guard(coro, sem))
+        tasks.append(task)
+        return task
+
+    # Add full pages
+    pages_iter = get_pages_iter(job.gp)
+    page_documents_iter = amap(page_to_document, pages_iter)
+    async for document in page_documents_iter:
+        assert document.id is not None, "Document must have an ID"
+        add_sem_guarded_task(
+            job.full_page_store.amset([(document.id, document)])
+        )
+
+    # Add chunks for each page
+    chunks_iter = get_all_chunks_iter(job.gp)
+    chunk_paths_iter = amap(get_chunk_path, chunks_iter)
+    documents_iter = amap(aslurp_document, chunk_paths_iter)
+    async for document in documents_iter:
+        assert document.id is not None, "Document must have an ID"
+        add_sem_guarded_task(
+            job.chunk_store.amset([(document.id, document)])
+        )
+
+    # Add vectors for child chunks
+    child_chunks_iter = get_all_child_chunks_iter(job.gp)
+    child_chunk_paths_iter = amap(get_child_chunk_path, child_chunks_iter)
+    child_documents_iter = amap(aslurp_document, child_chunk_paths_iter)
+    async for document in child_documents_iter:
+        assert document.id is not None, "Document must have an ID"
+        add_sem_guarded_task(
+            job.vector_store.aadd_documents([document])
+        )
+
+    # Import the game data
+    add_sem_guarded_task(
+        import_game_data(job)
+    )
+
+    # Wait for all tasks to complete
     await asyncio.gather(*tasks)
-    await import_game_data(job)
+
+    # Data imported! Lets update the current game version
+    game_key = get_game_key(job.gp)
+    await job.game_version_store.amset([(job.gp['game_id'], game_key)])

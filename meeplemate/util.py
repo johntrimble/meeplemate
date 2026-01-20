@@ -318,6 +318,16 @@ async def achain[Item](*aiterables: AsyncIterable[Item]) -> AsyncIterator[Item]:
             yield item
 
 
+async def achain_from_aiterable[Item](aiterable_of_aiterables: AsyncIterable[AsyncIterable[Item]|Iterable[Item]]) -> AsyncIterator[Item]:
+    async for aiterable in aiterable_of_aiterables:
+        # If not an async iterable, but is a regular iterable, convert it
+        if not isinstance(aiterable, AsyncIterable):
+            aiterable = to_async_iter(aiterable)
+
+        async for item in aiterable:
+            yield item
+
+
 async def sem_guard[Y,S,R](coro:Coroutine[Y,S,R], sem:asyncio.Semaphore) -> R:
     async with sem:
         return await coro

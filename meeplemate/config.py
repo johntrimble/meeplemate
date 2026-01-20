@@ -1,9 +1,7 @@
-from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
-from functools import partial
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Collection, Iterable, Iterator, Literal, Mapping, Protocol, Sequence, Tuple, TypedDict, Unpack, cast, runtime_checkable, ContextManager, AsyncContextManager
+from typing import Any, AsyncIterator, Callable, Iterator, Literal, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
 import os
-from torch import chunk
 import yaml
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, ConfigDict
@@ -32,20 +30,16 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph_checkpoint_cassandra import CassandraSaver
 from chainlit_cassandra_data_layer.data import CassandraDataLayer
 
-from sentence_transformers import SentenceTransformer
 
 from meeplemate.cassandra_util import AstraDBSerializableStore
-from meeplemate.chainlit_utils import LangchainTracer
 from meeplemate.chatloop import ChatLoopService, build_chatloop_service
 from meeplemate.component_system import System, factory
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.retrievers import build_retriever
-from meeplemate.llm_models import load_jina_embedding_model, load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings
+from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings
 from meeplemate.pdf import parse_pdf
 from meeplemate.qa import build_qa_chain
 from chainlit.data.base import BaseDataLayer
-
-from chainlit.types import Pagination, PaginatedResponse, PageInfo
 
 from meeplemate.search import ChunkSearchService, build_chunk_search_service
 
@@ -311,6 +305,7 @@ class AppServices(TypedDict):
     qa_chain: Runnable
     agent_graph: CompiledStateGraph[GameRulesAgentState, None, GameRulesAgentState, GameRulesAgentState]
     game_data_store: BaseStore
+    game_version_store: BaseStore
     full_page_store: BaseStore
     chunk_search_service: ChunkSearchService
     chatloop_service: ChatLoopService
@@ -472,6 +467,15 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 ),
                 ["db_session"]
             ),
+            "game_version_store": (
+                factory(AstraDBStore)(
+                    collection_name="current_game_version",
+                    api_endpoint=cfg.data_api.endpoint,
+                    token=cfg.data_api.token.get_secret_value(),
+                    namespace=cfg.data_api.namespace,
+                ),
+                []
+            ),
             "game_data_store": (
                 factory(AstraDBStore)(
                     collection_name="game_info",
@@ -546,7 +550,6 @@ def keyspace_creator(keyspaces_and_replication: Sequence[Tuple[str, int]], data_
                 )
         yield
     return _keyspace_creator
-
 
 
 class Services:

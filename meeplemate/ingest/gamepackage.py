@@ -20,6 +20,7 @@ class RulebookDescriptor(TypedDict):
 class Manifest(TypedDict):
     name: str
     game_id: str
+    game_version: NotRequired[str]
     rulebooks: Sequence[RulebookDescriptor]
     summary: NotRequired[str]
 
@@ -33,6 +34,14 @@ class Page:
     gp: GamePackage
     page_num: int
     document_key: str
+
+
+def get_game_key_for_id_version(game_id: str, game_version: str) -> str:
+    return f"{game_id}#{game_version}"
+
+
+def get_game_key(gp: GamePackage) -> str:
+    return get_game_key_for_id_version(gp["game_id"], gp.get("game_version", ""))
 
 
 def document_keys(manifest: Manifest) -> Sequence[str]:
@@ -73,6 +82,10 @@ def get_page(gp:GamePackage, document_key: str, page_num: int) -> Page:
     )
     return page
 
+
+def get_raw_documents_directory_path(gp: GamePackage) -> Path:
+    raw_docs_path = gp["path"] / "raw_documents"
+    return raw_docs_path
 
 
 def page_md_path(page: Page) -> Path:
@@ -130,6 +143,7 @@ def get_page_metadata(page: Page) -> dict:
     metadata = {
         "game_name": page.gp["name"],
         "game_id": game_id,
+        "game_version": page.gp.get("game_version", ""),
         "rulebook_name": rulebook["name"],
         "document_key": page.document_key,
         "page_num": page.page_num,
@@ -137,14 +151,20 @@ def get_page_metadata(page: Page) -> dict:
     return metadata
 
 
-def get_page_id(game_id: str, document_key: str, page_num: int) -> str:
-    return f"{game_id}#{document_key}#{page_num}"
+def get_page_id(game_id: str, game_version: str, document_key: str, page_num: int) -> str:
+    game_key = get_game_key_for_id_version(game_id, game_version)
+    return f"{game_key}#{document_key}#{page_num}"
+
+
+def get_page_chunk_id(game_id: str, game_version: str, document_key: str, page_num: int, chunk_idx: int) -> str:
+    return f"{get_page_id(game_id, game_version, document_key, page_num)}#{chunk_idx}"
 
 
 async def page_to_document(page: Page) -> Document:
     game_id = page.gp["game_id"]
+    game_version = page.gp.get("game_version", "")
     metadata = get_page_metadata(page)
-    page_key = get_page_id(game_id, page.document_key, page.page_num)
+    page_key = get_page_id(game_id, game_version, page.document_key, page.page_num)
     markdown = await page_md(page)
     return Document(id=page_key, page_content=markdown, metadata=metadata)
 
