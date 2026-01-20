@@ -13,13 +13,13 @@ system = create_app_system(Config())
 
 _started_system: tuple[StartedSystem, Any] | None = globals().get("_started_system")
 
-async def astart(components=None):
+async def astart(names=None, extra_components=None):
     global system
     global _started_system
 
     import asyncio
-    if components is not None:
-        _system = subsystem(system, components)
+    if names is not None or extra_components is not None:
+        _system = subsystem(system, names=names, extra_components=extra_components)
     else:
         _system = system
     # TODO: Fix this typing issue properly, we should not use `cast` here
@@ -39,18 +39,18 @@ async def astop():
             _started_system = None
 
 
-async def areload(components=None):
+async def areload(names=None, extra_components=None):
     global system
     global _started_system
 
     # Get the components used if started_system exists
-    if components is None and _started_system is not None:
+    if names is None and _started_system is not None:
         started_system, _ = _started_system
-        components = list(started_system.system_map.keys())
+        names = list(started_system.system_map.keys())
     
     print("Reloading system...")
     await astop()
-    await astart(components=components)
+    await astart(names=names, extra_components=extra_components)
     print("System reloaded")
 
 
