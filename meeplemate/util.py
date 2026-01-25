@@ -7,8 +7,25 @@ import json
 from pathlib import Path
 from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Generator, Iterable, TextIO, Type, cast
 
-from literalai import Optional, TypeVar, TypedDict
+from typing import Optional, TypeVar, TypedDict
 from pyparsing import Sequence
+import yaml
+
+
+def slurp_yaml(f):
+    opened_file = False
+    if hasattr(f, "read"):
+        fp = f
+    else:
+        fp = open(f, "r")
+        opened_file = True
+
+    try:
+        return yaml.safe_load(fp)
+    finally:
+        if opened_file:
+            fp.close()
+
 
 def dump_jsonl(obj_list, fp):
     for obj in obj_list:
@@ -462,3 +479,28 @@ def slugify(text: str) -> str:
     # Remove any characters that are not alphanumeric or hyphens
     text = ''.join(char for char in text if char.isalnum() or char == '-')
     return text
+
+
+def snake_case(text: str) -> str:
+    # Lower case everything
+    text = text.lower()
+    # Replace spaces with underscores
+    text = text.replace(" ", "_")
+    # Replace all punctuation with underscores
+    punctuation = r'''!()-[]{};:'"\,<>./?@#$%^&*~'''
+    for char in punctuation:
+        text = text.replace(char, "_")
+    # Dedupe underscores
+    while "__" in text:
+        text = text.replace("__", "_")
+    # Remove trailing or leading underscores
+    text = text.strip("_")
+    # Remove any characters that are not alphanumeric or underscores
+    text = ''.join(char for char in text if char.isalnum() or char == '_')
+    return text
+
+
+def load_template(template_path: str) -> str:
+    import meeplemate
+    path = Path(meeplemate.__path__[0]) / "prompts" / template_path
+    return path.read_text()

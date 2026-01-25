@@ -291,6 +291,7 @@ def factory(
     service_type: Callable[..., ServiceT|ContextManager[ServiceT]],
     start: Callable[[ServiceT], Any] | None = None,
     stop: Callable[[ServiceT], Any] | None = None,
+    ignore_context_manager: bool = False,
 ) -> Callable[..., Callable[..., ContextManager[ServiceT]]]:
     @contextmanager
     def construct(*args, **kwargs) -> Iterator[ServiceT]:
@@ -298,10 +299,12 @@ def factory(
         stack = ExitStack()
         with stack:
             # Add instance to the stack if it supports context management
-            if isinstance(instance, ContextManager):
+            if isinstance(instance, ContextManager) and not ignore_context_manager:
                 return_value = stack.enter_context(instance)
             else:
                 return_value = instance
+            
+            return_value = cast(ServiceT, instance)
 
             # Add the stop callback to the stack if provided
             if stop:

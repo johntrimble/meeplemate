@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator, Literal, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
 import os
 import yaml
+from dataclasses import dataclass
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -34,6 +35,7 @@ from chainlit_cassandra_data_layer.data import CassandraDataLayer
 from meeplemate.cassandra_util import AstraDBSerializableStore
 from meeplemate.chatloop import ChatLoopService, build_chatloop_service
 from meeplemate.component_system import System, factory
+from meeplemate.ingest.gamepackage import GamePackage
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.retrievers import build_retriever
 from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings
@@ -187,6 +189,23 @@ class Config(BaseSettings):
         return v
 
 
+@dataclass
+class GameService:
+    data_store: BaseStore
+    version_store: BaseStore
+    
+    async def get_current_version_for_game(self, game_id: str) -> str | None:
+        results = await self.version_store.amget([game_id])
+        assert len(results) == 1 and results[0] is not None, "No version found for game_id"
+        version = results[0]
+        return str(version)
+    
+    async def get_manifest(self, game_id: str) -> GamePackage | None:
+        game_key = await self.get_current_version_for_game(game_id)
+        manifest = self.data_store.mget([game_key])[0]
+        return manifest
+
+
 def create_keyspace(data_api_endpoint:str, data_api_token:str, keyspace:str, replication_factor:int):
     import requests
     url = f"{data_api_endpoint}/v1"
@@ -310,6 +329,7 @@ class AppServices(TypedDict):
     chunk_search_service: ChunkSearchService
     chatloop_service: ChatLoopService
     qa_service: QAService
+    game_service: GameService
 
 
 class GameInfoDao:
@@ -517,6 +537,13 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     "checkpoint_saver": "checkpointer",
                     "chat_model": "chat_model",
                     "qa_service": "qa_service",
+                }
+            ),
+            "game_service": (
+                factory(GameService)(),
+                {
+                    "data_store": "game_data_store",
+                    "version_store": "game_version_store",
                 }
             )
         }

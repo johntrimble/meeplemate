@@ -1,0 +1,431 @@
+from importlib import resources
+from structlog import get_logger
+from typing import Iterator, override, Callable
+import json
+from uuid import UUID
+from datetime import datetime
+from fnmatch import fnmatch
+
+from langchain_core.tracers import Run
+from langchain_core.load import dumpd
+from meeplemate.util import slurp_yaml, snake_case
+
+# Load test_cases.yaml from this module
+test_suites = slurp_yaml(resources.files(__package__).joinpath("test_cases.yaml"))
+
+# Create tracer for persisting langchain runs during tests
+from langchain_core.tracers.base import AsyncBaseTracer
+from pathlib import Path
+
+logger = get_logger(__name__)
+
+class RunEncoder(json.JSONEncoder):
+    """Custom JSON encoder for Run objects that handles UUIDs, datetimes, and other LangChain types."""
+
+    def default(self, o):
+        if isinstance(o, UUID):
+            return str(o)
+        if isinstance(o, datetime):
+            return o.isoformat()
+        # For any other complex object, try to use dumpd
+        try:
+            return dumpd(o)
+        except Exception:
+            # Fall back to string representation
+            return str(o)
+
+
+def get_test_run_file_path(eval_runs_dir: Path, test_group_run_id: str, test_suite: str, test_case: str) -> Path:
+    test_suite = snake_case(test_suite)
+    test_case = snake_case(test_case)
+    group_output_dir = eval_runs_dir / test_group_run_id
+    group_output_dir.mkdir(exist_ok=True)
+    run_file = group_output_dir / f"{test_suite}__{test_case}.json"
+    return run_file
+
+
+def load_persisted_run(run_file_path: Path|str) -> Run:
+    """Load a persisted Run object from a JSON file.
+
+    Args:
+        run_file_path: Path to the JSON file containing the persisted run
+
+    Returns:
+        Run object reconstructed from the persisted data
+    """
+    if isinstance(run_file_path, str):
+        run_file_path = Path(run_file_path)
+
+    with run_file_path.open("r") as f:
+        run_dict = json.load(f)
+
+    # Use parse_obj to reconstruct the Run from the dict
+    return Run.parse_obj(run_dict)
+
+
+def print_run_tree(run: Run, indent: int = 0, max_depth: int = 10) -> None:
+    """Print a hierarchical view of a run and its children.
+
+    Args:
+        run: The run to print
+        indent: Current indentation level (for recursion)
+        max_depth: Maximum depth to traverse
+    """
+    if indent > max_depth:
+        return
+
+    prefix = "  " * indent
+    duration = ""
+    if run.start_time and run.end_time:
+        duration_secs = (run.end_time - run.start_time).total_seconds()
+        duration = f" ({duration_secs:.2f}s)"
+
+    print(f"{prefix}{run.name} [{run.run_type}]{duration}")
+
+    # Print some additional info for certain run types
+    if indent < 2:  # Only for top levels to avoid clutter
+        if run.run_type == "llm" and run.outputs:
+            # Show token usage if available
+            generations = run.outputs.get("generations", [])
+            if generations and len(generations) > 0:
+                gen = generations[0][0]
+                if hasattr(gen, "message") and hasattr(gen.message, "response_metadata"):
+                    metadata = gen.message.response_metadata
+                    if "token_usage" in metadata:
+                        tokens = metadata["token_usage"]
+                        print(f"{prefix}  Tokens: {tokens}")
+
+    # Recursively print children
+    for child in run.child_runs:
+        print_run_tree(child, indent + 1, max_depth)
+
+
+def collect_runs_iter(run: Run) -> Iterator[Run]:
+    """Recursively collect all runs from the run tree.
+
+    Args:
+        run: The root run to search
+    Returns:
+        List of all runs in the tree
+    """
+    yield run
+    for child in run.child_runs:
+        yield from collect_runs_iter(child)
+
+
+def collect_runs_by_name_iter(run: Run, name: str) -> Iterator[Run]:
+    """Recursively collect all runs with a specific name from the run tree.
+
+    Args:
+        run: The root run to search
+        name: The name of runs to collect
+
+    Returns:
+        Iterator of all runs matching the specified name
+    """
+    for run in collect_runs_iter(run):
+        if run.name == name:
+            yield run
+
+
+def collect_runs_by_type(run: Run, run_type: str) -> list[Run]:
+    """Recursively collect all runs of a specific type from the run tree.
+
+    Args:
+        run: The root run to search
+        run_type: The type of runs to collect (e.g., "llm", "chain", "tool")
+
+    Returns:
+        List of all runs matching the specified type
+    """
+    runs = []
+    for run in collect_runs_iter(run):
+        if run.run_type == run_type:
+            runs.append(run)
+    return runs
+
+
+def get_llm_calls(run: Run) -> list[Run]:
+    """Extract all LLM calls from a run tree.
+
+    Args:
+        run: The root run to search
+
+    Returns:
+        List of all LLM runs
+    """
+    return collect_runs_by_type(run, "llm")
+
+
+def get_run_summary(run: Run) -> dict:
+    """Get a summary of a run including timing and statistics.
+
+    Args:
+        run: The run to summarize
+
+    Returns:
+        Dictionary containing summary statistics
+    """
+    from collections import Counter
+
+    def count_by_type(r: Run) -> Counter:
+        counts = Counter([r.run_type])
+        for child in r.child_runs:
+            counts.update(count_by_type(child))
+        return counts
+
+    duration = (run.end_time - run.start_time).total_seconds() if run.end_time and run.start_time else 0
+    llm_calls = get_llm_calls(run)
+    llm_duration = sum((llm.end_time - llm.start_time).total_seconds()
+                      for llm in llm_calls
+                      if llm.end_time and llm.start_time)
+
+    return {
+        "id": str(run.id),
+        "name": run.name,
+        "run_type": run.run_type,
+        "duration_seconds": duration,
+        "llm_calls": len(llm_calls),
+        "llm_duration_seconds": llm_duration,
+        "run_type_counts": dict(count_by_type(run)),
+        "error": run.error if run.error else None,
+    }
+
+
+def transform_run_tree(
+    run: Run,
+    transform_fn: Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]
+) -> Run | None:
+    """Generic tree transformer for Run objects.
+
+    Recursively transforms a run tree by applying a transformation function to each node.
+    The transformer can modify nodes, skip them (promoting their children), or filter children.
+
+    Args:
+        run: The run to transform
+        transform_fn: Function that takes (run, transformed_children) and returns
+                     (transformed_run_or_None, children_to_use).
+                     - Return (None, children) to skip this node and promote children
+                     - Return (run, children) to keep the node with new children
+                     - Return (run, []) to keep node but remove all children
+
+    Returns:
+        Transformed run, or None if the root should be skipped
+    """
+    # First, recursively transform all children
+    transformed_children = []
+    for child in run.child_runs:
+        transformed_child = transform_run_tree(child, transform_fn)
+        if transformed_child is not None:
+            transformed_children.append(transformed_child)
+
+    # Apply transformation to this node
+    transformed_run, final_children = transform_fn(run, transformed_children)
+
+    # Update children if we're keeping this run
+    if transformed_run is not None:
+        transformed_run.child_runs = final_children
+
+    return transformed_run
+
+
+def skip_run_types(skip_types: set[str]) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
+    """Create a transformer that skips certain run types/names.
+
+    Nodes matching the skip criteria are removed from the tree, but their children
+    are promoted to the parent level, preserving the execution trace.
+
+    Supports wildcard patterns using shell-style glob syntax:
+    - `*` matches everything
+    - `?` matches any single character
+    - `[seq]` matches any character in seq
+    - `[!seq]` matches any character not in seq
+
+    Args:
+        skip_types: Set of run names or run_type values to skip. Supports wildcards.
+
+    Returns:
+        A transformer function
+
+    Example:
+        # Exact match
+        transformer = skip_run_types({"RunnableLambda", "RunnableSequence"})
+
+        # Wildcard patterns
+        transformer = skip_run_types({"Runnable*"})  # Matches RunnableLambda, RunnableSequence, etc.
+        transformer = skip_run_types({"*Lambda", "*Sequence"})
+
+        pruned_run = transform_run_tree(run, transformer)
+    """
+    def matches_any_pattern(value: str, patterns: set[str]) -> bool:
+        """Check if value matches any pattern in the set."""
+        for pattern in patterns:
+            # Try exact match first (faster)
+            if value == pattern:
+                return True
+            # Try wildcard match
+            if fnmatch(value, pattern):
+                return True
+        return False
+
+    def transformer(run: Run, children: list[Run]) -> tuple[Run | None, list[Run]]:
+        if matches_any_pattern(run.name, skip_types) or matches_any_pattern(run.run_type, skip_types):
+            # Skip this run, promote children
+            return (None, children)
+        return (run, children)
+    return transformer
+
+
+def filter_children_by_predicate(
+    predicate: Callable[[Run], bool]
+) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
+    """Create a transformer that filters children based on a predicate.
+
+    Args:
+        predicate: Function that returns True for children to keep
+
+    Returns:
+        A transformer function
+
+    Example:
+        transformer = filter_children_by_predicate(lambda r: r.run_type != "retriever")
+        filtered_run = transform_run_tree(run, transformer)
+    """
+    def transformer(run: Run, children: list[Run]) -> tuple[Run | None, list[Run]]:
+        filtered_children = [c for c in children if predicate(c)]
+        return (run, filtered_children)
+    return transformer
+
+
+def limit_run_tree_depth(run: Run, max_depth: int) -> Run:
+    """Limit the depth of a run tree.
+
+    Unlike the transformer-based approach, this function directly limits tree depth
+    by truncating children beyond the specified depth.
+
+    Args:
+        run: The run to limit
+        max_depth: Maximum depth to preserve (0 means only root with no children)
+
+    Returns:
+        Run with depth limited
+
+    Example:
+        limited_run = limit_run_tree_depth(run, max_depth=3)
+    """
+    def limit_depth_recursive(node: Run, current_depth: int) -> Run:
+        if current_depth >= max_depth:
+            # Truncate children at this level
+            node.child_runs = []
+            return node
+
+        # Recursively limit children
+        node.child_runs = [
+            limit_depth_recursive(child, current_depth + 1)
+            for child in node.child_runs
+        ]
+        return node
+
+    return limit_depth_recursive(run, 0)
+
+
+def compose_transformers(
+    *transformers: Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]
+) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
+    """Compose multiple transformers into a single transformer.
+
+    Transformers are applied in order. If any transformer removes a node,
+    subsequent transformers are skipped for that node.
+
+    Args:
+        *transformers: Variable number of transformer functions
+
+    Returns:
+        A composed transformer function
+
+    Example:
+        transformer = compose_transformers(
+            skip_run_types({"RunnableLambda"}),
+            filter_children_by_predicate(lambda r: r.run_type != "retriever")
+        )
+        transformed_run = transform_run_tree(run, transformer)
+
+        # For depth limiting, use limit_run_tree_depth separately:
+        transformed_run = transform_run_tree(run, transformer)
+        limited_run = limit_run_tree_depth(transformed_run, max_depth=5)
+    """
+    def composed(run: Run, children: list[Run]) -> tuple[Run | None, list[Run]]:
+        current_run = run
+        current_children = children
+
+        for transformer in transformers:
+            if current_run is None:
+                # If a previous transformer removed the node, just promote children
+                return (None, current_children)
+            current_run, current_children = transformer(current_run, current_children)
+
+        return (current_run, current_children)
+    return composed
+
+
+class TestRunTracer(AsyncBaseTracer):
+    def __init__(
+        self,
+        eval_runs_dir: Path,
+        run_transformer: Callable[[Run, list[Run]], tuple[Run | None, list[Run]]] | None = None
+    ):
+        """Create a test run tracer that persists LangChain runs to disk.
+
+        Args:
+            eval_runs_dir: Directory to store run files
+            run_transformer: Optional transformer function to modify the run tree before persisting.
+                           Use helpers like skip_run_types(), filter_children_by_predicate(),
+                           or compose_transformers().
+
+        Example:
+            # Skip RunnableLambda and RunnableSequence nodes
+            tracer = TestRunTracer(
+                eval_runs_dir=Path("./eval_runs"),
+                run_transformer=skip_run_types({"RunnableLambda", "RunnableSequence"})
+            )
+
+            # Combine multiple transformations
+            tracer = TestRunTracer(
+                eval_runs_dir=Path("./eval_runs"),
+                run_transformer=compose_transformers(
+                    skip_run_types({"RunnableLambda"}),
+                    filter_children_by_predicate(lambda r: r.run_type != "retriever")
+                )
+            )
+        """
+        super().__init__()
+        self.eval_runs_dir = eval_runs_dir
+        self.eval_runs_dir.mkdir(exist_ok=True)
+        self.run_transformer = run_transformer
+
+    # Implement abstract methods
+    @override
+    async def _persist_run(self, run: Run) -> None:
+        metadata = run.extra["metadata"]
+        required_metadata_keys = ["test_group_run_id", "test_suite", "test_case"]
+        if not all(key in metadata for key in required_metadata_keys):
+            logger.info("Run metadata missing required keys, skipping persist", metadata=metadata)
+            return
+
+        # Transform the run tree if a transformer is provided
+        if self.run_transformer:
+            run = transform_run_tree(run, self.run_transformer)
+            if run is None:
+                logger.warning("Root run was filtered out by transformer, skipping persist")
+                return
+
+        # Update the run file
+        run_file = get_test_run_file_path(self.eval_runs_dir, metadata["test_group_run_id"], metadata["test_suite"], metadata["test_case"])
+        run_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with run_file.open("w") as f:
+            # Convert Run to dict and serialize with custom encoder that handles
+            # UUIDs, datetimes, and LangChain objects (AIMessage, etc.)
+            run_dict = run.dict()
+            f.write(json.dumps(run_dict, cls=RunEncoder, indent=2))
+            f.flush()

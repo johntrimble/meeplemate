@@ -1,115 +1,41 @@
+import copy
 from dataclasses import dataclass
 import json
-from typing import Literal, Sequence, Tuple, TypedDict, cast
-from langchain.messages import AIMessage, HumanMessage, ToolMessage
+from shlex import quote
+import sys
+from typing import Literal, NotRequired, Sequence, Tuple, TypedDict, cast
+from weakref import ref
+from langchain.messages import AIMessage, AnyMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.load import Serializable
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
-from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda, chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable, RunnableConfig, chain
 from langchain_core.stores import BaseStore
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 from langgraph.prebuilt import ToolNode
+from langgraph.types import Command
 
+from meeplemate import quote_util
 from meeplemate.ingest.gamepackage import Manifest, get_page_id
-from meeplemate.search import ChunkSearchInputState, ChunkSearchOutputState, ChunkSearchOverallState, ChunkSearchService, ChunkSearchServiceInput, CompiledStateGraph
+from meeplemate.search import ChunkSearchService, ChunkSearchServiceInput, CompiledStateGraph
+import structlog
 from structlog import get_logger
+
+from meeplemate.util import load_template
 logger = get_logger()
 
-
-system_prompt_template = """\
-You are an expert on the board game {{game_name}}. Your task is to assist users by providing clear and accurate explanations of the game's rules. Use the following game rules summary to better understand the game and questions users may have:
-
-<game_summary>
-{{game_summary}}
-</game_summary>
-"""
-
-
-breakdown_rules_required_template = """\
-Read the user query below carefully. Your goal is to determine which rules need to be looked up in order to provide a complete and comprehensive anser. Do NOT provide the final answer yet.
-
-## User Query
-
-<query>
-{{query}}
-</query>
-
-## Instructions
-- Analyze the user query step by step.
-- Determine which rules are related to the user query.
-- Consider the gameplay context in your interprestations, including game phases, player counts, and specific scenarios that might impact rule application.
-
-## Available Tools
-
-You have access to the following tools to help you gather information:
-
-- `search_chunks` - Search for relevant chunks of text from the rulebooks based on a given query. You may need to break down a query into multiple sub-queries to find all relevant information.
-- `retrieve_page` - Retrieve a specific page from a rulebook.
-- `list_rulebooks` - List all available rulebooks for the game.
-
-These tools can be used together to find the most relevant information. For example, the chunks returned by `search_chunks` have sufficient information to call `retrieve_page` if more context is needed. The `list_rulebooks` tool can help identify which rulebooks are available for reference and their total number of pages, which can then be used to retrieve specific pages from those rulebooks.
-
-## Response Format
-
-Respond using markdown. Start with a step-by-step reasoning process under the heading `# Step-by-Step Reasoning`, using bullet points for each step. After your reasoning, under the heading `# Rules to Look Up`, provide a list of rules that need to be looked up to answer the user's question.
-"""
-
-
-lookup_rules_answer_template = """\
-Now look up the rules identified and answer the user's question comprehensively.
-
-## Response Format
-
-Respond using markdown. Start with a step-by-step reasoning process under the heading `# Step-by-Step Reasoning`, using bullet points for each step. ALWAYS quote the relevant rule or section from the rulebook that supports your reasoning. NEVER paraphrase a rule. After your reasoning, under the heading `# Final Answer`, provide a clear and concise answer to the user's questions and ALWAYS include citations to the rulebook name and page number and ALWAYS quote the relevant rule(s) from the rulebook(s).
-"""
-
-
-qa_template = """\
-Read the user query below carefully. Your goal is to provide a detailed and accurate answer based on the official rules of the game {{game_name}}.
-
-## User Query
-
-<query>
-{{query}}
-</query>
-
-## Instructions
-
-- Analyze the user query step by step and break it down into which rules need to be looked up in order to provide a complete and accurate answer.
-- Gather relevant rules and information by using the provided tools: `list_rulebooks`, `retrieve_page`, and `search_chunks`.
-- Base your responses on the official rulebooks or authoritative sources, recognizing that these rules hold in all standard situations unless an explicit exception is stated. Avoid assumptions and unofficial variations unless specifically requested by the user.
-- Consider the gameplay context in your interpretations, including game phases, player counts, and specific scenarios that might impact rule application.
-- Highlight rule variants and exceptions clearly, explaining how they alter standard gameplay and under what circumstances they apply.
-- Attempt to understand user intent, focusing on the aspect of the rule they might find confusing or the specific information they seek.
-- When providing answers, NEVER use the word "chunk". Instead, refer to "sections", "passages", or "excerpts" from the rulebooks.
-- When providing answers, ALWAYS quote the relevant rule or section from the rulebook that supports your reasoning and ALWAYS cite the rulebook name and page number. Do NOT paraphrase the rule; quote it verbatim.
-- When quoting, ALWAYS use quotation marks or blockquote formatting to clearly indicate the quoted text.
-
-
-## Available Tools
-
-You have access to the following tools to help you gather information:
-
-- `search_chunks` - Search for relevant chunks of text from the rulebooks based on a given query. You may need to break down a query into multiple sub-queries to find all relevant information.
-- `retrieve_page` - Retrieve a specific page from a rulebook.
-- `list_rulebooks` - List all available rulebooks for the game.
-
-These tools can be used together to find the most relevant information. For example, the chunks returned by `search_chunks` have sufficient information to call `retrieve_page` if more context is needed. The `list_rulebooks` tool can help identify which rulebooks are available for reference and their total number of pages, which can then be used to retrieve specific pages from those rulebooks.
-
-## Response Format
-
-Respond using markdown. Start with a step-by-step reasoning process under the heading `# Step-by-Step Reasoning`, using bullet points for each step. ALWAYS quote the relevant rule or section from the rulebook that supports your reasoning. NEVER paraphrase a rule. After your reasoning, under the heading `# Final Answer`, provide a clear and concise answer to the user's questions and ALWAYS include citations to the rulebook name and page number and ALWAYS quote the relevant rule(s) from the rulebook(s).
-"""
+system_prompt_template = load_template("system_prompt_rules_lawyer.md")
+qa_template = load_template("single_question_and_tool_use.md")
+answer_template = load_template("structured_rag_answer_addl_questions.md")
 
 qa_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", system_prompt_template),
-        # ("user", qa_template),
-        ("user", breakdown_rules_required_template),
+        ("user", qa_template),
         ("placeholder", "{messages}"),
 
     ],
@@ -177,7 +103,7 @@ async def retrieve_page(rulebook_name: str, page: int, runtime: ToolRuntime[Game
     if document_key is None:
         raise ValueError(f"Could not find rulebook: {rulebook_name}")
 
-    document_id = get_page_id(manifest["game_id"], document_key, page)
+    document_id = get_page_id(manifest["game_id"], manifest.get("game_version", ""), document_key, page)
     page_documents: list[Document] = cast(list[Document], await full_page_store.amget([document_id]))
     if len(page_documents) == 0:
         raise ValueError(f"No page found for {rulebook_name} {page}")
@@ -213,6 +139,7 @@ async def search_chunks(search_terms: str|list[str], runtime: ToolRuntime[GameAg
         )
 
         chunk_search_result = await chunk_search_service.ainvoke(input, config=runtime.config)
+        dump_documents(chunk_search_result["chunks"])
         for relevance_result in chunk_search_result["relevance"]["chunks"]:
             reasoning = relevance_result["reasoning"]
             chunk_id = relevance_result["id"]
@@ -260,18 +187,64 @@ async def search_chunks(search_terms: str|list[str], runtime: ToolRuntime[GameAg
     return results
 
 
+class QuoteEntry(TypedDict):
+    text: str
+    rulebook_name: str
+    page: int
+
+
+class DefinitionEntry(TypedDict):
+    term: str
+    quotes: list[QuoteEntry]
+    defines_term: bool
+    clarifying_question: str
+
+
+class ExceptionEntry(TypedDict):
+    general_rule: str
+    quotes: list[QuoteEntry]
+    exception_names_general_rule: bool
+    quotes_discounting_link: list[QuoteEntry]
+    does_exception_apply: bool | Literal["clarification_needed"]
+    clarifying_question: str
+
+
+class QaResponse(TypedDict):
+    definitions: list[DefinitionEntry]
+    exceptions: list[ExceptionEntry]
+    reasoning: str
+    final_answer: str
+    sufficient_information_to_answer: bool
+
+
 class GameAgentInputState(TypedDict):
     query: str
 
 
 class GameAgentOutputState(TypedDict):
     response: str
+    response_evidence: NotRequired[Sequence[Chunk]]
 
 
 class GameAgentOverallState(MessagesState):
     query: str
     response: str
     ready_to_answer: bool
+    response_evidence: NotRequired[Sequence[Chunk]]
+
+
+def get_all_chunks_from_message_history(messages: list[AnyMessage]) -> list[Chunk]:
+    chunks: list[Chunk] = []
+    for message in messages:
+        if isinstance(message, ToolMessage) and message.status == "success":
+            try:
+                results: list[ChunkSearchResult] = json.loads(message.text)
+                for result in results:
+                    chunk: Chunk = result["chunk"]
+                    chunks.append(chunk)
+            except Exception as e:
+                logger.error(f"Error extracting chunks from tool message content: {e}")
+    return chunks
 
 
 def dedupe_chunks_in_message_history(messages):
@@ -312,17 +285,497 @@ def dedupe_chunks_in_message_history(messages):
     return [m for m in messages if getattr(m, "id", None) in edited_ids]
 
 
+class QuoteValidationException(ValueError):
+    
+    def __init__(self, result: "TweakAndValidateQuotesResult"):
+        self.result = result
+        message = f"Quote validation failed: {len(result.invalid_quotes)} invalid quotes"
+        super().__init__(message)
+
+
+def compile_evidence_from_documents(quote_entries: Sequence[QuoteEntry], documents: Sequence[Chunk]) -> Sequence["Chunk"]:
+    quote_entries = copy.deepcopy(quote_entries)
+
+    # Organize documents
+    documents_by_rulebook_and_page: dict[tuple[str, int], list[Chunk]] = {}
+    for document in documents:
+        rulebook_name = document["rulebook_name"]
+        page = document["page"]
+        key = (rulebook_name, page)
+        if not key in documents_by_rulebook_and_page:
+            documents_by_rulebook_and_page[key] = []
+        documents_by_rulebook_and_page[key].append(document)
+    
+    # Expand quotes to a paragraph large
+    for quote in quote_entries:
+        key = (quote["rulebook_name"], quote["page"])
+        candidate_documents = documents_by_rulebook_and_page.get(key, [])
+        for document in candidate_documents:
+            page_content = document["content"]
+            match = quote_util.find_quote_with_gaps(page_content, quote["text"])
+            if match:
+                quote["text"] = quote_util.expand_to_full_paragraphs(page_content, match.matched_text)
+                break
+    
+    # Dedupe quotes
+    seen_texts: set = set()
+    deduped_quote_entries: list[QuoteEntry] = []
+    for quote in quote_entries:
+        if quote["text"] not in seen_texts:
+            deduped_quote_entries.append(quote)
+            seen_texts.add(quote["text"])
+    quote_entries = deduped_quote_entries
+    
+    # Convert quote entries to chunks
+    chunks: list[Chunk] = []
+    for quote in quote_entries:
+        chunk = Chunk(
+            rulebook_name=quote["rulebook_name"],
+            page=quote["page"],
+            offset=-1,
+            content=quote["text"]
+        )
+        chunks.append(chunk)
+    
+    return chunks
+
+
+@dataclass
+class FixQuoteCitationsResult:
+    fixed_text: str
+    unfixable_quotes: list[quote_util.ExtractedQuote]
+    valid_quotes: list[quote_util.ExtractedQuote]
+    referenced_chunks: list[Chunk]
+
+
+def get_chunks_by_rulebook_and_page(chunks: list[Chunk]) -> dict[tuple[str, int], list[Chunk]]:
+    chunks_by_rulebook_and_page: dict[tuple[str, int], list[Chunk]] = {}
+    for chunk in chunks:
+        key = (chunk["rulebook_name"], chunk["page"])
+        if key not in chunks_by_rulebook_and_page:
+            chunks_by_rulebook_and_page[key] = []
+        chunks_by_rulebook_and_page[key].append(chunk)
+    return chunks_by_rulebook_and_page
+
+
+def dedupe_chunks(chunks: list[Chunk]) -> list[Chunk]:
+    def chunk_id(chunk: Chunk) -> tuple[str, int, str]:
+        return (chunk["rulebook_name"], chunk["page"], chunk["content"])
+
+    seen_chunk_ids: set = set()
+    deduped_chunks: list[Chunk] = []
+    for chunk in chunks:
+        id = chunk_id(chunk)
+        if id not in seen_chunk_ids:
+            deduped_chunks.append(chunk)
+            seen_chunk_ids.add(id)
+    return deduped_chunks
+
+
+def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitationsResult:
+    # Track referenced chunks
+    referenced_chunks: list[Chunk] = []
+
+    # Make it easier to lookup chunks by rulebook and page
+    chunks_by_rulebook_and_page = get_chunks_by_rulebook_and_page(chunks)
+
+    # Find the quotes in the text
+    unfixable_quotes: list[quote_util.ExtractedQuote] = []
+    valid_or_fixed_quotes: list[quote_util.ExtractedQuote] = []
+    quotes_in_text = quote_util.find_quotes_in_text(text)
+
+    # We need to go in reverse order of appearance to not mess up indices
+    # Sort quotes by their position in the text
+    quotes_in_text.sort(key=lambda q: q["start_index"], reverse=True)
+
+    for quote_info in quotes_in_text:
+        citation = quote_info["citation"]
+
+        # Maybe the citation is right?
+        citation_correct = False
+        if citation:
+            citation_key = (citation["ref_name"], int(citation["page"]))
+            if citation_key in chunks_by_rulebook_and_page:
+                candidate_chunks = chunks_by_rulebook_and_page[citation_key]
+                for candidate_chunk in candidate_chunks:
+                    page_content = candidate_chunk["content"]
+                    m = quote_util.find_quote_with_gaps(page_content, quote_info["quote"])
+                    if m:
+                        # Citation is correct, move to next quote
+                        citation_correct = True
+                        referenced_chunks.append(candidate_chunk)
+                        valid_or_fixed_quotes.append(quote_info)
+
+        if citation_correct:
+            continue
+
+        # Well, the citation is wrong. Let's try to find the right one
+        correct_citation = None
+        for (rulebook_name, page), candidate_chunks in chunks_by_rulebook_and_page.items():
+            for candidate_chunk in candidate_chunks:
+                page_content = candidate_chunk["content"]
+                m = quote_util.find_quote_with_gaps(page_content, quote_info["quote"])
+                if m:
+                    correct_citation = {
+                        "ref_name": rulebook_name,
+                        "page": page
+                    }
+                    referenced_chunks.append(candidate_chunk)
+            if correct_citation:
+                break
+        
+        # If we found the correct citation, update the text
+        if correct_citation:
+            fixed_citation_text = f'({correct_citation["ref_name"]}, p. {correct_citation["page"]})'
+            # If there is a citation, replace it
+            if citation:
+                # Find the citation in the text
+                start_index = quote_info["start_index"] + citation["start_index"]
+                end_index = quote_info["start_index"] + citation["end_index"]
+                text = text[:start_index] + fixed_citation_text + text[end_index:]
+                # Construct the new quote text with the fixed citation
+                new_quote_text = quote_info["text"][:citation["start_index"]] + fixed_citation_text + quote_info["text"][citation["end_index"]:]
+                valid_or_fixed_quotes.append(
+                    {
+                        "text": new_quote_text,
+                        "quote": quote_info["quote"],
+                        "quote_type": quote_info["quote_type"],
+                        "start_index": quote_info["start_index"],
+                        "end_index": quote_info["start_index"] + len(new_quote_text),
+                        "citation": {
+                            "text": fixed_citation_text,
+                            "ref_name": correct_citation["ref_name"],
+                            "page": str(correct_citation["page"]),
+                            "start_index": citation["start_index"],
+                            "end_index": citation["start_index"] + len(fixed_citation_text)
+                        }
+                    }
+                )
+
+            else:
+                # No citation, we need to insert one
+                insert_index = quote_info["end_index"]
+                text = text[:insert_index] + " " + fixed_citation_text + text[insert_index:]
+                # Add the quote with the new citation to valid quotes
+                new_quote_text = quote_info["text"] + " " + fixed_citation_text
+                valid_or_fixed_quotes.append(
+                    {
+                        "text": new_quote_text,
+                        "quote": quote_info["quote"],
+                        "quote_type": quote_info["quote_type"],
+                        "start_index": quote_info["start_index"],
+                        "end_index": quote_info["start_index"] + len(new_quote_text),
+                        "citation": {
+                            "text": fixed_citation_text,
+                            "ref_name": correct_citation["ref_name"],
+                            "page": str(correct_citation["page"]),
+                            "start_index": len(quote_info["text"]) + 1,
+                            "end_index": len(quote_info["text"]) + 1 + len(fixed_citation_text)
+                        }
+                    }
+                )
+        else:
+            # If we couldn't find a correct citation, just report it as missing
+            unfixable_quotes.append(quote_info)
+
+    # Remove standalone citations that might have been left over after fixing quotes
+    # Pattern: citations on their own line(s), typically after blockquotes
+    # This handles the case where LLMs put a single citation at the end covering multiple quotes
+    # We need to be careful not to remove citations that are part of blockquotes
+    import re
+
+    # Find all citation positions that were part of valid quotes
+    protected_ranges = set()
+    for q in valid_or_fixed_quotes:
+        if q["citation"]:
+            # Protect the range where this citation appears in the text
+            cit_start = q["start_index"] + q["citation"]["start_index"]
+            cit_end = q["start_index"] + q["citation"]["end_index"]
+            for i in range(cit_start, cit_end):
+                protected_ranges.add(i)
+
+    # Find and remove standalone citations that aren't protected
+    standalone_citation_pattern = re.compile(
+        r'\n\s*\n\s*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))\s*(?=\n|$)',
+        re.MULTILINE
+    )
+
+    def should_remove(match):
+        # Check if any part of this match overlaps with protected ranges
+        for i in range(match.start(), match.end()):
+            if i in protected_ranges:
+                return ''  # Keep it (return empty replacement, which means no change)
+        return ''  # Remove it (return empty string)
+
+    # Actually, we want to remove non-protected ones, so:
+    matches_to_remove = []
+    for match in standalone_citation_pattern.finditer(text):
+        is_protected = any(i in protected_ranges for i in range(match.start(), match.end()))
+        if not is_protected:
+            matches_to_remove.append(match)
+
+    # Remove in reverse order to preserve indices
+    for match in reversed(matches_to_remove):
+        text = text[:match.start()] + text[match.end():]
+
+    return FixQuoteCitationsResult(
+        fixed_text=text,
+        unfixable_quotes=unfixable_quotes,
+        referenced_chunks=dedupe_chunks(referenced_chunks),
+        valid_quotes=valid_or_fixed_quotes
+    )
+
+
+@dataclass
+class TweakAndValidateQuotesResult:
+    revised_response: QaResponse
+    invalid_quotes: list[QuoteEntry]
+    valid_quotes: list[QuoteEntry]
+    chunks_referenced: list[Chunk]
+
+    @property
+    def valid(self) -> bool:
+        return len(self.invalid_quotes) == 0
+
+
+def tweak_and_validate_quotes_response(response: QaResponse, chunks: list[Chunk]) -> TweakAndValidateQuotesResult:
+    # Clone the QaResponse to avoid mutating the input
+    response = copy.deepcopy(response)
+
+    # Keep track of all chunks referenced in the response
+    referenced_chunks: list[Chunk] = []
+
+    # Keep track of all quotes
+    valid_quotes: list[QuoteEntry] = []
+
+    chunks_by_rulebook_and_page = get_chunks_by_rulebook_and_page(chunks)
+
+    # Check and fix quotes in the final answer
+    result = fix_quote_citations_in_text(response["final_answer"], chunks)
+    response["final_answer"] = result.fixed_text
+    referenced_chunks.extend(result.referenced_chunks)
+
+    for _quote in result.valid_quotes:
+        valid_quotes.append(
+            QuoteEntry(
+                text=_quote["quote"],
+                rulebook_name=_quote["citation"]["ref_name"] if _quote["citation"] else "",
+                page=int(_quote["citation"]["page"]) if _quote["citation"] else -1
+            )
+        )
+
+    # Check the final answer for invalid quotes
+    invalid_final_answer_quotes: list[QuoteEntry] = []
+    for extracted_quote in result.unfixable_quotes:
+        citation = extracted_quote["citation"]
+        if not citation:
+            citation = {"ref_name": "", "page": -1}
+        quote_entry: QuoteEntry = {
+            "text": extracted_quote["quote"],
+            "rulebook_name": citation["ref_name"],
+            "page": int(citation["page"])
+        }
+        invalid_final_answer_quotes.append(quote_entry)
+    
+    def _check_quote(quote: QuoteEntry) -> bool:
+        key = (quote["rulebook_name"], quote["page"])
+        if key not in chunks_by_rulebook_and_page:
+            return False
+        candidate_chunks = chunks_by_rulebook_and_page[key]
+        return_value = False
+        for candidate_chunk in candidate_chunks:
+            page_content = candidate_chunk["content"]
+            m = quote_util.find_quote_with_gaps(page_content, quote["text"])
+            if m:
+                return_value = True
+                referenced_chunks.append(candidate_chunk)
+        return return_value
+    
+    def _find_chunk_with_quote(text: str) -> Chunk | None:
+        found_chunk = None
+        for chunk in chunks:
+            m = quote_util.find_quote_with_gaps(chunk["content"], text)
+            if m:
+                found_chunk = chunk
+                referenced_chunks.append(chunk)
+        return found_chunk
+    
+    def check_quotes_in_list(quotes: list[QuoteEntry]) -> list[QuoteEntry]:
+        invalid_quotes: list[QuoteEntry] = []
+        for quote in quotes:
+            if not _check_quote(quote):
+                chunk_with_quote = _find_chunk_with_quote(quote["text"])
+                if chunk_with_quote:
+                    # Fix the quote to have the right rulebook and page
+                    quote["rulebook_name"] = chunk_with_quote["rulebook_name"]
+                    quote["page"] = chunk_with_quote["page"]
+                    valid_quotes.append(quote)
+                else:
+                    # Record invalid quote
+                    invalid_quotes.append(quote)
+            else:
+                valid_quotes.append(quote)
+        return invalid_quotes
+
+    # Validate definitions
+    invalid_definition_quotes: list[QuoteEntry] = []
+    for definition in response["definitions"]:
+        invalid_definition_quotes.extend(check_quotes_in_list(definition["quotes"]))
+
+    # Validate exceptions
+    invalid_exception_quotes: list[QuoteEntry] = []
+    for exception in response["exceptions"]:
+        invalid_exception_quotes.extend(check_quotes_in_list(exception["quotes"]))
+    
+    # Validate quotes discounting links
+    invalid_discounting_link_quotes: list[QuoteEntry] = []
+    for exception in response["exceptions"]:
+        invalid_discounting_link_quotes.extend(check_quotes_in_list(exception["quotes_discounting_link"]))
+    
+    return TweakAndValidateQuotesResult(
+        revised_response=response,
+        invalid_quotes=invalid_definition_quotes + invalid_exception_quotes + invalid_discounting_link_quotes + invalid_final_answer_quotes,
+        chunks_referenced=dedupe_chunks(referenced_chunks),
+        valid_quotes=valid_quotes,
+    )
+
+
+def get_run_id_from_config(config: RunnableConfig | None) -> str:
+    """Extract run_id from config or callback manager, returning 'unknown' if not found."""
+    if not config:
+        return "unknown"
+
+    # First try to get run_id directly from config
+    run_id = config.get("run_id")
+    if run_id:
+        return str(run_id)
+
+    # If not in config, try to get it from the callback manager
+    callbacks = config.get("callbacks")
+    if callbacks is not None:
+        # Callback managers have a parent_run_id attribute
+        parent_run_id = getattr(callbacks, "parent_run_id", None)
+        if parent_run_id:
+            return str(parent_run_id)
+        # Some callback managers might have run_id directly
+        callback_run_id = getattr(callbacks, "run_id", None)
+        if callback_run_id:
+            return str(callback_run_id)
+
+    return "unknown"
+
+
+def dump_documents(documents: list[Document]):
+    print("===== Dumping Documents =====")
+    for document in documents:
+        print(document.metadata['rulebook_name'], document.metadata['page_num'], document.page_content[:100].replace("\n", " "))
+    print("===== End Dump =====")
+
+
+def dump_chunks(chunks: list[Chunk]):
+    print("===== Dumping Chunks =====")
+    for chunk in chunks:
+        print(chunk['rulebook_name'], chunk['page'], chunk["content"][:100].replace("\n", " "))
+    print("===== End Dump =====")
+
+
 def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_prompt: ChatPromptTemplate=qa_prompt) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
     tools = [list_rulebooks, retrieve_page, search_chunks]
     tool_node = ToolNode(tools)
+    
+    async def check_answer_progress(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        assert runtime is not None
+        manifest = runtime.context.manifest
 
-    async def ask_to_answer(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext]) -> dict:
-        message_str = PromptTemplate.from_template(lookup_rules_answer_template).format()
-        message = HumanMessage(content=message_str)
-        return {
-            "ready_to_answer": True,
-            "messages": [message]
-        }
+        # Set up structlog context with the run ID - this will automatically
+        # add run_id to all log calls within this function and any functions it calls
+        run_id = get_run_id_from_config(config)
+        with structlog.contextvars.bound_contextvars(run_id=run_id):
+            chunks = get_all_chunks_from_message_history(state["messages"])
+
+            # Print all the chunks found
+            dump_chunks(chunks)
+
+            answer_prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", system_prompt_template),
+                    ("user", answer_template),
+
+                ],
+                template_format="mustache"
+            )
+
+            answer_chat_model = chat_model.with_structured_output(
+                QaResponse, include_raw=True
+            ).bind(
+                logprobs=True, top_logprobs=2, temperature=0.3, top_p=0.6
+            )
+
+            chain = answer_prompt | answer_chat_model
+            chain = chain.with_config(run_name="game_agent_answer_chain")
+
+            input = dict(
+                # game_summary=manifest.get("summary", ""),
+                game_summary="",
+                game_name=manifest["name"],
+                documents=chunks,
+                query=state["query"]
+            )
+
+            quote_validation_result = None
+            for _ in range(3):
+                result = await chain.ainvoke(input, config=config)
+                assert isinstance(result, dict)
+                parsed = result["parsed"]
+                raw = result["raw"]
+
+                # Ensure every quote reference in the response is valid
+                quote_validation_result = tweak_and_validate_quotes_response(parsed, chunks)
+
+                # This is a pretty big thing to log, only do it if things changed
+                if parsed != quote_validation_result.revised_response:
+                    logger.info("QAResponse before and after tweak", before=parsed, after=quote_validation_result.revised_response, invalid_quote_count=len(quote_validation_result.invalid_quotes))
+        
+                parsed = quote_validation_result.revised_response
+
+                # Log as warning every invalid quote
+                if not quote_validation_result.valid:
+                    for invalid_quote in quote_validation_result.invalid_quotes:
+                        logger.warning(
+                            "Invalid quote detected in answer",
+                            text=invalid_quote["text"],
+                            rulebook_name=invalid_quote["rulebook_name"],
+                            page=invalid_quote["page"],
+                        )
+
+                if quote_validation_result.valid:
+                    evidence: list[QuoteEntry] = quote_validation_result.valid_quotes
+                    return {
+                        "response": parsed["final_answer"],
+                        "messages": [raw],
+                        "response_evidence": compile_evidence_from_documents(
+                            evidence,
+                            quote_validation_result.chunks_referenced
+                        ),
+                    }
+
+            assert quote_validation_result is not None
+
+            if not quote_validation_result.valid:
+                response = QaResponse(
+                    definitions=[],
+                    exceptions=[],
+                    reasoning="",
+                    final_answer="I'm sorry, but I was unable to provide a valid answer with correct citations based on the provided rulebooks.",
+                    sufficient_information_to_answer=False
+                )
+                new_message = AIMessage(content=json.dumps(response, indent=2))
+                return {
+                    "response": response["final_answer"],
+                    "messages": state["messages"] + [new_message],
+                    "response_evidence": [],
+                }
+ 
 
     async def llm_call(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
         manifest = runtime.context.manifest
@@ -378,29 +831,13 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
         # Otherwise, we stop (reply to the user)
         return "response"
     
-    async def populate_response(state: GameAgentOverallState) -> dict:
-        """Extract the final response from the messages"""
-        messages = state["messages"]
-        for message in messages:
-            if isinstance(message, ToolMessage):
-                print("================================= Tool Message =================================")
-                print(f"Name: {message.name}")
-                data = json.loads(message.text)
-                for relevance_result in data:
-                    chunk: Chunk = relevance_result["chunk"]
-                    reason: str = relevance_result["relevance_reason"]
-                    print(f"--- Chunk from {chunk['rulebook_name']} page {chunk['page']} offset {chunk['offset']} ---")
-                    print(f"Relevance Reason: {reason}")
-                    print()
-                    print(chunk["content"])
-                    print("-----------------------------------------------------")
-                # print("================================= End Tool Message =================================")
-            else:
-                message.pretty_print()
-        last_message = messages[-1]
-        return {
-            "response": last_message.content
-        }
+    async def check_answer_edge(state: GameAgentOverallState) -> Literal["__end__", "dedupe_chunks"]:
+        """Determine if we should dedupe chunks or end the workflow"""
+
+        if state.get("response"):
+            return "__end__"
+        else:
+            return "dedupe_chunks"
     
     # Build workflow
     agent_builder = StateGraph(
@@ -413,22 +850,19 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
     # Add nodes
     # NOTE: The node name "llm_call" is used by the QA service for streaming filtering.
     # If you rename this node, update the streaming logic in build_qa_service.
-    agent_builder.add_node("ask_to_answer", ask_to_answer)
     agent_builder.add_node("llm_call", llm_call)
     agent_builder.add_node("tool_node", tool_node)
     agent_builder.add_node("dedupe_chunks", dedupe_chunks)
-    agent_builder.add_node("response", populate_response)
+    agent_builder.add_node("check_answer_progress", check_answer_progress)
+    # agent_builder.add_node("response", populate_response)
 
     # Add edges to connect nodes
     agent_builder.add_edge(START, "llm_call")
-    agent_builder.add_conditional_edges(
-        "llm_call",
-        should_continue
-    )
-    agent_builder.add_edge("ask_to_answer", "llm_call")
+    agent_builder.add_edge("llm_call", "tool_node")
     agent_builder.add_edge("tool_node", "dedupe_chunks")
-    agent_builder.add_edge("dedupe_chunks", "llm_call")
-    agent_builder.add_edge("response", END)
+    agent_builder.add_edge("dedupe_chunks", "check_answer_progress")
+    agent_builder.add_edge("check_answer_progress", END)
+    # agent_builder.add_edge("response", END)
 
     # Compile the agent
     agent = agent_builder.compile(checkpointer=checkpoint_saver)

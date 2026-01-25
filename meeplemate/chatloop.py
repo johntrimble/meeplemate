@@ -168,38 +168,46 @@ def build_chatloop_service(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
             context = ChatLoopContext(manifest=input["manifest"])
             graph_input: ChatLoopInputState = {"messages": input["messages"]}
 
-            # It's actually the QA service that produces the streaming messages,
-            # so we need to filter the graph output to yield only those
-            # messages here.
-            async for item in self.graph.astream(
+            result = await self.graph.ainvoke(
                 graph_input,
                 context=context,
-                stream_mode="messages",
-                subgraphs=True,
                 config=config
-            ):
-                namespace, (message, metadata) = item
-                # Check the namespace
-                if len(namespace) != 1 or not namespace[0].startswith("respond_to_query:"):
-                    continue
+            )
 
-                # Ignore tool calls
-                if getattr(message, "tool_calls", None) or getattr(message, "invalid_tool_calls", None):
-                    continue
+            yield AIMessageChunk(content=result["messages"][-1].content)
 
-                # Ignore tool messages
-                if isinstance(message, ToolMessage):
-                    continue
+            # # It's actually the QA service that produces the streaming messages,
+            # # so we need to filter the graph output to yield only those
+            # # messages here.
+            # async for item in self.graph.astream(
+            #     graph_input,
+            #     context=context,
+            #     stream_mode="messages",
+            #     subgraphs=True,
+            #     config=config
+            # ):
+            #     namespace, (message, metadata) = item
+            #     # Check the namespace
+            #     if len(namespace) != 1 or not namespace[0].startswith("respond_to_query:"):
+            #         continue
 
-                # Only include messages from the llm_call node
-                if not metadata.get("langgraph_node") == "llm_call":
-                    continue
+            #     # Ignore tool calls
+            #     if getattr(message, "tool_calls", None) or getattr(message, "invalid_tool_calls", None):
+            #         continue
 
-                # Skip empty messages
-                if not message.content:
-                    continue
+            #     # Ignore tool messages
+            #     if isinstance(message, ToolMessage):
+            #         continue
 
-                if isinstance(message, AIMessageChunk):
-                    yield message
+            #     # Only include messages from the llm_call node
+            #     if not metadata.get("langgraph_node") == "llm_call":
+            #         continue
+
+            #     # Skip empty messages
+            #     if not message.content:
+            #         continue
+
+            #     if isinstance(message, AIMessageChunk):
+            #         yield message
 
     return _ChatLoopService(agent_graph)

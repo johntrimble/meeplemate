@@ -1,0 +1,454 @@
+- name: WFB 5th Edition tests
+  params:
+    game_id: warhammer_5th_edition
+  test_cases:
+  - name: grail_knights_green_dragon_break_tests
+    query: |
+      When a unit of Grail Knights loses combat against a Green Dragon do the Grail Knights need to take a break test?
+    reference_answer: |
+      Yes, Grail Knights do need to take a break test when they lose combat against a Green Dragon. Grail Knights have the Grail Virtue, which makes them immune to psychology:
+
+      > Knightly Virtues: Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology. (Bretonnia Army Book, p. 63)
+
+      However, the rules for break tests are separate from psychology tests:
+
+      > Players will immediately realise that a psychology test is taken in the same way as a Break test in hand-to-hand combat and uses the same characteristic, namely Leadership. However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests. (Warhammer Rulebook, p. 47)
+
+      Therefore, even though Grail Knights are immune to psychology tests, they must still take break tests when they lose combat, including against a Green Dragon.
+    evidence:
+    - rulebook: Warhammer Rulebook
+      page: 42
+      quote: |
+        The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away This is called a Break test. You need to take a separate Break test for every unit involved in the combat. Depending on which units pass and which fail their test, some may break and flee whilst others stand their ground. Troops which are better led, braver, and more professional are more likely to stand firm, whilst wild, temperamental troops are far more likely to run for it.
+    - rulebook: Bretonnia Army Book
+      page: 44
+      quote: |
+        Grail Knights have the most noble chivalric virtue of all - the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.
+    - rulebook: Bretonnia Army Book
+      page: 63
+      quote: |
+        Knightly Virtues: Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology.
+    - rulebook: Warhammer Rulebook
+      page: 47
+      quote: |
+        The Psychology rules represent these factors in the game and call upon the player to make occasional tests to determine whether his troops are affected by adverse psychology. Most psychology tests are made in the same way, so we'll describe the procedure first before we look at the individual psychological factors.
+    - rulebook: Warhammer Rulebook
+      page: 47
+      quote: |
+        Players will immediately realise that a psychology test is taken in the same way as a Break test in hand- to- hand combat and uses the same characteristic, namely Leadership. However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.
+
+  - name: grail_knights_break_tests
+    query: |
+      Do Grail Knights need to take break tests?
+    evidence:
+    - rulebook: Warhammer Rulebook
+      page: 42
+      quote: |
+        The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away This is called a Break test. You need to take a separate Break test for every unit involved in the combat. Depending on which units pass and which fail their test, some may break and flee whilst others stand their ground. Troops which are better led, braver, and more professional are more likely to stand firm, whilst wild, temperamental troops are far more likely to run for it.
+    - rulebook: Bretonnia Army Book
+      page: 63
+      quote: |
+        Knightly Virtues: Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology.
+    - rulebook: Bretonnia Army Book
+      page: 44
+      quote: |
+        Grail Knights have the most noble chivalric virtue of all - the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.
+    - rulebook: Warhammer Rulebook
+      page: 47
+      quote: |
+        Players will immediately realise that a psychology test is taken in the same way as a Break test in hand- to- hand combat and uses the same characteristic, namely Leadership. However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.
+
+  - name: flying_high_spell_target
+    query: |
+      I have a knight on pegasus that is "flying high". Can they still be targeted by spells?
+    reference_answer: |
+      In general, models flying high cannot be targeted by spells cast from the ground:
+
+      > "Whilst up high a model may not ... have spells cast upon it by wizards on the table. The process of flying high puts you above and beyond the battlefield." (Warhammer Rulebook, p. 75)
+
+      However there are some exceptions to this rule. For example, the **Warpstorm Scroll** specifically targets models that are flying high:
+
+      > "Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth..." (Warhammer Magic, p. 44)
+    evidence:
+    - rulebook: Warhammer Rulebook
+      page: 75
+      quote: |
+        Whilst up high a model may not shoot weapons at troops on the table, cast spells on to the table, or do anything to troops on the table. Similarly, a model that is up high cannot be shot at by troops on the table or have spells cast upon it by wizards on the table. The process of flying high puts you above and beyond the battlefield.
+    - rulebook: Warhammer Magic
+      page: 44
+      quote: |
+        ## WARPSTORM SCROLL
+
+        Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re-entering the table on their own side's table edge in their following turn.
+  - name: warpstorm_flying_high_exception
+    query: |
+      Can I use the Warpstorm Scroll against a model that is flying high?
+    reference_answer: |
+      Yes, while models flying high cannot typically be the target of spells:
+      
+      > "Whilst up high a model may not ... have spells cast upon it by wizards on the table. The process of flying high puts you above and beyond the battlefield." (Warhammer Rulebook, p. 75)
+
+      the Warpstorm Scroll explicitly targets models "flying high" and so is an exception to this rule:
+
+      > "Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth..." (Warhammer Magic, p. 44)
+    evidence:
+    - rulebook: Warhammer Rulebook
+      page: 75
+      quote: |
+        Whilst up high a model may not shoot weapons at troops on the table, cast spells on to the table, or do anything to troops on the table. Similarly, a model that is up high cannot be shot at by troops on the table or have spells cast upon it by wizards on the table. The process of flying high puts you above and beyond the battlefield.
+    - rulebook: Warhammer Magic
+      page: 44
+      quote: |
+        ## WARPSTORM SCROLL
+
+        Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re-entering the table on their own side's table edge in their following turn.      
+
+- name: Munchkin
+  params:
+    game_id: munchkin
+  test_cases:
+  - name: monster_pursue_too_low_loot_room
+    query: |
+      If I draw a monster face up during the "Kick Open The Door" phase, and the monster card says, "Will not pursue anyone of level 3 or below", and I'm only level 2, do I still count as being in combat and does that mean I cannot loot the room?
+    reference_answer: |
+      You do still count as being in combat and cannot loot the room. According to the rules:
+
+      > If drawn face-up, during the Kick Open The Door phase, monsters immediately attack the person who drew them. (Munchkin Rules, p. 1)
+
+      The rules do not provide any exceptions for monsters that will not pursue players below a certain level. Therefore, even if the monster card states that it will not pursue anyone of level 3 or below, you are still considered to be in combat because you drew the monster face up during the Kick Open The Door phase. The "will not pursue" clause is likely related to running away:
+
+      > Roll the die. You escape on a 5 or more. Some Class and Race abilities and some Treasures make it easier or harder to Run Away from all monsters. And some monsters give you a bonus or penalty to your roll for that monster only. (Munchkin Rules, p. 4)
+
+      Since you are in combat, you cannot proceed to loot the room, as looting the room is a separate action that occurs when you do not encounter a monster during the Kick Open The Door phase.
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        Loot The Room: Draw a second card from the Door deck, face down, and place it in your hand.
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        If drawn face-up, during the Kick Open The Door phase, monsters immediately attack the person who drew them.
+    - rulebook: Munchkin Rules
+      page: 4
+      quote: |
+        Roll the die. You escape on a 5 or more. Some Class and Race abilities and some Treasures make it easier or harder to Run Away from all monsters. And some monsters give you a bonus or penalty to your roll for that monster only.
+  - name: sell_items_from_hand
+    query: |
+      Can I sell items from my hand to go up a level, assuming I can sell 1,000 gold pieces worth?
+    reference_answer: |
+      Yes, you can sell items from your hand to go up a level, assuming the total value of the items is at least 1,000 Gold Pieces. As stated in the rules: 
+
+      > "Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level... You may sell Items from your hand as well as those you are carrying." (Munchkin Rules, p. 2)
+
+      However, it is important to note that you **cannot** sell items to reach Level 10, as explicitly stated in the rules: 
+
+      > "You may not sell Items to go to Level 10." (Munchkin Rules, p. 2)
+
+      Thus, while you can use items from your hand to increase your level, you cannot do so if doing so would bring you to Level 10.
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 2
+      quote: |
+        Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level. ("No Value" cards are the same as zero Gold Pieces.) If you discard (for instance) 1,100 Gold Pieces worth, you don't get change. But if you can manage 2,000 worth, you can go up two levels at once, and so on. You may sell Items from your hand as well as those you are carrying. You may not sell Items to go to Level 10.
+  - name: hireling_bad_stuff_keep_items
+    query: |
+      If a hireling is removed from play due to Bad Stuff, does the player retain any items the hireling was carrying?
+  - name: multiple_steeds_equipped
+    query: |
+      Can I have multiple steeds equipped at the same time?
+    reference_answer: |
+      According to the official rules of Munchkin 4 - The Need for Steed, players are **not allowed** to have multiple steeds equipped at the same time unless they use a *Cheat!* card to do so. The rulebook explicitly states: 
+
+      > "No player can have more than one Steed except by using a Cheat! card." (Munchkin 4 - The Need for Steed, p. 1)
+
+      This rule clearly limits a player to only one steed at a time, with an exception for *Cheat!* cards.
+    evidence:
+    - rulebook: Munchkin 4 - The Need for Steed
+      page: 1
+      quote: |
+        No player can have more than one Steed except by using a Cheat! card.
+  - name: multiple_steeds_equipped_dwarf
+    query: |
+      If I am a dwarf, can I have multiple steeds equipped at the same time?
+    evidence:
+    - rulebook: Munchkin 4 - The Need for Steed
+      page: 1
+      quote: |
+        No player can have more than one Steed except by using a Cheat! card.
+    - rulebook: Munchkin 4 - The Need for Steed
+      page: 1
+      quote: |
+        Steeds are Items, and follow normal Item rules. Anything that affects an Item can affect a Steed.
+    - rulebook: Munchkin 4 - The Need for Steed
+      page: 1
+      quote: |
+        Steeds carry themselves. A Steed is "Big," but it does not count against the number of Big items you can carry (in fact, some let you carry more Big things). The "Big" designation on Steeds is to control what Traps and Curses affect them, and to keep Thieves from pocketing them and walking off.
+    - rulebook: Munchkin Rules
+      page: 2
+      quote: |
+        If something lets you have more than one Big item (for instance, the Dwarf race) and you lose that ability, you must either correct the problem immediately or get rid of all but one Big item. If it's your turn and you're not in combat, you can sell the excess Big items
+  - name: go_up_level_combat
+    query: |
+      Can I play a Go Up a Level card during combat?
+    reference_answer: |
+      Yes, you can play a Go Up a Level card during combat. The rules explicitly state: 
+
+      > "A couple of specific examples: Go Up a Level cards may be played on yourself or any other player at any time, even during combat. Discard them once they are played. Exception: You cannot play a Go Up a Level card to give a player the winning level!" (Munchkin Rules, p. 2)
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 2
+      quote: |
+        A couple of specific examples: Go Up a Level cards may be played on yourself or any other player at any time, even during combat. Discard them once they are played. Exception: You cannot play a Go Up a Level card to give a player the winning level!
+  - name: player_helper_count
+    query: |
+      How many players can help me in a combat by adding their combat level?
+    reference_answer: |
+      According to the official rules of Munchkin, **only one player can help you in a combat by adding their combat strength**. This is explicitly stated in the "Asking for Help" section of the rulebook: 
+
+      > "If you cannot win a combat by your own, you may ask any other player to help you. If he refuses, you may ask another player, and so on, until they all turn you down or someone helps. Only one player can help you, adding their combat strength to yours." (Munchkin Rules, p. 3)
+
+      This rule strictly limits assistance to a single helper at a time during combat.
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        When you fight a monster, you compare your combat strength (your Level plus any bonuses or penalties) against the monster's combat strength. If your combat strength is greater, you win! If it is tied or lower, the monster wins.
+    - rulebook: Munchkin Rules
+      page: 3
+      quote: |
+        If you cannot win a combat by your own, you may ask any other player to help you. If he refuses, you may ask another player, and so on, until they all turn you down or someone helps. Only one player can help you, adding their combat strength to yours. Anyone can play cards to affect your combat, however!
+  - name: retain_princess_after_death
+    query: |
+      Does a player retain their princess card in play if they die?
+  - name: multiple_big_only_one_equipped
+    query: |
+      Can I carry multiple big items so long as only one is equipped?
+    reference_answer: |
+      In general, no as the restriction on Big Items applies to carried items, not whether or not they are equipped:
+
+      The general rule regarding Big items is:
+
+      > "Big Items: You may carry any number of Small items, but only one Big one. (Any item not marked Big is considered Small.)" (Munchkin Rules, p. 2)
+
+      There are exceptions to this rule, for example steeds to not count towards this Big Item limit:
+
+      > "Steeds are &quot;Big,&quot; but it does not count against the number of Big items you can carry (in fact, some let you carry more Big things)." (Munchkin 4 - The Need for Steed, p. 1)
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 2
+      quote: |
+        Big Items: You may carry any number of Small items, but only one Big one. (Any item not marked Big is considered Small.) You may not discard one Big item to play another; you must sell the first Item, trade it, lose it to a Curse or Bad Stuff, or discard it to power a Class or Race ability.
+    - rulebook: Munchkin 4 - The Need for Steed
+      page: 1
+      quote: |
+        Steeds carry themselves. A Steed is "Big," but it does not count against the number of Big items you can carry (in fact, some let you carry more Big things). The "Big" designation on Steeds is to control what Traps and Curses affect them, and to keep Thieves from pocketing them and walking off.
+  - name: in_play_not_equipped_name
+    query: |
+      What is an item in play but not equipped called?
+    reference_answer: |
+      An Item in play but not equipped is referred to as a **carried Item** that is not currently providing a bonus. According to the Munchkin Rules: 
+
+      > "All Items you have in play are considered 'carried.' Items that are actually giving you a bonus are 'equipped.' You should indicate Items that are not equipped by turning the cards sideways. You may not alter the status of your Items during a combat or while running away." (Munchkin Rules, p. 2)
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 2
+      quote: |
+        All Items you have in play are considered "carried." Items that are actually giving you a bonus are "equipped." You should indicate Items that are not equipped by turning the cards sideways. You may not alter the status of your Items during a combat or while running away.
+  - name: break_down_door_steed
+    query: |
+      If after breaking down the door I draw a steed face up, what are my options?
+    reference_answer: |
+      You may either treat the steed as a monster:
+
+      > "A player who draws a face- up Steed may choose to treat it as a monster instead. In that case, its Level is equal to twice the combat bonus at the top of the card, and defeating it is good for one Treasure and one level. Monster Enhancers may be played on Steeds being fought as monsters, and have their normal effects. The Bad Stuff for any Steed attacked as a monster is "Lose a level." (Munchkin 4 - The Need for Steed, p. 1)
+
+      or claim it as an item:
+
+      > "Steeds are Items, and follow normal Item rules. Anything that affects an Item can affect a Steed." (Munchkin 4 - The Need for Steed, p. 1)
+    evidence:
+    - rulebook: Munchkin 4 - The Need for Steed
+      page: 1
+      quote: |
+        A player who draws a face- up Steed may choose to treat it as a monster instead. In that case, its Level is equal to twice the combat bonus at the top of the card, and defeating it is good for one Treasure and one level. Monster Enhancers may be played on Steeds being fought as monsters, and have their normal effects. The Bad Stuff for any Steed attacked as a monster is "Lose a level.
+    - rulebook: Munchkin 4 - The Need for Steed
+      page: 1
+      quote: |
+        Steeds are Items, and follow normal Item rules. Anything that affects an Item can affect a Steed.
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        (1) Kick Open The Door: Draw one card from the Door deck and turn it face up.
+
+        If it's a monster, you must fight it. See Combat, p. 3. If the card is a curse - see Curses, p. 5 - it applies to you immediately (if it can) and is discarded (unless it has a persistent effect or you keep the card as a reminder of an upcoming effect).
+
+        If you draw any other card, you may either put it in your hand or play it immediately.
+  - name: when_super_munchkin
+    query: |
+      When can I play a Super Munchkin card?
+    
+  - name: super_munchkin_no_class
+    query: |
+      Can I play a Super Munchkin card without a class card?
+    reference_answer: |
+      No, you cannot play a Super Munchkin card without a Class card. According to the rulebook:
+
+      > "These cards [Super Munchkin] may be played whenever it is legal to play a Class or Race, as long as you have an appropriate card (Class for Super Munchkin, Race for Half-Breed) to attach it to." (Munchkin Rules, p. 1)
+
+      This means that the Super Munchkin card requires an existing Class card to be played, as it must be attached to one. Without a Class card in play, the conditions for playing the Super Munchkin card are not met.
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        Class: Characters may be Warriors, Wizards, Thieves, or Clerics. If you have no Class card in front of you, you have no class. Yeah, I know, we did that one already.
+
+        Each Class has special abilities, shown on the cards. You gain the abilities of a Class the moment you play its card in front of you, and lose them as soon as you discard that card. Some Class abilities are powered by discards. You may discard any card, in play or in your hand, to power a special ability.
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        These cards may be played whenever it is legal to play a Class or Race, as long as you have an appropriate card (Class for Super Munchkin, Race for Half- Breed) to attach it to. You cannot have more than one of the same Class or Race card in play at once.
+  - name: what_cards_trade
+    query: |
+      What cards can I trade with other players?
+    reference_answer: |
+      According to the official rules of Munchkin, you can trade **Items** with other players. Here is the relevant rule text:
+
+      > "Trading: You may trade Items (but no other cards) with other players. You may only trade Items from the table - not from your hand. You may trade at any time except when you or your trading partner are in combat - in fact, the best time to trade is when it's not your turn. Any Item you receive in a trade must remain in play." (Munchkin Rules, p. 2)
+
+      This rule explicitly limits trading to **Items**,which on the table in front of a player. Other card types (e.g., Race, Class, Curses, one-shot Treasures, Hirelings), or items in one's hand, cannot be traded.
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 2
+      quote: |
+        Trading: You may trade Items (but no other cards) with other players. You may only trade Items from the table - not from your hand. You may trade at any time except when you or your trading partner are in combat - in fact, the best time to trade is when it's not your turn. Any Item you receive in a trade must remain in play.
+  - name: when_play_hireling
+    query: |
+      When can I play a Hireling?
+    reference_answer: |
+      You may play a Hireling at any time, including during combat, as long as you have only one Hireling in play at a time. This is supported by the following:
+
+      > "You can play a Hireling at any time, even in combat, as long as you have only one Hireling in play at a time." (Munchkin 4 - The Need for Steed, p. 0)
+
+      > "You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hireling. Play a Curse." (Munchkin Rules, p. 1)
+    evidence:
+    - rulebook: Munchkin 4 - The Need for Steed
+      page: 0
+      quote: |
+        Hirelings are found in Door decks in some sets, Treasures in others. (In this set, they're Doors.) You can play a Hireling at any time, even in combat, as long as you have only one Hireling in play at a time. If you draw a face- up Hireling, you may put it in your hand if you cannot (or don't want to) put it in play. You may discard a Hireling at any time.
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hireling. Play a Curse.
+  - name: multiple_hirelings
+    query: |
+      Can I play a Hireling card if I already have a Hireling in play?
+    reference_answer: |
+      No, you cannot play a Hireling card if you already have a Hireling in play. The rules state: 
+      
+      > "You can play a Hireling at any time, even in combat, as long as you have only one Hireling in play at a time" (Munchkin 4 - The Need for Steed, p. 0).
+      
+      This means that having more than one Hireling in play at once is not allowed. If a player already has a Hireling in play, they must discard or remove it before playing another.
+    evidence:
+    - rulebook: Munchkin 4 - The Need for Steed
+      page: 0
+      quote: |
+        Hirelings are found in Door decks in some sets, Treasures in others. (In this set, they're Doors.) You can play a Hireling at any time, even in combat, as long as you have only one Hireling in play at a time. If you draw a face- up Hireling, you may put it in your hand if you cannot (or don't want to) put it in play. You may discard a Hireling at any time.
+  - name: loot_room_face_up_down
+    query: |
+      When I loot the room, is the door card drawn face up or face down?
+    reference_answer: |
+      When you loot the room, the door card is drawn face down. This is explicitly stated in the rulebook:
+
+      > "Loot The Room: Draw a second card from the Door deck, face down, and place it in your hand." (Munchkin Rules, p. 1)
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        Loot The Room: Draw a second card from the Door deck, face down, and place it in your hand.
+  - name: compel_winning_level
+    query: |
+      Can I use a card to compel another player to help me in combat if winning that combat would give me the winning level?
+    reference_answer: |
+      No, as stated in the rules:
+      
+      > "A few cards or abilities allow you to compel another player to help you in combat. These abilities do not work if you are fighting for the win - and if you force someone to help and then the fight becomes one for the win, your helper gets to back out without penalty. However, if you voluntarily help someone, you don't get to back out just because they're about to win the game - so pay attention!" (Munchkin Rules, p. 3)
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 3
+      quote: |
+        A few cards or abilities allow you to compel another player to help you in combat. These abilities do not work if you are fighting for the win - and if you force someone to help and then the fight becomes one for the win, your helper gets to back out without penalty. However, if you voluntarily help someone, you don't get to back out just because they're about to win the game - so pay attention!
+  - name: play_go_up_level_other_player
+    query: |
+      Can I play a Go Up a Level card on another player?
+    reference_answer: |
+      Yes, you can play a Go Up a Level card on another player at any time, including during combat. This is explicitly stated in the rules: 
+
+      > "A couple of specific examples: Go Up a Level cards may be played on yourself or any other player at any time, even during combat. Discard them once they are played. Exception: You cannot play a Go Up a Level card to give a player the winning level!" (Munchkin Rules, p. 2)
+
+      This means you may use such a card to increase another player's level, provided doing so would not cause them to reach Level 10. If playing the card would make them win the game, it cannot be used for that purpose.
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 2
+      quote: |
+        Other Treasure cards (like Go Up a Level cards) are not Items. Most of these cards say when they can be played, and whether they stay in play or are discarded. A couple of specific examples: Go Up a Level cards may be played on yourself or any other player at any time, even during combat. Discard them once they are played. Exception: You cannot play a Go Up a Level card to give a player the winning level!
+
+  - name: curse_in_combat
+    query: |
+      Can I play a Curse while in combat?
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hriling. Play a Curse.
+    - rulebook: Munchkin Rules
+      page: 3
+      quote: |
+        You can interfere with others' combats in several ways, including: Use a one- shot card. You could help another player by using a one- shot to strengthen their side. Of course, you can "accidentally" strengthen the monster with it, instead...
+
+        Play a monster enhancer. These cards (usually) make a monster stronger... and give it more Treasure. You can play these either during your own combats or during someone else's combat.
+
+        Add a monster from your hand to join the combat, either with a Wandering Monster card or by using the special Undead rule.
+
+        Backstab a player in combat, if you're a Thief.
+
+        Curse them, if you have a Curse card.
+  - name: discard_class_card
+    query: |
+      How can I get rid of my Class card?
+    reference_answer: |
+      You can discard your Class card at any time during the game. The following rule explicitly allows this action:
+
+      > You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hriling. Play a Curse. (Munchkin Rules, p. 1)
+
+      This means that if you wish to get rid of your Class card, you may simply choose to discard it during your turn or at any other moment when you are not restricted by combat or other turn-specific phases.
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hriling. Play a Curse.
+  - name: discard_race_card
+    query: |
+      When can I discard a Race card?
+    reference_answer: |
+      You can discard your Race card at any time during the game. The following rule explicitly allows this action:
+
+      > You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hriling. Play a Curse. (Munchkin Rules, p. 1)
+
+      This means that if you wish to get rid of your Race card, you may simply choose to discard it during your turn or at any other moment when you are not restricted by combat or other turn-specific phases.
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 1
+      quote: |
+        You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hriling. Play a Curse.
+  - name: sell_items_level_nine
+    query: |
+      How many items can I sell at level nine?
+    reference_answer: |
+      At Level 9, you may not sell Items to gain additional levels, as you cannot sell items to reach Level 10. According to the rules:
+
+      > "Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level. (&quot;No Value&quot; cards are the same as zero Gold Pieces.) If you discard (for instance) 1,100 Gold Pieces worth, you don't get change. But if you can manage 2,000 worth, you can go up two levels at once, and so on. You may sell Items from your hand as well as those you are carrying. You may not sell Items to go to Level 10." (Munchkin Rules, p. 2)
+    evidence:
+    - rulebook: Munchkin Rules
+      page: 2
+      quote: |
+        Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level. ("No Value" cards are the same as zero Gold Pieces.) If you discard (for instance) 1,100 Gold Pieces worth, you don't get change. But if you can manage 2,000 worth, you can go up two levels at once, and so on. You may sell Items from your hand as well as those you are carrying. You may not sell Items to go to Level 10.

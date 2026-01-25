@@ -4,7 +4,8 @@
         "**/.git/subtree-cache/**": true,
         "**/node_modules/**": true,
         "**/.venv/**": true,
-        "/reference_repositories/**": true
+        "/reference_repositories/**": true,
+        "/data/**": true
     },
     "notebook.output.wordWrap": true,
     "python.analysis.typeCheckingMode": "standard",
@@ -12,7 +13,8 @@
         "**/node_modules",
         "**/__pycache__",
         ".git",
-        "reference_repositories/**"
+        "reference_repositories/**",
+        "data/**"
     ],
     "python.analysis.packageIndexDepths": [
         { "name": "langchain", "depth": 5 },

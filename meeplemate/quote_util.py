@@ -1,4 +1,5 @@
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass
 from typing import List, Tuple, TypedDict, Literal
@@ -63,12 +64,26 @@ def extract_blockquotes(text: str) -> List[Tuple[int, int, str]]:
     matches = BLOCKQUOTE_PATTERN.finditer(text)
     if not matches:
         return result
-    
+
     for match in matches:
-        text = match.group()
+        quote_text = match.group()
         start_idx = match.start()
         end_idx = match.end()
-        result.append((start_idx, end_idx, text))
+
+        # Check if there's a citation on the next line (common LLM pattern)
+        # Look for pattern: \n\n(Citation, p. X) after the blockquote
+        remaining_text = text[end_idx:]
+        # Match optional whitespace, newlines, then a citation pattern
+        citation_on_next_line = re.match(r'^[\s\n]*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))', remaining_text)
+        if citation_on_next_line:
+            # Include the citation as part of the blockquote
+            citation_text = citation_on_next_line.group(1)
+            # Find the actual end of the citation in the original text
+            citation_end = end_idx + citation_on_next_line.end(1)
+            quote_text = text[start_idx:citation_end]
+            end_idx = citation_end
+
+        result.append((start_idx, end_idx, quote_text))
     return result
 
 
@@ -182,11 +197,14 @@ def find_quotes_in_text(text: str) -> List[ExtractedQuote]:
                     start_index=cit_start,
                     end_index=cit_end
                 )
-        citation_start = citation["start_index"] if citation else -1
+        if citation:
+            quote_without_citation = quote_text[:citation["start_index"]]
+        else:
+            quote_without_citation = quote_text
         extracted_quotes.append(
             ExtractedQuote(
                 text=quote_text,
-                quote=strip_blockquote_markers_and_quotes(quote_text[:citation_start]),
+                quote=strip_blockquote_markers_and_quotes(quote_without_citation),
                 quote_type="blockquote",
                 start_index=start_idx,
                 end_index=end_idx,
@@ -211,11 +229,14 @@ def find_quotes_in_text(text: str) -> List[ExtractedQuote]:
                     start_index=cit_start,
                     end_index=cit_end
                 )
-        citation_start = citation["start_index"] if citation else -1
+        if citation:
+            quote_without_citation = quote_text[:citation["start_index"]]
+        else:
+            quote_without_citation = quote_text
         extracted_quotes.append(
             ExtractedQuote(
                 text=quote_text,
-                quote=strip_quotes(quote_text[:citation_start]),
+                quote=strip_quotes(quote_without_citation),
                 quote_type="inline",
                 start_index=start_idx,
                 end_index=end_idx,
@@ -330,6 +351,7 @@ def find_quote_with_gaps(
     for _, ws, we in candidates:
         window = norm_doc[ws:we]
         a0 = fuzz.partial_ratio_alignment(first, window)
+        assert a0 is not None
         if a0.score < min_part_score:
             continue
 
@@ -390,3 +412,34 @@ def find_quote_with_gaps(
         matched_text=doc[orig_start:orig_end],
         part_scores=part_scores,
     )
+
+
+def expand_to_full_paragraphs(doc_markdown: str, quote: str, *, max_additional_chars: int = sys.maxsize) -> str:
+    """Expand the matched quote to full paragraphs in the original markdown."""
+    # Find the match in the original markdown
+    match = find_quote_with_gaps(doc_markdown, quote)
+    if match is None:
+        return quote  # Fallback: return original quote
+
+    start = match.start
+    end = match.end
+
+    # Expand start backwards to the beginning of the paragraph
+    para_start = doc_markdown.rfind('\n\n', 0, start)
+    if para_start == -1:
+        para_start = 0
+    else:
+        para_start += 2  # Move past the double newline
+
+    # Expand end forwards to the end of the paragraph
+    para_end = doc_markdown.find('\n\n', end)
+    if para_end == -1:
+        para_end = len(doc_markdown)
+
+    # Limit expansion by max_additional_chars
+    additional_chars = (start - para_start) + (para_end - end)
+    if additional_chars > max_additional_chars:
+        return match.matched_text  # Return matched text without expansion
+
+    expanded_quote = doc_markdown[para_start:para_end].strip()
+    return expanded_quote

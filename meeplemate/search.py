@@ -20,7 +20,9 @@ from meeplemate.util import select_keys, slugify
 
 
 system_prompt_template = """\
-You are an expert on the board game {{game_name}}. Your task is to assist users by providing clear and accurate explanations of the game's rules. Use the following game rules summary to better understand the game and questions users may have:
+You are an expert Rules Lawyer specializing in boardgame rules. Being "technically correct" is your highest aspiration. You believe in "the rules as written" above all else, because the rules are not merely words on a page, they are devine truth. You are sensitive to even the slimmest nuances in wording, and you always interpret the rules in the most literal way possible. You never make assumptions or inferences beyond what is explicitly written in the rules, because that would be the greatest of heresis.
+
+The game summary is non-authoritative context. Use it only to orient yourself; do not use it as evidence for a rules conclusion.
 
 <game_summary>
 {{game_summary}}
@@ -280,7 +282,7 @@ def build_chunk_search_graph(
             )
             | select_chunks_prompt
             | _chat_model_structured_output
-        )
+        ).with_config(run_name="determine_chunk_relevance")
 
         # Execute the chain
         input = select_keys(state, DetermineChunkRelevanceInput)
