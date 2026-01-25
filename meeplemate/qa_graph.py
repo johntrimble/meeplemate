@@ -372,6 +372,58 @@ def dedupe_chunks(chunks: list[Chunk]) -> list[Chunk]:
     return deduped_chunks
 
 
+def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) -> str:
+    """Format a blockquote with citation at the end of the last blockquote line.
+
+    Handles both:
+    - Blockquotes with no citation: appends citation
+    - Blockquotes with citation on separate line: moves citation inline
+
+    Args:
+        quote_text: The blockquote text (may or may not include citation)
+        citation_text: The citation text to append (e.g., "(Book, p. 1)")
+
+    Returns:
+        Formatted blockquote with citation at end of last '>' line
+    """
+    # Split into lines and find last blockquote line
+    lines = quote_text.rstrip().split('\n')
+    last_blockquote_line_idx = -1
+
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip().startswith('>'):
+            last_blockquote_line_idx = i
+            break
+
+    if last_blockquote_line_idx == -1:
+        # No blockquote line found, fallback to append
+        return quote_text.rstrip() + ' ' + citation_text
+
+    # Append citation to end of last blockquote line
+    lines[last_blockquote_line_idx] = lines[last_blockquote_line_idx].rstrip() + ' ' + citation_text
+
+    # Return only up to and including the last blockquote line
+    return '\n'.join(lines[:last_blockquote_line_idx + 1])
+
+
+def should_reformat_blockquote_citation(quote_text: str, citation_start_index: int) -> bool:
+    """Check if a blockquote has its citation on a separate line.
+
+    Args:
+        quote_text: The full extracted quote text including citation
+        citation_start_index: Index where citation starts in quote_text
+
+    Returns:
+        True if citation is on a separate line (needs reformatting)
+    """
+    if citation_start_index <= 0:
+        return False
+
+    text_before_citation = quote_text[:citation_start_index]
+    # Citation is on separate line if there's a blank line (\n\n) before it
+    return '\n\n' in text_before_citation or text_before_citation.rstrip() != text_before_citation.rstrip('\n')
+
+
 def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitationsResult:
     # Track referenced chunks
     referenced_chunks: list[Chunk] = []
@@ -404,7 +456,35 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
                         # Citation is correct, move to next quote
                         citation_correct = True
                         referenced_chunks.append(candidate_chunk)
-                        valid_or_fixed_quotes.append(quote_info)
+
+                        # Reformat blockquotes with citations on separate lines
+                        if quote_info["quote_type"] == "blockquote" and citation and should_reformat_blockquote_citation(quote_info["text"], citation["start_index"]):
+                            # Get quote text without citation, then reformat
+                            text_before_citation = quote_info["text"][:citation["start_index"]]
+                            reformatted_quote = format_blockquote_with_inline_citation(text_before_citation, citation["text"])
+
+                            # Replace in overall text
+                            text = text[:quote_info["start_index"]] + reformatted_quote + text[quote_info["end_index"]:]
+
+                            # Update quote_info with new indices
+                            new_cit_start = len(reformatted_quote) - len(citation["text"])
+                            valid_or_fixed_quotes.append({
+                                "text": reformatted_quote,
+                                "quote": quote_info["quote"],
+                                "quote_type": quote_info["quote_type"],
+                                "start_index": quote_info["start_index"],
+                                "end_index": quote_info["start_index"] + len(reformatted_quote),
+                                "citation": {
+                                    "text": citation["text"],
+                                    "ref_name": citation["ref_name"],
+                                    "page": citation["page"],
+                                    "start_index": new_cit_start,
+                                    "end_index": len(reformatted_quote)
+                                }
+                            })
+                        else:
+                            # Citation already inline or not a blockquote, add as-is
+                            valid_or_fixed_quotes.append(quote_info)
 
         if citation_correct:
             continue
@@ -429,51 +509,62 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
             fixed_citation_text = f'({correct_citation["ref_name"]}, p. {correct_citation["page"]})'
             # If there is a citation, replace it
             if citation:
-                # Find the citation in the text
-                start_index = quote_info["start_index"] + citation["start_index"]
-                end_index = quote_info["start_index"] + citation["end_index"]
-                text = text[:start_index] + fixed_citation_text + text[end_index:]
-                # Construct the new quote text with the fixed citation
-                new_quote_text = quote_info["text"][:citation["start_index"]] + fixed_citation_text + quote_info["text"][citation["end_index"]:]
-                valid_or_fixed_quotes.append(
-                    {
-                        "text": new_quote_text,
-                        "quote": quote_info["quote"],
-                        "quote_type": quote_info["quote_type"],
-                        "start_index": quote_info["start_index"],
-                        "end_index": quote_info["start_index"] + len(new_quote_text),
-                        "citation": {
-                            "text": fixed_citation_text,
-                            "ref_name": correct_citation["ref_name"],
-                            "page": str(correct_citation["page"]),
-                            "start_index": citation["start_index"],
-                            "end_index": citation["start_index"] + len(fixed_citation_text)
-                        }
+                # Get text before old citation
+                text_before_citation = quote_info["text"][:citation["start_index"]]
+
+                # For blockquotes, format with citation inline; for inline quotes, just append
+                if quote_info["quote_type"] == "blockquote":
+                    new_quote_text = format_blockquote_with_inline_citation(text_before_citation, fixed_citation_text)
+                else:
+                    new_quote_text = text_before_citation.rstrip() + ' ' + fixed_citation_text
+
+                # Update overall text
+                text = text[:quote_info["start_index"]] + new_quote_text + text[quote_info["end_index"]:]
+
+                # Add to valid quotes
+                new_cit_start = len(new_quote_text) - len(fixed_citation_text)
+                valid_or_fixed_quotes.append({
+                    "text": new_quote_text,
+                    "quote": quote_info["quote"],
+                    "quote_type": quote_info["quote_type"],
+                    "start_index": quote_info["start_index"],
+                    "end_index": quote_info["start_index"] + len(new_quote_text),
+                    "citation": {
+                        "text": fixed_citation_text,
+                        "ref_name": correct_citation["ref_name"],
+                        "page": str(correct_citation["page"]),
+                        "start_index": new_cit_start,
+                        "end_index": len(new_quote_text)
                     }
-                )
+                })
 
             else:
-                # No citation, we need to insert one
-                insert_index = quote_info["end_index"]
-                text = text[:insert_index] + " " + fixed_citation_text + text[insert_index:]
-                # Add the quote with the new citation to valid quotes
-                new_quote_text = quote_info["text"] + " " + fixed_citation_text
-                valid_or_fixed_quotes.append(
-                    {
-                        "text": new_quote_text,
-                        "quote": quote_info["quote"],
-                        "quote_type": quote_info["quote_type"],
-                        "start_index": quote_info["start_index"],
-                        "end_index": quote_info["start_index"] + len(new_quote_text),
-                        "citation": {
-                            "text": fixed_citation_text,
-                            "ref_name": correct_citation["ref_name"],
-                            "page": str(correct_citation["page"]),
-                            "start_index": len(quote_info["text"]) + 1,
-                            "end_index": len(quote_info["text"]) + 1 + len(fixed_citation_text)
-                        }
+                # No citation exists, insert one
+                # For blockquotes, format with citation inline; for inline quotes, append
+                if quote_info["quote_type"] == "blockquote":
+                    new_quote_text = format_blockquote_with_inline_citation(quote_info["text"], fixed_citation_text)
+                else:
+                    new_quote_text = quote_info["text"] + " " + fixed_citation_text
+
+                # Update overall text
+                text = text[:quote_info["start_index"]] + new_quote_text + text[quote_info["end_index"]:]
+
+                # Add to valid quotes
+                new_cit_start = len(new_quote_text) - len(fixed_citation_text)
+                valid_or_fixed_quotes.append({
+                    "text": new_quote_text,
+                    "quote": quote_info["quote"],
+                    "quote_type": quote_info["quote_type"],
+                    "start_index": quote_info["start_index"],
+                    "end_index": quote_info["start_index"] + len(new_quote_text),
+                    "citation": {
+                        "text": fixed_citation_text,
+                        "ref_name": correct_citation["ref_name"],
+                        "page": str(correct_citation["page"]),
+                        "start_index": new_cit_start,
+                        "end_index": len(new_quote_text)
                     }
-                )
+                })
         else:
             # If we couldn't find a correct citation, just report it as missing
             unfixable_quotes.append(quote_info)
@@ -499,13 +590,6 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
         r'\n\s*\n\s*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))\s*(?=\n|$)',
         re.MULTILINE
     )
-
-    def should_remove(match):
-        # Check if any part of this match overlaps with protected ranges
-        for i in range(match.start(), match.end()):
-            if i in protected_ranges:
-                return ''  # Keep it (return empty replacement, which means no change)
-        return ''  # Remove it (return empty string)
 
     # Actually, we want to remove non-protected ones, so:
     matches_to_remove = []

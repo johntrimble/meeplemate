@@ -9,7 +9,8 @@ model_name: "Qwen/Qwen3-32B"
 chat:
   model_name: "Qwen/Qwen3-32B"
   endpoint_type: "openai"
-  endpoint: "http://vllm:8000/v1"
+  # endpoint: "http://vllm:8000/v1"
+  endpoint: http://192.168.0.44:8000/v1
   max_new_tokens: 10024
   timeout: 900
   explicit_disable_thinking: true

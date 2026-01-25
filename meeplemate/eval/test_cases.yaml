@@ -171,6 +171,16 @@
   - name: multiple_steeds_equipped_dwarf
     query: |
       If I am a dwarf, can I have multiple steeds equipped at the same time?
+    reference_answer: |
+      No, according to the official rules: 
+      
+      > No player can have more than one Steed except by using a Cheat! card. (Munchkin 4 - The Need for Steed, p. 1)
+      
+      While the Dwarf race enables a player to carry multiple Big items:
+
+      > "If something lets you have more than one Big item (for instance, the Dwarf race)..." (Munchkin Rules, p. 2)
+
+      The restriction on having multiple steeds applies specifically to steeds, not to Big items in general. Therefore, even as a Dwarf, you cannot have multiple steeds equipped at the same time unless you use a *Cheat!* card.
     evidence:
     - rulebook: Munchkin 4 - The Need for Steed
       page: 1

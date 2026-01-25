@@ -1,4 +1,5 @@
 from importlib import resources
+from langchain.chat_models import BaseChatModel
 from structlog import get_logger
 from typing import Iterator, override, Callable
 import json
@@ -17,7 +18,10 @@ test_suites = slurp_yaml(resources.files(__package__).joinpath("test_cases.yaml"
 from langchain_core.tracers.base import AsyncBaseTracer
 from pathlib import Path
 
-logger = get_logger(__name__)
+from deepeval.models.base_model import DeepEvalBaseLLM
+
+logger = get_logger(__name__)    
+
 
 class RunEncoder(json.JSONEncoder):
     """Custom JSON encoder for Run objects that handles UUIDs, datetimes, and other LangChain types."""

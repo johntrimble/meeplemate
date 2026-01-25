@@ -11,7 +11,7 @@ def test_dedupe_chunks_in_message_history():
             rulebook_name="Rulebook 1",
             page=1,
             offset=3,
-            content="This is chunk 1",   
+            content="This is chunk 1",
         ),
         relevance_reason="Relevant to the query",
     )
@@ -20,7 +20,7 @@ def test_dedupe_chunks_in_message_history():
             rulebook_name="Rulebook 1",
             page=2,
             offset=5,
-            content="This is chunk 2",   
+            content="This is chunk 2",
         ),
         relevance_reason="Also relevant to the query",
     )
@@ -29,7 +29,7 @@ def test_dedupe_chunks_in_message_history():
             rulebook_name="Rulebook 2",
             page=1,
             offset=0,
-            content="This is chunk 3",   
+            content="This is chunk 3",
         ),
         relevance_reason="Somewhat relevant to the query",
     )
@@ -169,57 +169,57 @@ def test_validation():
                 'term': 'Selling Items for Levels',
                 'quotes': [
                     {
-                        'text': 'Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level. ("No Value" cards are the same as zero Gold Pieces.) If you discard (for instance) 1,100 Gold Pieces worth, you don\'t get change. But if you can manage 2,000 worth, you can go up two levels at once, and so on. You may sell Items from your hand as well as those you are carrying. You may not sell Items to go to Level 10.', 
-                        'rulebook_name': 'Munchkin Rules', 
+                        'text': 'Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level. ("No Value" cards are the same as zero Gold Pieces.) If you discard (for instance) 1,100 Gold Pieces worth, you don\'t get change. But if you can manage 2,000 worth, you can go up two levels at once, and so on. You may sell Items from your hand as well as those you are carrying. You may not sell Items to go to Level 10.',
+                        'rulebook_name': 'Munchkin Rules',
                         'page': 2
                     }
                 ],
-                'defines_term': True, 
+                'defines_term': True,
                 'clarifying_question': ''
-            }, 
+            },
             {
-                'term': 'Items', 
+                'term': 'Items',
                 'quotes': [
                     {
-                        'text': 'You cannot discard Item cards "just because." You may sell Items for a level, trade Items with other players, or give an Item to another player who wants it (see below). You may discard Items to power certain Class and Race abilities. And a Curse or a monster\'s Bad Stuff (see p. 5) may force you to get rid of something!', 
-                        'rulebook_name': 'Munchkin Rules', 
+                        'text': 'You cannot discard Item cards "just because." You may sell Items for a level, trade Items with other players, or give an Item to another player who wants it (see below). You may discard Items to power certain Class and Race abilities. And a Curse or a monster\'s Bad Stuff (see p. 5) may force you to get rid of something!',
+                        'rulebook_name': 'Munchkin Rules',
                         'page': 2
                     }
-                ], 
-                'defines_term': True, 
+                ],
+                'defines_term': True,
                 'clarifying_question': ''
-            }, 
+            },
             {
-                'term': 'One-Shot Treasures', 
+                'term': 'One-Shot Treasures',
                 'quotes': [
                     {
-                        'text': 'One-shot Items with a Gold Piece value may be sold for levels, just like other Items.', 
-                        'rulebook_name': 'Munchkin Rules', 
+                        'text': 'One-shot Items with a Gold Piece value may be sold for levels, just like other Items.',
+                        'rulebook_name': 'Munchkin Rules',
                         'page': 2
                     }
                 ],
                 'defines_term': True,
                 'clarifying_question': ''
             }
-        ], 
+        ],
         'exceptions': [
             {
                 'general_rule': 'Discarding Items',
                 'quotes': [
                     {
-                        'text': 'You cannot discard Item cards "just because." You may sell Items for a level, trade Items with other players, or give an Item to another player who wants it (see below). You may discard Items to power certain Class and Race abilities. And a Curse or a monster\'s Bad Stuff (see p. 5) may force you to get rid of something!', 
-                        'rulebook_name': 'Munchkin Rules', 
+                        'text': 'You cannot discard Item cards "just because." You may sell Items for a level, trade Items with other players, or give an Item to another player who wants it (see below). You may discard Items to power certain Class and Race abilities. And a Curse or a monster\'s Bad Stuff (see p. 5) may force you to get rid of something!',
+                        'rulebook_name': 'Munchkin Rules',
                         'page': 2
                     }
-                ], 
-                'exception_names_general_rule': True, 
-                'quotes_discounting_link': [], 
-                'does_exception_apply': True, 
+                ],
+                'exception_names_general_rule': True,
+                'quotes_discounting_link': [],
+                'does_exception_apply': True,
                 'clarifying_question': ''
             }
-        ], 
-        'reasoning': '- The user is asking whether they can sell items from their hand to gain a level, assuming they can sell 1,000 gold pieces worth of items.\n- According to the rule titled "Selling Items for Levels", you may sell Items from your hand as long as they are worth at least 1,000 Gold Pieces.\n- Additionally, "One-shot Items with a Gold Piece value may be sold for levels, just like other Items," which confirms that even special types of Items can be used in this process.\n- The rule explicitly states that selling Items is allowed during your turn (except during combat or Running Away), and that you can go up multiple levels if the total value of discarded Items is sufficient.\n- Therefore, based on the provided rules, the user can indeed sell items from their hand to go up a level if the total value is at least 1,000 Gold Pieces.', 
-        'final_answer': 'Yes, you can sell items from your hand to go up a level if the total value of the items is at least 1,000 Gold Pieces. This is explicitly stated in the Munchkin Rules:\n\n> "Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level. (\'No Value\' cards are the same as zero Gold Pieces.) ... You may sell Items from your hand as well as those you are carrying."\n\nFurthermore, the rule confirms that even one-shot items with a Gold Piece value can be used for leveling:\n\n> "One-shot Items with a Gold Piece value may be sold for levels, just like other Items."\n\n(Munchkin Rules, p. 2)\n\nTherefore, if you have items in your hand totaling at least 1,000 Gold Pieces, you can use them to increase your level.', 
+        ],
+        'reasoning': '- The user is asking whether they can sell items from their hand to gain a level, assuming they can sell 1,000 gold pieces worth of items.\n- According to the rule titled "Selling Items for Levels", you may sell Items from your hand as long as they are worth at least 1,000 Gold Pieces.\n- Additionally, "One-shot Items with a Gold Piece value may be sold for levels, just like other Items," which confirms that even special types of Items can be used in this process.\n- The rule explicitly states that selling Items is allowed during your turn (except during combat or Running Away), and that you can go up multiple levels if the total value of discarded Items is sufficient.\n- Therefore, based on the provided rules, the user can indeed sell items from their hand to go up a level if the total value is at least 1,000 Gold Pieces.',
+        'final_answer': 'Yes, you can sell items from your hand to go up a level if the total value of the items is at least 1,000 Gold Pieces. This is explicitly stated in the Munchkin Rules:\n\n> "Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level. (\'No Value\' cards are the same as zero Gold Pieces.) ... You may sell Items from your hand as well as those you are carrying."\n\nFurthermore, the rule confirms that even one-shot items with a Gold Piece value can be used for leveling:\n\n> "One-shot Items with a Gold Piece value may be sold for levels, just like other Items."\n\n(Munchkin Rules, p. 2)\n\nTherefore, if you have items in your hand totaling at least 1,000 Gold Pieces, you can use them to increase your level.',
         'sufficient_information_to_answer': True
     }
 
@@ -235,3 +235,188 @@ def test_validation():
         print(quote["rulebook_name"], quote["page"])
         print(quote["text"])
         print("-----")
+
+
+def test_validation_citation_on_separate_line():
+    """Test that citation on separate line is moved to blockquote"""
+    chunks: List[Chunk] = [
+        {
+            'content': 'One- shot Items with a Gold Piece value may be sold for levels, just like other Items.',
+            'offset': 0,
+            'page': 5,
+            'rulebook_name': 'Game Rules'
+        }
+    ]
+
+    response: QaResponse = {
+        'definitions': [],
+        'exceptions': [],
+        'reasoning': '',
+        'final_answer': '> "One-shot Items with a Gold Piece value may be sold for levels, just like other Items."\n\n(Game Rules, p. 5)',
+        'sufficient_information_to_answer': True
+    }
+
+    result = tweak_and_validate_quotes_response(response, chunks)
+
+    # Should have no invalid quotes
+    assert len(result.invalid_quotes) == 0, f"Expected 0 invalid quotes, got {len(result.invalid_quotes)}"
+
+    # Citation should be moved to end of blockquote line
+    expected = '> "One-shot Items with a Gold Piece value may be sold for levels, just like other Items." (Game Rules, p. 5)'
+    assert result.revised_response['final_answer'] == expected, f"Expected:\n{expected}\n\nGot:\n{result.revised_response['final_answer']}"
+
+
+def test_validation_multiline_blockquote_separate_citation():
+    """Test multi-line blockquote with citation on separate line"""
+    chunks: List[Chunk] = [
+        {
+            'content': 'First line of the rule continues here with more text and even more content on multiple lines.',
+            'offset': 0,
+            'page': 3,
+            'rulebook_name': 'Test Book'
+        }
+    ]
+
+    response: QaResponse = {
+        'definitions': [],
+        'exceptions': [],
+        'reasoning': '',
+        'final_answer': '> "First line of the rule\n> continues here with more text."\n\n(Test Book, p. 3)',
+        'sufficient_information_to_answer': True
+    }
+
+    result = tweak_and_validate_quotes_response(response, chunks)
+
+    # Should have no invalid quotes
+    assert len(result.invalid_quotes) == 0
+
+    # Citation should be on last blockquote line
+    assert '> continues here with more text." (Test Book, p. 3)' in result.revised_response['final_answer']
+    # Should not have citation on separate line
+    assert not result.revised_response['final_answer'].endswith('\n\n(Test Book, p. 3)')
+
+
+def test_validation_blockquote_citation_already_inline():
+    """Test blockquotes with inline citations remain unchanged"""
+    chunks: List[Chunk] = [
+        {
+            'content': 'Items can be sold for levels.',
+            'offset': 0,
+            'page': 1,
+            'rulebook_name': 'Rules'
+        }
+    ]
+
+    response: QaResponse = {
+        'definitions': [],
+        'exceptions': [],
+        'reasoning': '',
+        'final_answer': '> "Items can be sold for levels." (Rules, p. 1)',
+        'sufficient_information_to_answer': True
+    }
+
+    result = tweak_and_validate_quotes_response(response, chunks)
+
+    # Should have no invalid quotes
+    assert len(result.invalid_quotes) == 0
+
+    # Should remain unchanged
+    assert result.revised_response['final_answer'] == '> "Items can be sold for levels." (Rules, p. 1)'
+
+
+def test_validation_mixed_quote_types():
+    """Test blockquotes and inline quotes together"""
+    chunks: List[Chunk] = [
+        {
+            'content': 'Blockquote text here.',
+            'offset': 0,
+            'page': 1,
+            'rulebook_name': 'Book A'
+        },
+        {
+            'content': 'Inline quote text here.',
+            'offset': 100,
+            'page': 2,
+            'rulebook_name': 'Book B'
+        }
+    ]
+
+    response: QaResponse = {
+        'definitions': [],
+        'exceptions': [],
+        'reasoning': '',
+        'final_answer': '> "Blockquote text here."\n\n(Book A, p. 1)\n\nAdditionally, "Inline quote text here." (Book B, p. 2)',
+        'sufficient_information_to_answer': True
+    }
+
+    result = tweak_and_validate_quotes_response(response, chunks)
+
+    # Should have no invalid quotes
+    assert len(result.invalid_quotes) == 0
+
+    # Blockquote should have inline citation
+    assert '> "Blockquote text here." (Book A, p. 1)' in result.revised_response['final_answer']
+    # Inline quote should remain unchanged
+    assert '"Inline quote text here." (Book B, p. 2)' in result.revised_response['final_answer']
+
+
+def test_validation_removes_standalone_citation():
+    """Test that citations not associated with any quote are removed"""
+    chunks: List[Chunk] = [
+        {
+            'content': 'Some rule text.',
+            'offset': 0,
+            'page': 1,
+            'rulebook_name': 'Book'
+        }
+    ]
+
+    response: QaResponse = {
+        'definitions': [],
+        'exceptions': [],
+        'reasoning': '',
+        'final_answer': 'Some text here.\n\n(Book, p. 99)\n\nMore text.',
+        'sufficient_information_to_answer': True
+    }
+
+    result = tweak_and_validate_quotes_response(response, chunks)
+
+    # The standalone citation should be removed since it's not associated with any quote
+    assert '(Book, p. 99)' not in result.revised_response['final_answer']
+    assert 'Some text here.' in result.revised_response['final_answer']
+    assert 'More text.' in result.revised_response['final_answer']
+
+
+def test_validation_multiple_blockquotes_separate_citations():
+    """Test multiple blockquotes with their own citations"""
+    chunks: List[Chunk] = [
+        {
+            'content': 'First rule text.',
+            'offset': 0,
+            'page': 1,
+            'rulebook_name': 'Book'
+        },
+        {
+            'content': 'Second rule text.',
+            'offset': 100,
+            'page': 2,
+            'rulebook_name': 'Book'
+        }
+    ]
+
+    response: QaResponse = {
+        'definitions': [],
+        'exceptions': [],
+        'reasoning': '',
+        'final_answer': '> "First rule text."\n\n(Book, p. 1)\n\nAlso:\n\n> "Second rule text."\n\n(Book, p. 2)',
+        'sufficient_information_to_answer': True
+    }
+
+    result = tweak_and_validate_quotes_response(response, chunks)
+
+    # Should have no invalid quotes
+    assert len(result.invalid_quotes) == 0
+
+    # Both blockquotes should have inline citations
+    assert '> "First rule text." (Book, p. 1)' in result.revised_response['final_answer']
+    assert '> "Second rule text." (Book, p. 2)' in result.revised_response['final_answer']
