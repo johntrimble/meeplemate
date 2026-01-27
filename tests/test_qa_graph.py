@@ -4,6 +4,7 @@ from meeplemate.qa_graph import Chunk, ChunkSearchResult, QaResponse, dedupe_chu
 from langchain_core.messages import AIMessage, BaseMessage
 from typing import List
 import json
+import inspect
 
 def test_dedupe_chunks_in_message_history():
     result1 = ChunkSearchResult(
@@ -420,3 +421,83 @@ def test_validation_multiple_blockquotes_separate_citations():
     # Both blockquotes should have inline citations
     assert '> "First rule text." (Book, p. 1)' in result.revised_response['final_answer']
     assert '> "Second rule text." (Book, p. 2)' in result.revised_response['final_answer']
+
+def test_multiline_blockquote_citation_next_line():
+    warpstorm_scroll = inspect.cleandoc(
+        '''\
+        ## WARPSTORM SCROLL
+        Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re- entering the table on their own side's table edge in their following turn.
+
+        One use only. Skaven wizards only
+        '''
+    )
+
+    flying_high = inspect.cleandoc(
+        '''\
+        ## FLYING HIGH
+        A flyer may choose to fly high during his turn instead of making a normal flying move. This represents a flyer ascending far into the air above the battlefield. All that observers on the ground can see is a tiny black dot amongst the clouds. These rules represent models flying high, diving down onto the battlefield, and engaging in combat against each other above the clouds.
+        '''
+    )
+
+    chunks: list[Chunk] = [
+        {
+            "content": warpstorm_scroll,
+            "rulebook_name": "Warhammer Magic",
+            "page": 44,
+            "offset": 0,
+        },
+        {
+            "content": flying_high,
+            "rulebook_name": "Warhammer Rulebook",
+            "page": 74,
+            "offset": 0
+        }
+    ]
+
+    before = inspect.cleandoc(
+        '''\
+        Yes, you can use the Warpstorm Scroll against a model that is flying high. According to the definition of the Warpstorm Scroll:
+        
+        > "## WARPSTORM SCROLL
+        Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re- entering the table on their own side's table edge in their following turn."
+        
+        (Warhammer Magic, p. 44)
+        
+        The rule explicitly states that the scroll affects "creatures flying high," which aligns with the definition of flying high:
+        
+        > "## FLYING HIGH
+        A flyer may choose to fly high during his turn instead of making a normal flying move. This represents a flyer ascending far into the air above the battlefield..."
+        
+        (Warhammer Rulebook, p. 74)
+        
+        Thus, the effect of the Warpstorm Scroll applies to models in the flying high status.
+        '''
+    )
+
+    expected = inspect.cleandoc(
+        '''\
+        Yes, you can use the Warpstorm Scroll against a model that is flying high. According to the definition of the Warpstorm Scroll:
+        
+        > "## WARPSTORM SCROLL
+        > Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re- entering the table on their own side's table edge in their following turn." (Warhammer Magic, p. 44)
+        
+        The rule explicitly states that the scroll affects "creatures flying high," which aligns with the definition of flying high:
+        
+        > "## FLYING HIGH
+        > A flyer may choose to fly high during his turn instead of making a normal flying move. This represents a flyer ascending far into the air above the battlefield..." (Warhammer Rulebook, p. 74)
+        
+        Thus, the effect of the Warpstorm Scroll applies to models in the flying high status.
+        '''
+    )
+
+    response: QaResponse = {
+        'definitions': [],
+        'exceptions': [],
+        'reasoning': '',
+        'final_answer': before,
+        'sufficient_information_to_answer': True
+    }
+
+    result = tweak_and_validate_quotes_response(response, chunks)
+
+    assert result.revised_response['final_answer'] == expected
