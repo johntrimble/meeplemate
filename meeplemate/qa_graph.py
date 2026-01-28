@@ -201,7 +201,9 @@ class DefinitionEntry(TypedDict):
 
 
 class ExceptionEntry(TypedDict):
+    reasoning_about_exception: str
     general_rule: str
+    exception_rule: str
     quotes: list[QuoteEntry]
     exception_names_general_rule: bool
     quotes_discounting_link: list[QuoteEntry]
@@ -217,20 +219,20 @@ class QaResponse(TypedDict):
     sufficient_information_to_answer: bool
 
 
-class GameAgentInputState(TypedDict):
-    query: str
+# class GameAgentInputState(TypedDict):
+#     query: str
 
 
-class GameAgentOutputState(TypedDict):
-    response: str
-    response_evidence: NotRequired[Sequence[Chunk]]
+# class GameAgentOutputState(TypedDict):
+#     response: str
+#     response_evidence: NotRequired[Sequence[Chunk]]
 
 
-class GameAgentOverallState(MessagesState):
-    query: str
-    response: str
-    ready_to_answer: bool
-    response_evidence: NotRequired[Sequence[Chunk]]
+# class GameAgentOverallState(MessagesState):
+#     query: str
+#     response: str
+#     ready_to_answer: bool
+#     response_evidence: NotRequired[Sequence[Chunk]]
 
 
 def get_all_chunks_from_message_history(messages: list[AnyMessage]) -> list[Chunk]:
@@ -378,6 +380,7 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
     Handles both:
     - Blockquotes with no citation: appends citation
     - Blockquotes with citation on separate line: moves citation inline
+    - Lazy continuation lines: converts them to proper blockquote lines
 
     Args:
         quote_text: The blockquote text (may or may not include citation)
@@ -386,24 +389,53 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
     Returns:
         Formatted blockquote with citation at end of last '>' line
     """
-    # Split into lines and find last blockquote line
+    # Split into lines
     lines = quote_text.rstrip().split('\n')
-    last_blockquote_line_idx = -1
 
-    for i in range(len(lines) - 1, -1, -1):
-        if lines[i].strip().startswith('>'):
-            last_blockquote_line_idx = i
+    # Find the first blockquote line (line starting with >)
+    first_blockquote_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip().startswith('>'):
+            first_blockquote_idx = i
             break
 
-    if last_blockquote_line_idx == -1:
+    if first_blockquote_idx == -1:
         # No blockquote line found, fallback to append
         return quote_text.rstrip() + ' ' + citation_text
 
-    # Append citation to end of last blockquote line
-    lines[last_blockquote_line_idx] = lines[last_blockquote_line_idx].rstrip() + ' ' + citation_text
+    # Convert all lines after the first blockquote line to blockquote lines
+    # (handle lazy continuation where lines don't start with >)
+    formatted_lines = []
+    for i, line in enumerate(lines):
+        if i < first_blockquote_idx:
+            # Lines before the first blockquote
+            formatted_lines.append(line)
+        elif line.strip().startswith('>'):
+            # Already a blockquote line
+            formatted_lines.append(line)
+        elif line.strip():  # Non-empty line that doesn't start with >
+            # Lazy continuation - add > prefix
+            formatted_lines.append('> ' + line)
+        else:
+            # Empty line - keep as is
+            formatted_lines.append(line)
 
-    # Return only up to and including the last blockquote line
-    return '\n'.join(lines[:last_blockquote_line_idx + 1])
+    # Find the last non-empty line
+    last_content_idx = -1
+    for i in range(len(formatted_lines) - 1, -1, -1):
+        if formatted_lines[i].strip():
+            last_content_idx = i
+            break
+
+    if last_content_idx == -1:
+        # No content found, fallback
+        return quote_text.rstrip() + ' ' + citation_text
+
+    # Append citation to the last non-empty line
+    formatted_lines[last_content_idx] = formatted_lines[last_content_idx].rstrip() + ' ' + citation_text
+
+    # Return all lines up to and including the last content line
+    return '\n'.join(formatted_lines[:last_content_idx + 1])
 
 
 def should_reformat_blockquote_citation(quote_text: str, citation_start_index: int) -> bool:
@@ -763,105 +795,46 @@ def dump_chunks(chunks: list[Chunk]):
     print("===== End Dump =====")
 
 
-def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_prompt: ChatPromptTemplate=qa_prompt) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
+class GameAgentInputState(MessagesState):
+    query: str
+    """The user's query"""
+    recursion_depth: int
+    """The current recursion depth"""
+    evidence: list[Chunk]
+
+
+class GameAgentOutputState(MessagesState):
+    response: str
+    """The answer to the user's query"""
+    evidence: list[Chunk]
+    """The evidence chunks supporting the answer"""
+
+
+class ClarifyingQA(TypedDict):
+    question: str
+    """A clarifying question about the original question asked"""
+    answer: str
+    """The answer to the clarifying question"""
+    evidence: list[Chunk]
+    """The evidence chunks supporting the answer"""
+
+
+class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
+    clarifying_questions: list[ClarifyingQA]
+    analysis: QaResponse
+    rounds_clarification: int
+    """The number of rounds of clarification performed"""
+    validation_attempts: int
+    """Track how many times we've attempted to fix/validate quotes"""
+
+
+def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_prompt: ChatPromptTemplate) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
     tools = [list_rulebooks, retrieve_page, search_chunks]
     tool_node = ToolNode(tools)
-    
-    async def check_answer_progress(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        assert runtime is not None
-        manifest = runtime.context.manifest
 
-        # Set up structlog context with the run ID - this will automatically
-        # add run_id to all log calls within this function and any functions it calls
-        run_id = get_run_id_from_config(config)
-        with structlog.contextvars.bound_contextvars(run_id=run_id):
-            chunks = get_all_chunks_from_message_history(state["messages"])
-
-            # Print all the chunks found
-            dump_chunks(chunks)
-
-            answer_prompt = ChatPromptTemplate.from_messages(
-                [
-                    ("system", system_prompt_template),
-                    ("user", answer_template),
-
-                ],
-                template_format="mustache"
-            )
-
-            answer_chat_model = chat_model.with_structured_output(
-                QaResponse, include_raw=True
-            ).bind(
-                logprobs=True, top_logprobs=2, temperature=0.3, top_p=0.6
-            )
-
-            chain = answer_prompt | answer_chat_model
-            chain = chain.with_config(run_name="game_agent_answer_chain")
-
-            input = dict(
-                # game_summary=manifest.get("summary", ""),
-                game_summary="",
-                game_name=manifest["name"],
-                documents=chunks,
-                query=state["query"]
-            )
-
-            quote_validation_result = None
-            for _ in range(3):
-                result = await chain.ainvoke(input, config=config)
-                assert isinstance(result, dict)
-                parsed = result["parsed"]
-                raw = result["raw"]
-
-                # Ensure every quote reference in the response is valid
-                quote_validation_result = tweak_and_validate_quotes_response(parsed, chunks)
-
-                # This is a pretty big thing to log, only do it if things changed
-                if parsed != quote_validation_result.revised_response:
-                    logger.info("QAResponse before and after tweak", before=parsed, after=quote_validation_result.revised_response, invalid_quote_count=len(quote_validation_result.invalid_quotes))
-        
-                parsed = quote_validation_result.revised_response
-
-                # Log as warning every invalid quote
-                if not quote_validation_result.valid:
-                    for invalid_quote in quote_validation_result.invalid_quotes:
-                        logger.warning(
-                            "Invalid quote detected in answer",
-                            text=invalid_quote["text"],
-                            rulebook_name=invalid_quote["rulebook_name"],
-                            page=invalid_quote["page"],
-                        )
-
-                if quote_validation_result.valid:
-                    evidence: list[QuoteEntry] = quote_validation_result.valid_quotes
-                    return {
-                        "response": parsed["final_answer"],
-                        "messages": [raw],
-                        "response_evidence": compile_evidence_from_documents(
-                            evidence,
-                            quote_validation_result.chunks_referenced
-                        ),
-                    }
-
-            assert quote_validation_result is not None
-
-            if not quote_validation_result.valid:
-                response = QaResponse(
-                    definitions=[],
-                    exceptions=[],
-                    reasoning="",
-                    final_answer="I'm sorry, but I was unable to provide a valid answer with correct citations based on the provided rulebooks.",
-                    sufficient_information_to_answer=False
-                )
-                new_message = AIMessage(content=json.dumps(response, indent=2))
-                return {
-                    "response": response["final_answer"],
-                    "messages": state["messages"] + [new_message],
-                    "response_evidence": [],
-                }
- 
-
-    async def llm_call(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+    async def retrieve_data(state: GameAgentInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        """Retrieves relevant chunks for the given query."""
+        # chunk_search_service = runtime.context.chunk_search_service
         manifest = runtime.context.manifest
 
         if len(state["messages"]) == 0:
@@ -890,7 +863,7 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
         return {
             "messages": [final_message]
         }
-    
+
     async def dedupe_chunks(state: GameAgentOverallState) -> dict:
         """Dedupe chunks in the message history"""
         messages = state["messages"]
@@ -899,59 +872,466 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
             "messages": message_edits
         }
     
-    async def should_continue(state: GameAgentOverallState) -> Literal["tool_node", "ask_to_answer", "response"]:
-        """Decide if we should continue the loop or stop based upon whether the LLM made a tool call"""
-
-        messages = state["messages"]
-        last_message = messages[-1]
-
-        # If the LLM makes a tool call, then perform an action
-        if getattr(last_message, "tool_calls", None):
-            return "tool_node"
-
-        if not state.get("ready_to_answer", False):
-            return "ask_to_answer"
-
-        # Otherwise, we stop (reply to the user)
-        return "response"
-    
-    async def check_answer_edge(state: GameAgentOverallState) -> Literal["__end__", "dedupe_chunks"]:
-        """Determine if we should dedupe chunks or end the workflow"""
-
-        if state.get("response"):
-            return "__end__"
+    def get_evidence(state: GameAgentOverallState) -> list[Chunk]:
+        # Gather the context we've collected so far
+        documents = []
+        # If we've already acquired evidence, use that.
+        if "evidence" in state and state["evidence"]:
+            documents.extend(state["evidence"])
         else:
-            return "dedupe_chunks"
+            # Otherwise, extract from message history
+            documents.extend(get_all_chunks_from_message_history(state["messages"]))
+        # Add evidence from clarifying questions too
+        for qa in state.get("clarifying_questions", []):
+            documents.extend(qa.get("evidence", []))
+        return documents
+
+    async def analyze_evidence(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        """Take all the input chunks, determines which are relevant to the query, produces clarifying questions if needed, and produces an answer with evidence."""
+        manifest = runtime.context.manifest
+
+        # Gather the context we've collected so far
+        documents = get_evidence(state)
+
+        answer_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt_template),
+                ("user", answer_template),
+
+            ],
+            template_format="mustache"
+        )
+
+        answer_chat_model = chat_model.with_structured_output(
+            QaResponse, include_raw=True
+        ).bind(
+            temperature=0.3, top_p=0.6
+        )
+
+        chain = answer_prompt | answer_chat_model
+        chain = chain.with_config(run_name="game_agent_answer_chain")
+
+        input = dict(
+            # game_summary=manifest.get("summary", ""),
+            game_summary="",
+            game_name=manifest["name"],
+            documents=documents,
+            query=state["query"],
+            clarifying_questions_and_answers=state.get("clarifying_questions", []),
+        )
+
+        result = await chain.ainvoke(input, config=config)
+        assert isinstance(result, dict)
+        parsed = result["parsed"]
+
+        return {
+            "analysis": parsed,
+        }
+
+    async def validate_analysis(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        """Validates the analysis output, ensuring all quotes are valid."""
+        # Ensure every quote reference in the response is valid
+        analysis = state["analysis"]
+        chunks = get_evidence(state)
+        quote_validation_result = tweak_and_validate_quotes_response(analysis, chunks)
+        analysis_updated = (analysis != quote_validation_result.revised_response)
+
+        # This is a pretty big thing to log, only do it if things changed
+        if analysis_updated:
+            logger.info("QAResponse before and after tweak", before=analysis, after=quote_validation_result.revised_response, invalid_quote_count=len(quote_validation_result.invalid_quotes))
+
+        analysis = quote_validation_result.revised_response
+
+        # Log as warning every invalid quote
+        if not quote_validation_result.valid:
+            for invalid_quote in quote_validation_result.invalid_quotes:
+                logger.warning(
+                    "Invalid quote detected in answer",
+                    text=invalid_quote["text"],
+                    rulebook_name=invalid_quote["rulebook_name"],
+                    page=invalid_quote["page"],
+                )
+
+        # Print all clarifying questions
+        for definition in analysis["definitions"]:
+            if definition["clarifying_question"]:
+                logger.info("Clarifying question from definition", question=definition["clarifying_question"])
+        for exception in analysis["exceptions"]:
+            if exception["clarifying_question"]:
+                logger.info("Clarifying question from exception", question=exception["clarifying_question"])
+
+        output = {}
+
+        # Include updated analysis if it changed
+        if analysis_updated:
+            output["analysis"] = analysis
+
+        # Track invalid quotes
+        output["invalid_quotes"] = quote_validation_result.invalid_quotes
+
+        if not quote_validation_result.valid:
+            # Increment validation attempts counter since we had invalid quotes
+            output["validation_attempts"] = state.get("validation_attempts", 0) + 1
+            return output
+
+        # Okay, everything is valid
+
+        # Reset validation attempts
+        output["validation_attempts"] = 0
+
+        # Build the evidence
+        #
+        # This is based off the quotes that were validated in the response. The
+        # hope is that these quotes are sufficient to support the answer.
+        evidence = compile_evidence_from_documents(
+            quote_validation_result.valid_quotes,
+            quote_validation_result.chunks_referenced
+        )
+
+        # Add evidence to output
+        output["evidence"] = evidence
+
+        return output
+
+    async def address_clarifying_questions(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        """If there are clarifying questions, ask them and incorporate the answers."""
+        analysis = state["analysis"]
+
+        # Collect questions to ask
+        inputs: list[GameAgentInputState] = []
+        for definition in analysis["definitions"]:
+            question = definition.get("clarifying_question", "")
+            if question:
+                game_agent_input: GameAgentInputState = {
+                    "query": question,
+                    "recursion_depth": state.get("recursion_depth", 0) + 1,
+                    "messages": [],
+                    "evidence": []
+                }
+                inputs.append(game_agent_input)
+
+        for exception in analysis["exceptions"]:
+            question = exception.get("clarifying_question", "")
+            if question:
+                game_agent_input: GameAgentInputState = {
+                    "query": question,
+                    "recursion_depth": state.get("recursion_depth", 0) + 1,
+                    "messages": [],
+                    "evidence": [],
+                }
+                inputs.append(game_agent_input)
+
+        # If for some reason we do not have any questions, return early
+        if len(inputs) == 0:
+            return {}
+
+        # Ask the questions using the game agent graph
+        responses = await agent.abatch(
+            inputs, 
+            context=runtime.context,
+            config=config
+        )
+
+        # Update the state with the answers
+        clarifying_qas: list[ClarifyingQA] = []
+        for i, response in enumerate(responses):
+            answer = response["response"]
+            question = inputs[i]["query"]
+            clarifying_qas.append(
+                ClarifyingQA(
+                    question=question,
+                    answer=answer,
+                    evidence=response["evidence"]
+                )
+            )
+
+        return {
+            "clarifying_questions": clarifying_qas,
+            "rounds_clarification": state.get("rounds_clarification", 0) + 1
+        }
+
+    async def produce_response(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        """Produce the final answer based on the analysis and clarifying questions."""
+        evidence = state.get("evidence", [])
+        logger.info("Producing response", answer=state["analysis"], evidence=evidence)
+        return {
+            "response": state["analysis"]["final_answer"],
+            "evidence": evidence,
+        }
+
+    def check_response_status(state: GameAgentOverallState) -> Literal["analyze_evidence", "address_clarifying_questions", "produce_response"]:
+        analysis = state["analysis"]
+
+        # If the analysis isn't valid, try analyze_evidence again
+        invalid_quotes = state.get("invalid_quotes", [])
+        if len(invalid_quotes) > 0:
+            # If we are over max attempts, just produce response
+            if state.get("validation_attempts", 0) >= 3:
+                return "produce_response"
+            
+            # We aren't over our max attempts, so retry analysis
+            return "analyze_evidence"
+        
+        # If there are clarifying questions to ask, go to address_clarifying_questions
+        questions_to_answer = False
+        sufficient_information = True
+        analysis = state.get("analysis")
+        if analysis:
+            sufficient_information = analysis["sufficient_information_to_answer"]
+            for definition in analysis["definitions"]:
+                if definition.get("clarifying_question", ""):
+                    questions_to_answer = True
+            for exception in analysis["exceptions"]:
+                if exception.get("clarifying_question", ""):
+                    questions_to_answer = True
+
+        at_recursion_limit = state.get("recursion_depth", 0) >= 2
+
+        if questions_to_answer and not at_recursion_limit and not sufficient_information:
+            return "address_clarifying_questions"
+        
+        # Otherwise, we're done
+        return "produce_response"
     
-    # Build workflow
-    agent_builder = StateGraph(
-        GameAgentOverallState,
-        context_schema=GameAgentContext,
+    def select_start_node(state: GameAgentInputState) -> Literal["analyze_evidence", "retrieve_data"]:
+        # If provided evidence up-front, start with analyze_evidence
+        if state.get("evidence"):
+            logger.info("Starting with provided evidence, skipping data retrieval")
+            return "analyze_evidence"
+        
+        # Always start with retrieve_data
+        logger.info("Starting with data retrieval")
+        return "retrieve_data"
+
+    graph = StateGraph(
+        state_schema=GameAgentOverallState,
         input_schema=GameAgentInputState,
-        output_schema=GameAgentOutputState
+        output_schema=GameAgentOutputState,
+        context_schema=GameAgentContext,
     )
 
-    # Add nodes
-    # NOTE: The node name "llm_call" is used by the QA service for streaming filtering.
-    # If you rename this node, update the streaming logic in build_qa_service.
-    agent_builder.add_node("llm_call", llm_call)
-    agent_builder.add_node("tool_node", tool_node)
-    agent_builder.add_node("dedupe_chunks", dedupe_chunks)
-    agent_builder.add_node("check_answer_progress", check_answer_progress)
-    # agent_builder.add_node("response", populate_response)
+    graph.add_node("tool_node", tool_node)
+    graph.add_node("analyze_evidence", analyze_evidence)
+    graph.add_node("validate_analysis", validate_analysis)
+    graph.add_node("address_clarifying_questions", address_clarifying_questions)
+    graph.add_node("produce_response", produce_response)
+    graph.add_node("retrieve_data", retrieve_data)
+    graph.add_node("dedupe_chunks", dedupe_chunks)
 
-    # Add edges to connect nodes
-    agent_builder.add_edge(START, "llm_call")
-    agent_builder.add_edge("llm_call", "tool_node")
-    agent_builder.add_edge("tool_node", "dedupe_chunks")
-    agent_builder.add_edge("dedupe_chunks", "check_answer_progress")
-    agent_builder.add_edge("check_answer_progress", END)
-    # agent_builder.add_edge("response", END)
+    graph.add_conditional_edges(START, select_start_node)
+    graph.add_edge("retrieve_data", "tool_node")
+    # TODO: As of right now, we only do one round of tool calls to retrieve data
+    # before moving on to analysis. We should consider looping back to retrieve
+    # more data if needed.
+    graph.add_edge("tool_node", "dedupe_chunks")
+    graph.add_edge("dedupe_chunks", "analyze_evidence")
+    graph.add_edge("analyze_evidence", "validate_analysis")
+    graph.add_conditional_edges("validate_analysis", check_response_status)
+    graph.add_edge("address_clarifying_questions", "analyze_evidence")
+    graph.add_edge("produce_response", END)
 
     # Compile the agent
-    agent = agent_builder.compile(checkpointer=checkpoint_saver)
-
+    agent = graph.compile(checkpointer=checkpoint_saver)
     return agent
+
+
+# def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_prompt: ChatPromptTemplate=qa_prompt) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
+#     tools = [list_rulebooks, retrieve_page, search_chunks]
+#     tool_node = ToolNode(tools)
+    
+#     async def check_answer_progress(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+#         assert runtime is not None
+#         manifest = runtime.context.manifest
+
+#         # Set up structlog context with the run ID - this will automatically
+#         # add run_id to all log calls within this function and any functions it calls
+#         run_id = get_run_id_from_config(config)
+#         with structlog.contextvars.bound_contextvars(run_id=run_id):
+#             chunks = get_all_chunks_from_message_history(state["messages"])
+
+#             # Print all the chunks found
+#             dump_chunks(chunks)
+
+#             answer_prompt = ChatPromptTemplate.from_messages(
+#                 [
+#                     ("system", system_prompt_template),
+#                     ("user", answer_template),
+
+#                 ],
+#                 template_format="mustache"
+#             )
+
+#             answer_chat_model = chat_model.with_structured_output(
+#                 QaResponse, include_raw=True
+#             ).bind(
+#                 logprobs=True, top_logprobs=2, temperature=0.3, top_p=0.6
+#             )
+
+#             chain = answer_prompt | answer_chat_model
+#             chain = chain.with_config(run_name="game_agent_answer_chain")
+
+#             input = dict(
+#                 # game_summary=manifest.get("summary", ""),
+#                 game_summary="",
+#                 game_name=manifest["name"],
+#                 documents=chunks,
+#                 query=state["query"]
+#             )
+
+#             quote_validation_result = None
+#             for _ in range(3):
+#                 result = await chain.ainvoke(input, config=config)
+#                 assert isinstance(result, dict)
+#                 parsed = result["parsed"]
+#                 raw = result["raw"]
+
+#                 # Ensure every quote reference in the response is valid
+#                 quote_validation_result = tweak_and_validate_quotes_response(parsed, chunks)
+
+#                 # This is a pretty big thing to log, only do it if things changed
+#                 if parsed != quote_validation_result.revised_response:
+#                     logger.info("QAResponse before and after tweak", before=parsed, after=quote_validation_result.revised_response, invalid_quote_count=len(quote_validation_result.invalid_quotes))
+        
+#                 parsed = quote_validation_result.revised_response
+
+#                 # Log as warning every invalid quote
+#                 if not quote_validation_result.valid:
+#                     for invalid_quote in quote_validation_result.invalid_quotes:
+#                         logger.warning(
+#                             "Invalid quote detected in answer",
+#                             text=invalid_quote["text"],
+#                             rulebook_name=invalid_quote["rulebook_name"],
+#                             page=invalid_quote["page"],
+#                         )
+                
+#                 # Print all clarifying questions
+#                 for definition in parsed["definitions"]:
+#                     if definition["clarifying_question"]:
+#                         logger.info("Clarifying question from definition", question=definition["clarifying_question"])
+#                 for exception in parsed["exceptions"]:
+#                     if exception["clarifying_question"]:
+#                         logger.info("Clarifying question from exception", question=exception["clarifying_question"])
+
+#                 if quote_validation_result.valid:
+#                     evidence: list[QuoteEntry] = quote_validation_result.valid_quotes
+#                     return {
+#                         "response": parsed["final_answer"],
+#                         "messages": [raw],
+#                         "response_evidence": compile_evidence_from_documents(
+#                             evidence,
+#                             quote_validation_result.chunks_referenced
+#                         ),
+#                     }
+
+#             assert quote_validation_result is not None
+
+#             if not quote_validation_result.valid:
+#                 response = QaResponse(
+#                     definitions=[],
+#                     exceptions=[],
+#                     reasoning="",
+#                     final_answer="I'm sorry, but I was unable to provide a valid answer with correct citations based on the provided rulebooks.",
+#                     sufficient_information_to_answer=False
+#                 )
+#                 new_message = AIMessage(content=json.dumps(response, indent=2))
+#                 return {
+#                     "response": response["final_answer"],
+#                     "messages": state["messages"] + [new_message],
+#                     "evidence": [],
+#                 }
+ 
+
+#     async def llm_call(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+#         manifest = runtime.context.manifest
+
+#         if len(state["messages"]) == 0:
+#             chat_model_with_tools = chat_model.bind_tools(tools, tool_choice="any")
+#         else:
+#             chat_model_with_tools = chat_model.bind_tools(tools)
+
+#         chain = qa_prompt | chat_model_with_tools
+
+#         input = {
+#             "game_summary": manifest.get("summary", ""),
+#             "game_name": manifest["name"],
+#             "query": state["query"],
+#             "messages": state["messages"],
+#         }
+
+#         logger.info("Invoking LLM with input", message_count=len(state["messages"]))
+#         try:
+#             final_message = await chain.ainvoke(input, config=config)
+#         except Exception as e:
+#             logger.error(f"Error invoking LLM: {e}")
+#             for m in state["messages"]:
+#                 m.pretty_print()
+#             raise
+
+#         return {
+#             "messages": [final_message]
+#         }
+    
+#     async def dedupe_chunks(state: GameAgentOverallState) -> dict:
+#         """Dedupe chunks in the message history"""
+#         messages = state["messages"]
+#         message_edits = dedupe_chunks_in_message_history(messages)
+#         return {
+#             "messages": message_edits
+#         }
+    
+#     async def should_continue(state: GameAgentOverallState) -> Literal["tool_node", "ask_to_answer", "response"]:
+#         """Decide if we should continue the loop or stop based upon whether the LLM made a tool call"""
+
+#         messages = state["messages"]
+#         last_message = messages[-1]
+
+#         # If the LLM makes a tool call, then perform an action
+#         if getattr(last_message, "tool_calls", None):
+#             return "tool_node"
+
+#         if not state.get("ready_to_answer", False):
+#             return "ask_to_answer"
+
+#         # Otherwise, we stop (reply to the user)
+#         return "response"
+    
+#     async def check_answer_edge(state: GameAgentOverallState) -> Literal["__end__", "dedupe_chunks"]:
+#         """Determine if we should dedupe chunks or end the workflow"""
+
+#         if state.get("response"):
+#             return "__end__"
+#         else:
+#             return "dedupe_chunks"
+    
+#     # Build workflow
+#     agent_builder = StateGraph(
+#         GameAgentOverallState,
+#         context_schema=GameAgentContext,
+#         input_schema=GameAgentInputState,
+#         output_schema=GameAgentOutputState
+#     )
+
+#     # Add nodes
+#     # NOTE: The node name "llm_call" is used by the QA service for streaming filtering.
+#     # If you rename this node, update the streaming logic in build_qa_service.
+#     agent_builder.add_node("llm_call", llm_call)
+#     agent_builder.add_node("tool_node", tool_node)
+#     agent_builder.add_node("dedupe_chunks", dedupe_chunks)
+#     agent_builder.add_node("check_answer_progress", check_answer_progress)
+#     # agent_builder.add_node("response", populate_response)
+
+#     # Add edges to connect nodes
+#     agent_builder.add_edge(START, "llm_call")
+#     agent_builder.add_edge("llm_call", "tool_node")
+#     agent_builder.add_edge("tool_node", "dedupe_chunks")
+#     agent_builder.add_edge("dedupe_chunks", "check_answer_progress")
+#     agent_builder.add_edge("check_answer_progress", END)
+#     # agent_builder.add_edge("response", END)
+
+#     # Compile the agent
+#     agent = agent_builder.compile(checkpointer=checkpoint_saver)
+
+#     return agent
 
 
 class QAServiceInput(GameAgentInputState):
@@ -986,7 +1366,7 @@ def build_qa_service(
         )
 
         result = await agent_graph.ainvoke(
-            {"query": input["query"]},
+            cast(GameAgentInputState, {k: v for k, v in input.items() if k != "manifest"}),
             context=context,
             config=config,
             **kwargs

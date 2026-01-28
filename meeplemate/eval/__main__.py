@@ -1,11 +1,13 @@
 import asyncio
 import json
 from pathlib import Path
+import struct
 import click
 from gradio import skip
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.stores import BaseStore
+import structlog
 from uuid_utils import uuid7
 from meeplemate.eval import collect_runs_by_name_iter, load_persisted_run, skip_run_types, snake_case, test_suites, TestRunTracer, get_test_run_file_path
 from dev_system import areload, get_service
@@ -28,10 +30,11 @@ from deepeval.constants import ProviderSlug as PS
 
 from meeplemate.ingest.gamepackage import GamePackage, get_game_key_for_id_version
 from meeplemate.component_system import factory
-from meeplemate.qa_graph import QAService, QuoteValidationException
+from meeplemate.qa_graph import Chunk, QAService, QAServiceInput, QuoteValidationException
 from meeplemate.util import slurp_json
 from meeplemate.config import GameService
 
+logger = structlog.get_logger(__name__)
 
 # Custom LocalModel that properly supports structured outputs with vllm
 class StructuredLocalModel(LocalModel):
@@ -178,24 +181,14 @@ async def _print_summary_of_run(filter: str = "*", group_run_id: str | None = No
                 continue
 
             run = load_persisted_run(run_file)
-            runs = list(collect_runs_by_name_iter(run, "check_answer_progress"))
-            answer_run = runs[0] if runs else None
-            if answer_run is None:
-                continue
-
-            assert answer_run.outputs is not None, "No outputs in answer_chain_run"
-            response = answer_run.outputs["response"]
-
-            answer_chain_run = list(collect_runs_by_name_iter(answer_run, "game_agent_answer_chain"))[0]
-            input_documents = answer_chain_run.inputs["documents"]
-            
-            query = answer_chain_run.inputs["query"]
-            assert answer_chain_run.outputs is not None, "No outputs in answer_chain_run"
-            parsed = answer_chain_run.outputs["parsed"]
-
+            query = run.inputs["query"]
+            assert run.outputs is not None, "No outputs in run"
+            evidence = run.outputs["evidence"] if "evidence" in run.outputs else []
+            response = run.outputs["response"]
+          
             document_summary = "\n".join(
                 f"{doc['rulebook_name']}, {doc['page']}, {doc['content'][:100].replace('\n', ' ')}"
-                for doc in input_documents
+                for doc in evidence
             )
 
             click.echo(f"Test Suite: {test_suite['name']}, Test Case: {test_case['name']}")
@@ -209,10 +202,13 @@ async def _print_summary_of_run(filter: str = "*", group_run_id: str | None = No
             click.echo(f"{document_summary}")
             click.echo(f"")
             click.echo(f"Answer:")
-            click.echo(f"{json.dumps(parsed, indent=2)}")
+            for child_run in collect_runs_by_name_iter(run, "game_agent_answer_chain"):
+                assert child_run.outputs is not None, "No outputs in child_run"
+                parsed = child_run.outputs["parsed"]
+                click.echo(f"{json.dumps(parsed, indent=2)}")
 
 
-async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_runs: int):
+async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_runs: int, skip_retrieval: bool = False):
     # TODO: Move this component setup elsewhere... maybe make these functions
     # part of the component system?
     extra_components = {
@@ -233,12 +229,12 @@ async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_ru
     tasks = []
     for run_id in group_run_ids:
         tasks.append(
-            asyncio.create_task(_run_qa_gen_no_start_system(filter, run_id))
+            asyncio.create_task(_run_qa_gen_no_start_system(filter, run_id, skip_retrieval=skip_retrieval))
         )
     await asyncio.gather(*tasks)
 
 
-async def _run_qa_gen(filter: str, group_run_id: str):
+async def _run_qa_gen(filter: str, group_run_id: str, skip_retrieval: bool = False):
     extra_components = {
         # Lets not persist the graph state during evals
         "checkpointer": (
@@ -251,10 +247,10 @@ async def _run_qa_gen(filter: str, group_run_id: str):
         ["game_service", "qa_service", "checkpointer"],
         extra_components=extra_components
     )
-    await _run_qa_gen_no_start_system(filter, group_run_id)
+    await _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval)
 
 
-async def _run_qa_gen_no_start_system(filter: str, group_run_id: str):
+async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retrieval: bool = False):
     game_service: GameService = get_service("game_service")
     qa_service: QAService = get_service("qa_service")
 
@@ -283,11 +279,18 @@ async def _run_qa_gen_no_start_system(filter: str, group_run_id: str):
                 continue
 
             query = test_case["query"]
+            evidence = test_case.get("evidence", None)
+
+            if skip_retrieval and evidence is None:
+                click.echo(f"Skipping retrieval for test case without evidence: {test_case['name']}")
+                continue
+
 
             metadata = {
                 "test_group_run_id": group_run_id,
                 "test_suite": test_suite["name"],
                 "test_case": test_case["name"],
+                "skip_retrieval": skip_retrieval,
             }
             config: RunnableConfig = {
                 "callbacks": [
@@ -297,10 +300,32 @@ async def _run_qa_gen_no_start_system(filter: str, group_run_id: str):
                 "metadata": metadata
             }
 
+            input: QAServiceInput = {
+                "manifest": manifest,
+                "query": query,
+                "messages": [],
+                "recursion_depth": 0,
+                "evidence": []
+            }
+            if skip_retrieval:
+                logger.info("Skipping retrieval as per flag", test_case=test_case['name'])
+                chunks: list[Chunk] = []
+                for item in evidence:
+                    chunks.append(
+                        {
+                            "rulebook_name": item["rulebook"],
+                            "page": item["page"],
+                            "offset": item.get("offset", -1),
+                            "content": item["quote"],
+                        }
+                    )
+                input["evidence"] = chunks
+                logger.info(f"Starting generation with evidence", number_of_chunks=len(chunks), test_case=test_case['name'])
+            logger.info(f"Starting QA generation", test_case=test_case['name'])
             tasks.append(
                 asyncio.create_task(
                     qa_service.ainvoke(
-                        {"manifest": manifest, "query": query},
+                        input,
                         config=config
                     )
                 )
@@ -383,7 +408,8 @@ def cli():
 @click.argument("filter", required=False, default="*")
 @click.option("--group-run-id", default=None)
 @click.option("--number-of-runs", default=None, type=int)
-def run_qa_gen(filter: str, group_run_id: str | None = None, number_of_runs: int|None = None):
+@click.option("--skip-retrieval", is_flag=True, default=False)
+def run_qa_gen(filter: str, group_run_id: str | None = None, number_of_runs: int|None = None, skip_retrieval: bool = False):
     import asyncio
     # Default group_run_id is today's date in YYYY-MM-DD format
     if group_run_id is None:
@@ -391,9 +417,9 @@ def run_qa_gen(filter: str, group_run_id: str | None = None, number_of_runs: int
         group_run_id = datetime.now().strftime("%Y-%m-%d")
 
     if number_of_runs is None:
-        asyncio.run(_run_qa_gen(filter, group_run_id))
+        asyncio.run(_run_qa_gen(filter, group_run_id, skip_retrieval=skip_retrieval))
     else:
-        asyncio.run(_run_qa_gen_multiple_runs(filter, group_run_id, number_of_runs))
+        asyncio.run(_run_qa_gen_multiple_runs(filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval))
 
 @cli.command()
 @click.argument("filter", required=False, default="*")
@@ -419,9 +445,121 @@ def run_qa_eval(filter: str, group_run_id: str | None = None):
 @cli.command()
 @click.argument("filter", required=False, default="*")
 @click.option("--group-run-id", default=None)
-def print_run_summary(filter: str = "*", group_run_id: str | None = None):
+@click.option("--skip-retrieval", is_flag=True, default=False)
+def print_run_summary(filter: str = "*", group_run_id: str | None = None, skip_retrieval: bool = False):
     import asyncio
     asyncio.run(_print_summary_of_run(filter, group_run_id))
+
+@cli.command()
+@click.argument("game-id", required=True)
+@click.argument("query", required=True)
+def ask(game_id: str, query: str) -> None:
+    import asyncio
+
+    async def _run():
+        await areload(["game_service", "qa_service"])
+        game_service: GameService = get_service("game_service")
+        qa_service: QAService = get_service("qa_service")
+
+        manifest = await game_service.get_manifest(game_id)
+        assert manifest is not None, f"Manifest not found for game_id: {game_id}"
+
+        config: RunnableConfig = {
+            "configurable": {"thread_id": str(uuid7())},
+        }
+
+        response = await qa_service.ainvoke(
+            {"manifest": manifest, "query": query},
+            config=config
+        )
+        print(response["response"])
+
+    return asyncio.run(_run())
+
+
+@cli.command()
+@click.argument("group-run-id", required=True)
+@click.option("--top-n", default=5, help="Number of top/bottom items to show")
+def analyze(group_run_id: str, top_n: int):
+    """Analyze multi-run evaluation results.
+
+    Analyzes variance across multiple runs (e.g., __run001, __run002, etc.)
+    and provides summary statistics showing consistency and variance.
+
+    Example:
+        python -m meeplemate.eval analyze 2026-01-25
+    """
+    from meeplemate.eval.analysis import (
+        find_run_groups, get_summary, aggregate_by_test_case, load_all_runs
+    )
+
+    # Find all run groups
+    run_groups = find_run_groups(group_run_id)
+
+    if not run_groups:
+        click.echo(f"Error: No runs found for {group_run_id}")
+        click.echo(f"\nChecked directory: {get_eval_generation_runs_dir().parent / 'qa_evals'}")
+        return
+
+    # Get summary statistics
+    summary = get_summary(group_run_id)
+
+    # Print header
+    click.echo("=" * 70)
+    click.echo("Multi-Run Evaluation Analysis")
+    click.echo("=" * 70)
+    click.echo(f"Base group: {summary.base_group_run_id}")
+    click.echo(f"Runs found: {summary.num_runs}")
+    for rg in summary.run_groups:
+        click.echo(f"  - {rg}")
+    click.echo(f"Test cases: {summary.num_test_cases}")
+    click.echo()
+
+    # Print overall metrics
+    click.echo("Overall Metrics:")
+    click.echo("-" * 70)
+    for metric_name, stats in summary.metrics_summary.items():
+        click.echo(f"\n  {metric_name}:")
+        click.echo(f"    Mean:      {stats['mean']:.3f} ± {stats['std']:.3f}")
+        click.echo(f"    Median:    {stats['median']:.3f}")
+        click.echo(f"    Range:     [{stats['min']:.3f}, {stats['max']:.3f}]")
+        click.echo(f"    Pass rate: {stats['pass_rate']:.1%} (threshold: {stats['threshold']})")
+    click.echo()
+
+    # Load full results for detailed analysis
+    results = load_all_runs(group_run_id)
+    agg = aggregate_by_test_case(results)
+
+    if agg.empty:
+        click.echo("Warning: No aggregated data available")
+        return
+
+    # Show most consistent test cases
+    click.echo(f"\nTop {top_n} Most Consistent Test Cases (lowest std dev):")
+    click.echo("-" * 70)
+    consistent = agg.nsmallest(top_n, 'std')
+    for idx, row in consistent.iterrows():
+        click.echo(f"  {row['test_case'][:50]:50s} | {row['metric_name']:20s} | std: {row['std']:.3f} | mean: {row['mean']:.3f}")
+
+    # Show most variant test cases
+    click.echo(f"\nTop {top_n} Most Variant Test Cases (highest std dev):")
+    click.echo("-" * 70)
+    variant = agg.nlargest(top_n, 'std')
+    for idx, row in variant.iterrows():
+        click.echo(f"  {row['test_case'][:50]:50s} | {row['metric_name']:20s} | std: {row['std']:.3f} | mean: {row['mean']:.3f}")
+
+    # Show test cases with lowest pass rates
+    click.echo(f"\nLowest Pass Rates (test cases that failed most often):")
+    click.echo("-" * 70)
+    low_pass = agg.nsmallest(top_n, 'pass_rate')
+    for idx, row in low_pass.iterrows():
+        click.echo(f"  {row['test_case'][:50]:50s} | {row['metric_name']:20s} | pass: {row['pass_rate']:.1%} | mean: {row['mean']:.3f}")
+
+    click.echo()
+    click.echo("=" * 70)
+    click.echo("\nFor detailed visualizations, use the Jupyter notebook:")
+    click.echo("  jupyter notebook notebooks/eval_analysis.ipynb")
+    click.echo()
 
 
 if __name__ == "__main__":

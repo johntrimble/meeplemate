@@ -101,7 +101,33 @@
       quote: |
         ## WARPSTORM SCROLL
 
-        Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re-entering the table on their own side's table edge in their following turn.      
+        Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re-entering the table on their own side's table edge in their following turn.
+  - name: warpstorm_flying_high_exception_2
+    query: |
+      Does the Warpstorm Scroll's ability to affect models flying high explicitly override the general rule that models flying high cannot be targeted by spells?
+    reference_answer: |
+      Yes, the **Warpstorm Scroll**'s ability to affect models flying high explicitly overrides the general rule that such models cannot be targeted by spells. According to the official rules:
+
+      > "## WARPSTORM SCROLL
+      >
+      > Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re- entering the table on their own side's table edge in their following turn." (Warhammer Magic, p. 44)
+
+      This directly contradicts the general rule found in the Warhammer Rulebook:
+
+      > "Similarly, a model that is up high cannot be shot at by troops on the table or have spells cast upon it by wizards on the table." (Warhammer Rulebook, p. 75)
+
+      The **Warpstorm Scroll** is an exception that is explicitly stated to affect models flying high, thereby overriding the general rule for this particular item.
+    evidence:
+    - rulebook: Warhammer Rulebook
+      page: 75
+      quote: |
+        Whilst up high a model may not shoot weapons at troops on the table, cast spells on to the table, or do anything to troops on the table. Similarly, a model that is up high cannot be shot at by troops on the table or have spells cast upon it by wizards on the table. The process of flying high puts you above and beyond the battlefield.
+    - rulebook: Warhammer Magic
+      page: 44
+      quote: |
+        ## WARPSTORM SCROLL
+
+        Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re-entering the table on their own side's table edge in their following turn.
 
 - name: Munchkin
   params:

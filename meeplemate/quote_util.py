@@ -59,7 +59,7 @@ def normalize_quotes_and_parens(text: str) -> str:
 
 
 def extract_blockquotes(text: str) -> List[Tuple[int, int, str]]:
-    """Extract block quotes from the given text."""
+    """Extract block quotes from the given text, including lazy continuation lines."""
     result: List[Tuple[int, int, str]] = []
     matches = BLOCKQUOTE_PATTERN.finditer(text)
     if not matches:
@@ -70,10 +70,22 @@ def extract_blockquotes(text: str) -> List[Tuple[int, int, str]]:
         start_idx = match.start()
         end_idx = match.end()
 
-        # Check if there's a citation on the next line (common LLM pattern)
+        # Check for lazy continuation (lines that are part of the quote but don't start with >)
+        # These lines continue until we hit a blank line or a citation
+        remaining_text = text[end_idx:]
+
+        # Look for continuation lines (not starting with >, not blank)
+        # until we hit a blank line or end of text
+        continuation_match = re.match(r'^(\n[^\n>][^\n]*(?:\n[^\n>][^\n]*)*)', remaining_text)
+        if continuation_match:
+            # Include the continuation lines
+            continuation_text = continuation_match.group(1)
+            end_idx += len(continuation_text)
+            quote_text += continuation_text
+
+        # Now check if there's a citation on the next line (common LLM pattern)
         # Look for pattern: \n\n(Citation, p. X) after the blockquote
         remaining_text = text[end_idx:]
-        # Match optional whitespace, newlines, then a citation pattern
         citation_on_next_line = re.match(r'^[\s\n]*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))', remaining_text)
         if citation_on_next_line:
             # Include the citation as part of the blockquote

@@ -7,6 +7,7 @@ Read the user query and the documents below carefully. Provide a detailed and ac
 </query>
 
 ## Documents
+
 <documents>
 {{#documents}}
 <document rulebook_name="{{rulebook_name}}" page="{{page}}" offset="{{offset}}">
@@ -14,6 +15,25 @@ Read the user query and the documents below carefully. Provide a detailed and ac
 </document>
 {{/documents}}
 </documents>
+
+## Clarifying Questions and Aswers
+
+These are additional clarifying questions and answers to help resolve ambiguities in the user query and the rules. Use them to better understand how the rules interact with eachother and to resolve uncertainties about definitions and exceptions.
+
+IMPORTANT: These questions and answers are only to be used to clarify ambiguities in the user query and the rules. They may NOT be cited as rule text or used as a substitute for actual rule quotes from the documents. They may NOT be used in the final answer text.
+
+<clarifying_questions_and_answers>
+{{#clarifying_questions_and_answers}}
+<clarifying_question_and_answer>
+<question>
+{{question}}
+</question>
+<answer>
+{{answer}}
+</answer>
+</clarifying_question_and_answer>
+{{/clarifying_questions_and_answers}}
+</clarifying_questions_and_answers>
 
 ## Core Rules for Reasoning (follow these strictly)
 
@@ -51,14 +71,17 @@ Read the user query and the documents below carefully. Provide a detailed and ac
 - Do NOT use "implies", "likely", "would also", "should include", "counts as", or similar bridging language unless you immediately follow it with a verbatim quote that explicitly states that bridge.
 - If the documents do not explicitly state a needed bridge, say so plainly.
 
-9) Apply rules in priority order
-When resolving a rules question, apply rules in this priority order:
+9) Rule precedence
+Apply rules in the following precedence order when conflicts arise or exceptions are present:
   (a) Definitions / relationship statements (e.g., "X is not Y", "X counts as Y", "separate")
-  (b) Core procedures (how a test/action is performed)
-  (c) Specific exceptions (unit abilities, special rules)
-  (d) Examples / commentary / summaries
+  (b) Rules on cards/units/abilities/special scenarios
+  (c) Specific exceptions (e.g., immunities, bonuses)
+  (d) Core procedures (how a test/action is performed)
+  (e) Examples / commentary / summaries
 
-If an exception appears to conflict with a definition/relationship statement, the definition/relationship statement wins unless the exception explicitly overrides it (quote required).
+For example, suppose the core procedure for movement says "All units can move up to 2 hexes." But a character has an item equipped that says "This character can move up to 4 hexes." In this case, the character's item would take precedence over the core procedure, and the character would be able to move up to 4 hexes.
+
+Note that the rulebooks ultimately govern the precedence of rules. They may set limits on how exceptions can override core procedures or definitions. For example, the rulebook might specify that a character can never have a movement greater than 6 hexes, regardless of how many movement-boosting items they have equipped. In such cases, the rulebook's limits would take precedence over the exceptions.
 
 10) Relationship Statement Requirement (strict)
 - You MUST scan the provided documents for any definition/relationship statements that mention the main mechanic(s) or key term(s) in the user’s question (e.g., "Break test", "hand limit", "death", "discard", "wounds", etc.).
@@ -93,17 +116,19 @@ If an exception appears to conflict with a definition/relationship statement, th
       ],
       "defines_term": true/false, // true only if the quote explicitly defines or establishes a relationship for the term. false otherwise.
       // Clarifying questions here are used when defines_term is false. They should be fully self-contained questions
-      // that seek to define the term in question.
+      // that seek to define the term in question. They should not repeat the original user query or depend on context outside the question itself.
       "clarifying_question": "<if defines_term is false, write a clarifying question here; otherwise, leave empty>"
     },
     // ...
   ],
   "exceptions": [
     {
+      "reasoning_about_exception": "<step-by-step reasoning about how the exception might apply>",
       "general_rule": "<general rule term>",
-      // List quotes relating to the exception and linking it to the general rule.
-      // Use an empty list if no relevant quotes are found and populate
-      // clarifying_question below.
+      "exception_rule": "<exception rule term>",
+      // List quotes relating to the exception rule and linking it to the
+      // general rule. Use an empty list if no relevant quotes are found and 
+      // populate clarifying_question below.
       "quotes": [
         {
           // Quotes should be verbatim. At least a couple of sentences or a 
@@ -113,7 +138,7 @@ If an exception appears to conflict with a definition/relationship statement, th
           "rulebook_name": "<rulebook name>",
           "page": X
         },
-        // ...
+        // ... there may be multiple quotes supporting the link ...
       ],
       // This should be true only if one of the provided quotes explicitly names
       // the general rule term. If none do, it MUST be false. This requires a
@@ -131,7 +156,7 @@ If an exception appears to conflict with a definition/relationship statement, th
           "rulebook_name": "<rulebook name>",
           "page": X
         },
-        // ...
+        // ... there may be multiple quotes discounting the link ...
       ],
       // Indicate here whether the exception applies to the user query. Indicate
       // true only if 'exception_names_general_rule' is true. Indicate false if
@@ -142,7 +167,8 @@ If an exception appears to conflict with a definition/relationship statement, th
       // false or does_exception_apply is "clarification_needed". They should be
       // fully self-contained questions that seek to clarify the link between the
       // exception and the general rule. The question should not depend on context
-      // outside the question itself.
+      // outside the question itself. They should not repeat the original user 
+      // query or depend on context outside the question itself.
       "clarifying_question": "<if exception_names_general_rule is false, write a clarifying question here; otherwise, leave empty>"
     },
     // ...

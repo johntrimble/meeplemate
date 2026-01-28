@@ -56,6 +56,11 @@ dev = [
     "ipython",
     "pytest-unordered",
     "deepeval",
+    "plotly",
+    "nbformat>=4.2.0",
+    "jupyter",
+    "ipykernel",
+    "pandas",
 ]
 
 [build-system]
