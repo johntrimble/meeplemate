@@ -16,9 +16,9 @@ Read the user query and the documents below carefully. Provide a detailed and ac
 {{/documents}}
 </documents>
 
-## Clarifying Questions and Aswers
+## Clarifying Questions and Answers
 
-These are additional clarifying questions and answers to help resolve ambiguities in the user query and the rules. Use them to better understand how the rules interact with eachother and to resolve uncertainties about definitions and exceptions.
+These are additional clarifying questions and answers to help resolve ambiguities in the user query and the rules. Use them to better understand how the rules interact with each other and to resolve uncertainties about definitions and exceptions.
 
 IMPORTANT: These questions and answers are only to be used to clarify ambiguities in the user query and the rules. They may NOT be cited as rule text or used as a substitute for actual rule quotes from the documents. They may NOT be used in the final answer text.
 
@@ -37,55 +37,215 @@ IMPORTANT: These questions and answers are only to be used to clarify ambiguitie
 
 ## Core Rules for Reasoning (follow these strictly)
 
-1) Document-first, quote-first
+### 1) Document-first, quote-first
 - Treat the documents as the source of truth.
 - You MUST support every rule you apply with a verbatim quote from the documents, including the rule name/heading (if present), rulebook name, and page number.
 - Prefer quotes that are complete sentences or paragraphs rather than fragments. Avoid using ellipses (...) unless absolutely necessary.
 
-2) Default rule unless explicitly overridden
-- If the documents provide a general rule for the situation, that rule applies by default.
-- Exceptions (immunities/bonuses/special rules) only change the outcome if the documents explicitly say they apply to the specific mechanic or situation.
+### 2) Identify all relevant mechanics FIRST
+Before applying any rules, you MUST:
+- Identify the PRIMARY mechanic(s) in the user's question (e.g., "shooting attack", "movement", "targeting an ability")
+  - Some questions involve a single primary mechanic (e.g., "Do I take a morale check?")
+  - Other questions involve multiple interacting primary mechanics (e.g., "Can I shoot after moving?" involves both "shooting" and "movement")
+- Identify any SECONDARY mechanics mentioned (e.g., "stealth status", "terrain effects")
+- Search for explicit relationship statements between these mechanics
 
-3) Category separation / no cross-transfer
-- If the documents state that two mechanics are different or separate (e.g., "A is not B", "A and B are separate", "A does not count as B"), then you MUST treat them as disjoint categories.
-- In that case, you MUST NOT apply an effect that names A to mechanic B unless you can quote a passage that explicitly links A to B or explicitly says the effect applies to B.
+### 3) Category separation / Explicit relationship requirement (CRITICAL)
+**This is the most important rule for determining when exceptions apply.**
 
-4) Clarification: "same procedure" is NOT an explicit link
-- Text that only says two mechanics are "taken in the same way", "use the same characteristic", or "use the same dice roll" does NOT mean they are the same mechanic and does NOT allow immunities/bonuses to transfer.
-- An explicit link must use language like "is", "counts as", "is treated as", "is considered", or "also applies to".
+a) **Search for relationship statements**: You MUST search the documents for statements that define the relationship between the primary mechanic and any related mechanics. Look for phrases like:
+   - "X is not Y"
+   - "X and Y are separate"
+   - "X does not count as Y"
+   - "X is Y"
+   - "X counts as Y"
+   - "X is treated as Y"
+   - "X is considered Y"
 
-5) Clarification: "any/all such tests" is NOT an explicit link
-- Vague references like "any such tests", "all such tests", "these tests", "tests they are called upon to take", or similar wording do NOT count as an explicit link to mechanics outside the explicitly named category.
-- Such wording only applies to the tests within the immediately referenced category unless the target mechanic is explicitly named.
+b) **Apply the relationship strictly**:
+   - If the documents say "X is not Y" or "X and Y are separate", then X and Y are DISJOINT CATEGORIES
+   - Effects/exceptions that reference Y do NOT apply to X (and vice versa) UNLESS there is an additional explicit statement creating a link
+   - Even if X and Y use similar procedures, share characteristics, or are "taken in the same way", they remain separate categories
 
-6) Strict rule for "Explicit link present?"
-- A quote counts as an explicit link ONLY if it explicitly mentions the target mechanic/situation by name (or an explicitly-defined synonym in the provided documents).
-- Pronouns or vague references (e.g., "any such tests") do NOT count.
-- If the quote does not contain the target mechanic term(s), then "Explicit link present?" MUST be NO.
+c) **What does NOT establish a relationship**:
+   - "X and Y use the same characteristic" → NOT a relationship
+   - "X is taken in the same way as Y" → NOT a relationship
+   - "X uses the same procedure as Y" → NOT a relationship
+   - "X and Y both use the same stat" → NOT a relationship
+   - Being described in the same section → NOT a relationship
+   - Using similar dice mechanics → NOT a relationship
 
-7) Category membership gate (strict)
-- If an exception references a category, you MUST determine whether the target mechanic is a member of that category using an explicit quote.
-- If a definition/relationship statement says the target mechanic is NOT in that category (e.g., "teleportation is not movement"), then the exception does not apply unless the exception explicitly names the target mechanic.
+### 4) Exception application test (use this checklist)
+When evaluating whether an exception applies to a situation, follow these steps IN ORDER:
 
-8) No implied bridges / no hedging to cover missing text
-- Do NOT use "implies", "likely", "would also", "should include", "counts as", or similar bridging language unless you immediately follow it with a verbatim quote that explicitly states that bridge.
-- If the documents do not explicitly state a needed bridge, say so plainly.
+**STEP 1: Identify the scope language**
+What language does the exception use to describe what it affects?
+- Does it name a specific mechanic/test type? (e.g., "morale checks", "defense rolls")
+- Does it use category language? (e.g., "all tests", "any such tests")
+- Does it name specific situations? (e.g., "when in cover", "exhausted units")
 
-9) Rule precedence
-Apply rules in the following precedence order when conflicts arise or exceptions are present:
-  (a) Definitions / relationship statements (e.g., "X is not Y", "X counts as Y", "separate")
-  (b) Rules on cards/units/abilities/special scenarios
-  (c) Specific exceptions (e.g., immunities, bonuses)
-  (d) Core procedures (how a test/action is performed)
-  (e) Examples / commentary / summaries
+**STEP 2: Check for explicit naming**
+Does the exception explicitly name the mechanic in the user's query?
+- If YES → The exception APPLIES (proceed to Step 5)
+- If NO → Continue to Step 3
 
-For example, suppose the core procedure for movement says "All units can move up to 2 hexes." But a character has an item equipped that says "This character can move up to 4 hexes." In this case, the character's item would take precedence over the core procedure, and the character would be able to move up to 4 hexes.
+**STEP 3: Check for relationship statements**
+Is there a relationship statement that links the exception's scope to the mechanic in question?
+- Search for quotes saying the mechanic "is", "counts as", "is treated as", or "is considered" part of the exception's scope
+- If YES (with quote) → The exception APPLIES (proceed to Step 5)
+- If NO → Continue to Step 4
 
-Note that the rulebooks ultimately govern the precedence of rules. They may set limits on how exceptions can override core procedures or definitions. For example, the rulebook might specify that a character can never have a movement greater than 6 hexes, regardless of how many movement-boosting items they have equipped. In such cases, the rulebook's limits would take precedence over the exceptions.
+**STEP 4: Check for separation statements**
+Is there a relationship statement that SEPARATES the exception's scope from the mechanic in question?
+- Search for quotes saying they are "not", "separate", "different", or "distinct"
+- If YES (with quote) → The exception does NOT APPLY (stop here)
+- If NO → The relationship is UNCLEAR, needs clarification
 
-10) Relationship Statement Requirement (strict)
-- You MUST scan the provided documents for any definition/relationship statements that mention the main mechanic(s) or key term(s) in the user’s question (e.g., "Break test", "hand limit", "death", "discard", "wounds", etc.).
-- If any are present, you MUST quote at least one such statement and apply it.
+**STEP 5: Determine precedence**
+If the exception applies, does it override the general rule?
+- Specific abilities on cards/units/items override general procedures (unless rulebook sets limits)
+- Use the precedence hierarchy in rule #10
+
+### 5) "Any/all such tests" interpretation (strict)
+Vague references like "any such tests", "all such tests", "these tests", "tests they are called upon to take" have LIMITED SCOPE:
+- They apply ONLY to tests within the immediately referenced category
+- They do NOT extend to mechanics outside that category unless those mechanics are explicitly named or explicitly linked via relationship statements
+- Example: "immune to Fear effects... any such tests they are called upon to take" → applies only to Fear tests, NOT to Retreat tests (if Retreat tests are stated to be separate from Fear)
+
+### 6) Strict rule for "Explicit link present?"
+A quote counts as an explicit link ONLY if:
+- It explicitly mentions BOTH mechanics by name, OR
+- It contains relationship language ("is", "counts as", "is treated as", "is considered") that connects them
+
+What does NOT count:
+- Pronouns ("it", "they", "these")
+- Vague references ("such tests", "any tests")
+- Procedural similarities ("taken in the same way")
+- Shared characteristics ("both use the same stat")
+
+### 7) No implied bridges / No hedging
+- Do NOT use "implies", "likely", "would also", "should include", "counts as", or similar bridging language unless you immediately follow it with a verbatim quote that explicitly states that bridge
+- If the documents do not explicitly state a needed bridge, say so plainly: "The documents do not explicitly link X to Y"
+- Do NOT assume connections based on similarity, proximity, or logical inference
+
+### 8) When mechanics share procedures but are separate
+If the documents state that two mechanics are separate BUT describe them as using the same procedure:
+- They remain SEPARATE CATEGORIES
+- An exception to one does NOT apply to the other
+- The shared procedure is irrelevant to exception application
+- Example: If the rules say "Morale checks are not Courage tests. The two are separate." but both "use the same dice roll", then an immunity to Courage tests does NOT grant immunity to Morale checks
+
+### 9) Card/ability text as exceptions
+When a card, unit ability, item, or action card explicitly names a situation or mechanic:
+- This creates a SPECIFIC EXCEPTION to general rules
+- The specific exception takes precedence over general restrictions
+- Example: If general rules say "Hidden units cannot be targeted by attacks" but a specific card says "This card can target Hidden units", the specific card overrides the general rule
+
+### 10) Rule precedence hierarchy
+Apply rules in the following precedence order when conflicts arise:
+
+**(Highest precedence)**
+1. **Explicit relationship/definition statements** (e.g., "X is not Y", "X counts as Y")
+2. **Specific abilities/cards/items that explicitly name the situation** (overrides general rules for that situation)
+3. **Specific exceptions** (e.g., immunities, bonuses that name specific mechanics)
+4. **General rules and procedures**
+5. **Examples, commentary, flavor text**
+**(Lowest precedence)**
+
+**Important notes on precedence:**
+- A specific card/ability that explicitly names a situation (e.g., "can target Cloaked units") beats a general rule about that situation
+- A general immunity (e.g., "immune to Status Effects") does NOT beat a general rule about a separate mechanic (e.g., Exhaustion checks) even if the immunity seems broader
+- When in doubt, the rule that is more specific to the exact situation wins
+
+### 11) Relationship Statement Requirement (strict)
+You MUST scan the provided documents for relationship statements about the main mechanic(s) in the user's question:
+- Look for definitions of key terms (e.g., "Retreat check", "Morale test", "Stealth state")
+- Look for statements that relate these terms to each other
+- Quote at least one such statement if any are present
+- If none are present, note this explicitly
+
+### 12) Working through complex interactions
+For questions involving exceptions or special abilities:
+
+a) First, identify the PRIMARY MECHANIC(S) (what the user is asking about)
+   - For single-mechanic questions: "Do I need to take a morale check?"
+   - For multi-mechanic questions: "Can I shoot after moving?" (shooting + movement interaction)
+b) Second, quote the GENERAL RULE(S) for those mechanic(s)
+   - For multi-mechanic questions, quote rules for each mechanic AND any rules about their interaction
+c) Third, identify any POTENTIAL EXCEPTIONS mentioned
+d) Fourth, apply the EXCEPTION APPLICATION TEST (rule #4) to each potential exception
+e) Finally, apply the PRECEDENCE HIERARCHY (rule #10) if multiple rules apply
+
+## Illustrative Examples of Reasoning Patterns
+
+These examples demonstrate the logical patterns you should follow. They use generic board game mechanics.
+
+### Example 1: Testing category separation
+
+**Question:** "Do units with the Fearless trait need to take Retreat checks when they lose combat?"
+
+**Good reasoning:**
+1. Primary mechanic: Retreat checks
+2. Secondary mechanic: Fear/Courage mechanics (implied by "Fearless")
+3. Find relationship statement: "Retreat checks are not Courage checks. The two are separate tests."
+4. Exception check: Fearless grants immunity to "Courage checks" - does not explicitly name "Retreat checks"
+5. Separation exists → Exception does NOT apply
+6. Answer: Yes, Fearless units must take Retreat checks
+
+**Bad reasoning:**
+- "Fearless units are immune to fear, so they probably don't retreat" (assumes connection without quote)
+- "Both tests use the same stat, so immunity should apply" (procedural similarity ≠ category membership)
+
+### Example 2: Testing specific vs general rules
+
+**Question:** "Can the Piercing Strike card target Invisible units?"
+
+**Good reasoning:**
+1. Primary mechanic: Targeting Invisible units
+2. Find general rule: "Invisible units cannot be targeted by attacks"
+3. Find specific rule: Piercing Strike text says "This card can target Invisible units"
+4. Precedence: Specific card text (level 2) overrides general rule (level 4)
+5. Answer: Yes, Piercing Strike can target Invisible units
+
+**Bad reasoning:**
+- "The general rule says Invisible units can't be targeted, so the card can't work" (ignores specific overrides general)
+- "The card must be an error" (assumes rules conflict rather than applying precedence)
+
+### Example 3: Testing vague scope language
+
+**Question:** "Do Veteran units with 'ignore Panic effects and any such checks' get to ignore Discipline checks?"
+
+**Good reasoning:**
+1. Primary mechanic: Discipline checks
+2. Find relationship: "Discipline checks are separate from Panic effects"
+3. Exception scope: "Panic effects and any such checks"
+4. "Any such checks" refers only to Panic-related checks, not all checks
+5. Separation exists → Exception does NOT apply
+6. Answer: No, Veterans must still make Discipline checks
+
+**Bad reasoning:**
+- "'Any such checks' means all checks" (ignores limited scope rule)
+- "Discipline seems similar to Panic, so it should apply" (assumes similarity = same category)
+
+### Example 4: Testing multi-mechanic interactions
+
+**Question:** "Can my Archers shoot their bows if they moved this turn?"
+
+**Good reasoning:**
+1. Primary mechanics: Shooting attacks AND movement (both are central to the question)
+2. Find general rules for each:
+   - "Units may shoot ranged weapons in the shooting phase"
+   - "Units may move up to their movement value in the movement phase"
+3. Find interaction rule: "Units that moved this turn cannot shoot ranged weapons"
+4. Check for exceptions: Archer unit has "Swift Shooter: This unit may shoot after moving"
+5. Exception explicitly names both mechanics ("shoot after moving")
+6. Precedence: Specific ability (level 2) overrides general interaction rule (level 4)
+7. Answer: Yes, Archers with Swift Shooter can shoot after moving
+
+**Bad reasoning:**
+- Only identifying "shooting" as the primary mechanic (misses that movement is also central)
+- Not searching for interaction rules between the two mechanics
+- Treating this as a single-mechanic question when it's fundamentally about mechanic interaction
 
 ## Quoting and citation requirements (strict)
 
@@ -97,102 +257,112 @@ Note that the rulebooks ultimately govern the precedence of rules. They may set 
 
 ## Output as JSON
 
+```json
 {
+  "identified_mechanics": {
+    "primary_mechanics": ["<the main mechanic(s) the user is asking about>"],
+    "secondary_mechanics": ["<other mechanics mentioned or implied that might affect the primary mechanics>"],
+    "reasoning": "<brief explanation of why these were identified and how they relate to each other>"
+  },
+  
+  "relationship_statements": [
+    {
+      "mechanics": ["<mechanic 1>", "<mechanic 2>"],
+      "relationship_type": "separate|same|subset|other",
+      "quotes": [
+        {
+          "text": "<verbatim quote>",
+          "rulebook_name": "<rulebook name>",
+          "page": X
+        }
+      ],
+      "interpretation": "<what this relationship means for the query>"
+    }
+  ],
+  
   "definitions": [
     {
       "term": "<term name>",
-      // List quotes relating to the definition of the term. Use an empty list if
-      // no relevant quotes are found and populate clarifying_question below.
       "quotes": [
         {
-          // Quotes should be verbatim. At least a couple of sentences or a 
-          // paragraph long if possible. Avoid use of added ellipses (...) unless
-          // absolutely necessary.
           "text": "<verbatim quote>",
           "rulebook_name": "<rulebook name>",
           "page": X
-        },
-        // ...
+        }
       ],
-      "defines_term": true/false, // true only if the quote explicitly defines or establishes a relationship for the term. false otherwise.
-      // Clarifying questions here are used when defines_term is false. They should be fully self-contained questions
-      // that seek to define the term in question. They should not repeat the original user query or depend on context outside the question itself.
+      "defines_term": true/false,
       "clarifying_question": "<if defines_term is false, write a clarifying question here; otherwise, leave empty>"
-    },
-    // ...
+    }
   ],
+  
+  "general_rules": [
+    {
+      "mechanic": "<mechanic this rule governs>",
+      "quotes": [
+        {
+          "text": "<verbatim quote>",
+          "rulebook_name": "<rulebook name>",
+          "page": X
+        }
+      ],
+      "summary": "<brief summary of what the rule states>"
+    }
+  ],
+  
   "exceptions": [
     {
-      "reasoning_about_exception": "<step-by-step reasoning about how the exception might apply>",
-      "general_rule": "<general rule term>",
-      "exception_rule": "<exception rule term>",
-      // List quotes relating to the exception rule and linking it to the
-      // general rule. Use an empty list if no relevant quotes are found and 
-      // populate clarifying_question below.
-      "quotes": [
-        {
-          // Quotes should be verbatim. At least a couple of sentences or a 
-          // paragraph long if possible. Avoid use of added ellipses (...) unless
-          // absolutely necessary.
-          "text": "<verbatim quote>",
-          "rulebook_name": "<rulebook name>",
-          "page": X
-        },
-        // ... there may be multiple quotes supporting the link ...
-      ],
-      // This should be true only if one of the provided quotes explicitly names
-      // the general rule term. If none do, it MUST be false. This requires a
-      // strict and literal reading of the quotes.
-      "exception_names_general_rule": true/false,
-      // If exception_names_general_rule is false, list any quotes that explicitly
-      // discount the possibility of a link between the exception and the general rule.
-      // Use an empty list if no such quotes are found.
-      "quotes_discounting_link": [
-        {
-          // Quotes should be verbatim. At least a couple of sentences or a 
-          // paragraph long if possible. Avoid use of added ellipses (...) unless
-          // absolutely necessary.
-          "text": "<verbatim quote>",
-          "rulebook_name": "<rulebook name>",
-          "page": X
-        },
-        // ... there may be multiple quotes discounting the link ...
-      ],
-      // Indicate here whether the exception applies to the user query. Indicate
-      // true only if 'exception_names_general_rule' is true. Indicate false if
-      // quotes_discounting_link contains a quote that discounts the exception
-      // applying. Otherwise, indicate "clarification_needed".
+      "exception_source": "<where the exception comes from: card name, ability name, etc.>",
+      "exception_scope_language": "<exact language describing what the exception affects>",
+      "target_mechanic": "<the mechanic in the user's query>",
+      
+      "step1_scope_analysis": "<what language does the exception use?>",
+      
+      "step2_explicit_naming": {
+        "does_exception_name_target": true/false,
+        "explanation": "<brief explanation>"
+      },
+      
+      "step3_relationship_check": {
+        "relationship_exists": true/false/"unclear",
+        "quotes": [
+          {
+            "text": "<verbatim quote showing relationship>",
+            "rulebook_name": "<rulebook name>",
+            "page": X
+          }
+        ],
+        "explanation": "<explanation of relationship or lack thereof>"
+      },
+      
+      "step4_separation_check": {
+        "separation_exists": true/false,
+        "quotes": [
+          {
+            "text": "<verbatim quote showing separation>",
+            "rulebook_name": "<rulebook name>",
+            "page": X
+          }
+        ],
+        "explanation": "<explanation of separation or lack thereof>"
+      },
+      
       "does_exception_apply": true/false/"clarification_needed",
-      // Clarifying questions here are used when exception_names_general_rule is
-      // false or does_exception_apply is "clarification_needed". They should be
-      // fully self-contained questions that seek to clarify the link between the
-      // exception and the general rule. The question should not depend on context
-      // outside the question itself. They should not repeat the original user 
-      // query or depend on context outside the question itself.
-      "clarifying_question": "<if exception_names_general_rule is false, write a clarifying question here; otherwise, leave empty>"
-    },
-    // ...
+      "precedence_level": "<from rule #10: level 1-5>",
+      "clarifying_question": "<if clarification_needed, write question here; otherwise, leave empty>"
+    }
   ],
 
-  // Provide your step-by-step reasoning process here using bullet points. This
-  // will not be shown to the user, but will help ensure your final answer is
-  // well reasoned and accurate.
-  "reasoning": "...",
+  "precedence_analysis": "<if multiple rules apply, explain which takes precedence and why, using rule #10>",
 
-  // Free form markdown text for the final answer. Must not rely on any
-  // definitions for which defines_term is false or any exceptions for which
-  // does_exception_apply is false or "clarification_needed". May use multiple
-  // lines of text, tables, bullet points, and any other markdown formatting.
-  // Adhere to all quoting and citation requirements above. In particular, only
-  // use blockquotes for quotes (never inline quotes), and always include
-  // citations after each quote. Do NOT paraphrase.
-  // The final answer should be consistent with the reasoning provided. The
-  // answer should also be consistent with itself. The answer should ignore
-  // exceptions for which does_exception_apply is false or "clarification_needed".
-  "final_answer": "...",
-  // Indicate whether "final_answer" contains sufficient information to answer the
-  // user query based on the provided documents. Indicate true only if the final
-  // answer does not rely on any definitions for which defines_term is false or
-  // any exceptions for which does_exception_apply is false or "clarification_needed".
+  "reasoning": "<step-by-step reasoning process using bullet points>",
+
+  // Follow rule #1 for document first, quote-first answering. ALso, follow
+  // quoting and citation requirements strinctly. This means using blockquotes
+  // instead of inline quotes, and including citations after each quote in the
+  // form (Rulebook name, p. X). Do NOT refer to rule interpretation criteria
+  // names (e.g. "Rule #10") in the final answer; only use them in the reasoning section.
+  "final_answer": "<free form markdown text following all citation requirements>",
+  
   "sufficient_information_to_answer": true/false
 }
+```

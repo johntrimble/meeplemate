@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import json
 from shlex import quote
 import sys
-from typing import Literal, NotRequired, Sequence, Tuple, TypedDict, cast
+from typing import Annotated, Literal, NotRequired, Sequence, Tuple, TypedDict, cast
 from weakref import ref
 from langchain.messages import AIMessage, AnyMessage, ToolMessage
 from langchain_core.documents import Document
@@ -200,20 +200,66 @@ class DefinitionEntry(TypedDict):
     clarifying_question: str
 
 
-class ExceptionEntry(TypedDict):
-    reasoning_about_exception: str
-    general_rule: str
-    exception_rule: str
+# New nested types for exceptions
+class ExplicitNamingCheck(TypedDict):
+    does_exception_name_target: bool
+    explanation: str
+
+
+class RelationshipCheck(TypedDict):
+    relationship_exists: bool | Literal["unclear"]
     quotes: list[QuoteEntry]
-    exception_names_general_rule: bool
-    quotes_discounting_link: list[QuoteEntry]
+    explanation: str
+
+
+class SeparationCheck(TypedDict):
+    separation_exists: bool
+    quotes: list[QuoteEntry]
+    explanation: str
+
+
+# New types for top-level fields
+class IdentifiedMechanics(TypedDict):
+    """Game mechanics"""
+    primary_mechanics: Annotated[list[str], ..., "The primary game mechanics involved in the question"]
+    secondary_mechanics: list[str]
+    reasoning: str
+
+
+class RelationshipStatement(TypedDict):
+    mechanics: list[str]
+    relationship_type: Literal["separate", "same", "subset", "other"]
+    quotes: list[QuoteEntry]
+    interpretation: str
+
+
+class GeneralRule(TypedDict):
+    mechanic: str
+    quotes: list[QuoteEntry]
+    summary: str
+
+
+class ExceptionEntry(TypedDict):
+    exception_source: str
+    exception_scope_language: str
+    target_mechanic: str
+    step1_scope_analysis: str
+    step2_explicit_naming: ExplicitNamingCheck
+    step3_relationship_check: RelationshipCheck
+    step4_separation_check: SeparationCheck
     does_exception_apply: bool | Literal["clarification_needed"]
+    precedence_level: str
     clarifying_question: str
 
 
 class QaResponse(TypedDict):
+    """Rules analysis and answer structure"""
+    identified_mechanics: IdentifiedMechanics
+    relationship_statements: list[RelationshipStatement]
     definitions: list[DefinitionEntry]
+    general_rules: list[GeneralRule]
     exceptions: list[ExceptionEntry]
+    precedence_analysis: str
     reasoning: str
     final_answer: str
     sufficient_information_to_answer: bool
@@ -738,19 +784,37 @@ def tweak_and_validate_quotes_response(response: QaResponse, chunks: list[Chunk]
     for definition in response["definitions"]:
         invalid_definition_quotes.extend(check_quotes_in_list(definition["quotes"]))
 
-    # Validate exceptions
+    # Validate relationship_statements
+    invalid_relationship_quotes: list[QuoteEntry] = []
+    for statement in response["relationship_statements"]:
+        invalid_relationship_quotes.extend(check_quotes_in_list(statement["quotes"]))
+
+    # Validate general_rules
+    invalid_general_rule_quotes: list[QuoteEntry] = []
+    for rule in response["general_rules"]:
+        invalid_general_rule_quotes.extend(check_quotes_in_list(rule["quotes"]))
+
+    # Validate exceptions (new nested structure)
     invalid_exception_quotes: list[QuoteEntry] = []
     for exception in response["exceptions"]:
-        invalid_exception_quotes.extend(check_quotes_in_list(exception["quotes"]))
-    
-    # Validate quotes discounting links
-    invalid_discounting_link_quotes: list[QuoteEntry] = []
-    for exception in response["exceptions"]:
-        invalid_discounting_link_quotes.extend(check_quotes_in_list(exception["quotes_discounting_link"]))
-    
+        # step3_relationship_check contains quotes
+        invalid_exception_quotes.extend(
+            check_quotes_in_list(exception["step3_relationship_check"]["quotes"])
+        )
+        # step4_separation_check contains quotes
+        invalid_exception_quotes.extend(
+            check_quotes_in_list(exception["step4_separation_check"]["quotes"])
+        )
+
     return TweakAndValidateQuotesResult(
         revised_response=response,
-        invalid_quotes=invalid_definition_quotes + invalid_exception_quotes + invalid_discounting_link_quotes + invalid_final_answer_quotes,
+        invalid_quotes=(
+            invalid_definition_quotes +
+            invalid_relationship_quotes +
+            invalid_general_rule_quotes +
+            invalid_exception_quotes +
+            invalid_final_answer_quotes
+        ),
         chunks_referenced=dedupe_chunks(referenced_chunks),
         valid_quotes=valid_quotes,
     )
