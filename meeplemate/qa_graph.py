@@ -3,9 +3,10 @@ from dataclasses import dataclass
 import json
 from shlex import quote
 import sys
-from typing import Annotated, Literal, NotRequired, Sequence, Tuple, TypedDict, cast
-from weakref import ref
+from typing import Annotated, Any, Literal, NotRequired, Protocol, Sequence, Tuple, TypedDict, cast
 from langchain.messages import AIMessage, AnyMessage, ToolMessage
+from langchain_classic.chains.sql_database import query
+from langchain_classic.tools.ainetwork import rule
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
 from langchain_core.language_models import BaseChatModel
@@ -25,12 +26,17 @@ from meeplemate.search import ChunkSearchService, ChunkSearchServiceInput, Compi
 import structlog
 from structlog import get_logger
 
-from meeplemate.util import load_template
+from meeplemate.util import load_template, serialize_typeddict
 logger = get_logger()
+
+REFINEMENT_PARTITION_NUMBER = 4
 
 system_prompt_template = load_template("system_prompt_rules_lawyer.md")
 qa_template = load_template("single_question_and_tool_use.md")
 answer_template = load_template("structured_rag_answer_addl_questions.md")
+markdown_format_response_template = load_template("markdown_format_response.md")
+query_documents_guidelines_template = load_template("query_documents_guide_system_prompt.md")
+retrieve_documents_template = load_template("examine_user_query_retrieve_docs.md")
 
 qa_prompt = ChatPromptTemplate.from_messages(
     [
@@ -119,10 +125,18 @@ async def retrieve_page(rulebook_name: str, page: int, runtime: ToolRuntime[Game
 def get_chunk_id_tuple(chunk: Chunk) -> Tuple[str, int, int]:
     return (chunk["rulebook_name"], chunk["page"], chunk["offset"])
 
+@dataclass
+class ContextWithSearchChunkService:
+    manifest: Manifest
+    chunk_search_service: ChunkSearchService
+    
 
 # TODO: Fix search service to accept multiple queries at once
 @tool(description="""Search for chunks, blocks of text from rulebook pages, relevant to the given search terms. Multiple sets of search terms can be provided. Search is performed using RAG against a semantic vector database, and then further refined by an LLM-judge to determine which chunks should be returned. Every returned chunk will have an associated "relevance_reason" indicating why that chunk was relevant to the provided search terms. The chunks will also indicate the rulebook they are from and which page. This information can then be used with `retrieve_page` to retrieve the entire page if desired.""")
-async def search_chunks(search_terms: str|list[str], runtime: ToolRuntime[GameAgentContext]) -> Sequence[ChunkSearchResult]:
+async def search_chunks(search_terms: str|list[str], runtime: ToolRuntime[ContextWithSearchChunkService]) -> Sequence[ChunkSearchResult]:
+    # TODO: Fix this hack. We keep searching on these terms needlessly
+    search_terms = [term for term in search_terms if term not in ['interaction', 'mechanic', 'mechanics', 'relationship']]
+
     logger.info("search_chunks called", search_terms=search_terms)
     if isinstance(search_terms, str):
         search_terms = [search_terms]
@@ -139,7 +153,8 @@ async def search_chunks(search_terms: str|list[str], runtime: ToolRuntime[GameAg
         )
 
         chunk_search_result = await chunk_search_service.ainvoke(input, config=runtime.config)
-        dump_documents(chunk_search_result["chunks"])
+        logger.info("Retrieved results", query=query, relevant_count=len([c for c in chunk_search_result["relevance"]["chunks"] if c["is_relevant"]]), total_retrieved_count=len(chunk_search_result["relevance"]["chunks"]))
+
         for relevance_result in chunk_search_result["relevance"]["chunks"]:
             reasoning = relevance_result["reasoning"]
             chunk_id = relevance_result["id"]
@@ -183,102 +198,93 @@ async def search_chunks(search_terms: str|list[str], runtime: ToolRuntime[GameAg
                         )
                     }
                 )
-                
     return results
 
 
 class QuoteEntry(TypedDict):
-    text: str
-    rulebook_name: str
-    page: int
+    """A quote from a rulebook with its citation information"""
+    text: Annotated[str, ..., "Verbatim quote from the rulebook"]
+    rulebook_name: Annotated[str, ..., "Name of the rulebook this quote comes from"]
+    page: Annotated[int, ..., "Page number where this quote appears"]
 
 
 class DefinitionEntry(TypedDict):
-    term: str
-    quotes: list[QuoteEntry]
-    defines_term: bool
-    clarifying_question: str
+    """A term and its definition status with supporting quotes"""
+    term: Annotated[str, ..., "The term being defined"]
+    quotes: Annotated[list[QuoteEntry], ..., "List of quotes that define or relate to this term"]
+    defines_term: Annotated[bool, ..., "Whether the provided quotes contain a clear definition of the term"]
+    clarifying_question: Annotated[str, ..., "If defines_term is false, a clarifying question to ask; otherwise, leave empty"]
 
 
 # New nested types for exceptions
 class ExplicitNamingCheck(TypedDict):
-    does_exception_name_target: bool
-    explanation: str
+    """Step 2: Check whether the exception explicitly names the target mechanic"""
+    does_exception_name_target: Annotated[bool, ..., "Whether the exception explicitly names the target mechanic"]
+    explanation: Annotated[str, ..., "Brief explanation of the naming check result"]
 
 
 class RelationshipCheck(TypedDict):
-    relationship_exists: bool | Literal["unclear"]
-    quotes: list[QuoteEntry]
-    explanation: str
+    """Step 3: Check for relationship statements linking the exception to the target mechanic"""
+    relationship_exists: Annotated[bool | Literal["unclear"], ..., "Whether a relationship between mechanics exists (true/false/'unclear')"]
+    quotes: Annotated[list[QuoteEntry], ..., "Quotes showing the relationship between mechanics"]
+    explanation: Annotated[str, ..., "Explanation of the relationship or lack thereof"]
 
 
 class SeparationCheck(TypedDict):
-    separation_exists: bool
-    quotes: list[QuoteEntry]
-    explanation: str
+    """Step 4: Check for separation statements that prevent the exception from applying"""
+    separation_exists: Annotated[bool, ..., "Whether the mechanics are explicitly separated in the rules"]
+    quotes: Annotated[list[QuoteEntry], ..., "Quotes showing separation between mechanics"]
+    explanation: Annotated[str, ..., "Explanation of the separation or lack thereof"]
 
 
 # New types for top-level fields
 class IdentifiedMechanics(TypedDict):
     """Game mechanics"""
     primary_mechanics: Annotated[list[str], ..., "The primary game mechanics involved in the question"]
-    secondary_mechanics: list[str]
-    reasoning: str
+    secondary_mechanics: Annotated[list[str], ..., "Other mechanics mentioned or implied that might affect the primary mechanics"]
+    reasoning: Annotated[str, ..., "Brief explanation of why these mechanics were identified and how they relate to each other"]
 
 
 class RelationshipStatement(TypedDict):
-    mechanics: list[str]
-    relationship_type: Literal["separate", "same", "subset", "other"]
-    quotes: list[QuoteEntry]
-    interpretation: str
+    """A statement about how two mechanics relate to each other"""
+    mechanics: Annotated[list[str], ..., "List of two mechanics whose relationship is being described"]
+    relationship_type: Annotated[Literal["separate", "same", "subset", "other"], ..., "Type of relationship: 'separate', 'same', 'subset', or 'other'"]
+    quotes: Annotated[list[QuoteEntry], ..., "Quotes establishing the relationship between these mechanics"]
+    interpretation: Annotated[str, ..., "What this relationship means for answering the user's query"]
 
 
 class GeneralRule(TypedDict):
-    mechanic: str
-    quotes: list[QuoteEntry]
-    summary: str
+    """A general rule governing a game mechanic"""
+    mechanic: Annotated[str, ..., "The game mechanic this rule governs"]
+    quotes: Annotated[list[QuoteEntry], ..., "Quotes stating the general rule"]
+    summary: Annotated[str, ..., "Brief summary of what the rule states"]
 
 
 class ExceptionEntry(TypedDict):
-    exception_source: str
-    exception_scope_language: str
-    target_mechanic: str
-    step1_scope_analysis: str
+    """An exception that might override general rules, analyzed using the 4-step test"""
+    exception_source: Annotated[str, ..., "Where the exception comes from (card name, ability name, etc.)"]
+    exception_scope_language: Annotated[str, ..., "Exact language describing what the exception affects"]
+    target_mechanic: Annotated[str, ..., "The mechanic in the user's query being tested against this exception"]
+    step1_scope_analysis: Annotated[str, ..., "Analysis of what language the exception uses to describe its scope"]
     step2_explicit_naming: ExplicitNamingCheck
     step3_relationship_check: RelationshipCheck
     step4_separation_check: SeparationCheck
-    does_exception_apply: bool | Literal["clarification_needed"]
-    precedence_level: str
-    clarifying_question: str
+    does_exception_apply: Annotated[bool | Literal["clarification_needed"], ..., "Whether this exception applies to the target mechanic (true/false/'clarification_needed')"]
+    precedence_level: Annotated[str, ..., "Precedence level from rule #10: level 1-5"]
+    clarifying_question: Annotated[str, ..., "If clarification is needed, a question to ask; otherwise, leave empty"]
 
 
 class QaResponse(TypedDict):
     """Rules analysis and answer structure"""
+    reasoning: Annotated[str, ..., "Step-by-step reasoning process using bullet points"]
     identified_mechanics: IdentifiedMechanics
-    relationship_statements: list[RelationshipStatement]
-    definitions: list[DefinitionEntry]
-    general_rules: list[GeneralRule]
-    exceptions: list[ExceptionEntry]
-    precedence_analysis: str
-    reasoning: str
-    final_answer: str
-    sufficient_information_to_answer: bool
-
-
-# class GameAgentInputState(TypedDict):
-#     query: str
-
-
-# class GameAgentOutputState(TypedDict):
-#     response: str
-#     response_evidence: NotRequired[Sequence[Chunk]]
-
-
-# class GameAgentOverallState(MessagesState):
-#     query: str
-#     response: str
-#     ready_to_answer: bool
-#     response_evidence: NotRequired[Sequence[Chunk]]
+    # relationship_statements: Annotated[list[RelationshipStatement], ..., "List of relationship statements between mechanics found in the documents"]
+    general_rules: Annotated[list[GeneralRule], ..., "List of general rules governing the mechanics in question"]
+    definitions: Annotated[list[DefinitionEntry], ..., "List of term definitions found in or missing from the documents. Do not include definitions for things already defined under general_rules."]
+    exceptions: Annotated[list[ExceptionEntry], ..., "List of exceptions that might apply to the situation"]
+    precedence_analysis: Annotated[str, ..., "If multiple rules apply, explanation of which takes precedence and why (using rule #10)"]
+    final_answer: Annotated[str, ..., "Free-form markdown text following all citation requirements. Must follow rule #1 for document-first, quote-first answering, use blockquotes instead of inline quotes, and include citations in the form (Rulebook name, p. X). Do NOT refer to rule interpretation criteria names (e.g. 'Rule #10') in the final answer."]
+    sufficient_information_to_answer: Annotated[bool, ..., "Whether there is sufficient information in the documents to answer the query"]
 
 
 def get_all_chunks_from_message_history(messages: list[AnyMessage]) -> list[Chunk]:
@@ -362,8 +368,9 @@ def compile_evidence_from_documents(quote_entries: Sequence[QuoteEntry], documen
             page_content = document["content"]
             match = quote_util.find_quote_with_gaps(page_content, quote["text"])
             if match:
-                quote["text"] = quote_util.expand_to_full_paragraphs(page_content, match.matched_text)
-                break
+                new_text = quote_util.expand_to_full_paragraphs(page_content, match.matched_text) 
+                if len(new_text) > len(quote["text"]):
+                    quote["text"] = new_text
     
     # Dedupe quotes
     seen_texts: set = set()
@@ -786,8 +793,9 @@ def tweak_and_validate_quotes_response(response: QaResponse, chunks: list[Chunk]
 
     # Validate relationship_statements
     invalid_relationship_quotes: list[QuoteEntry] = []
-    for statement in response["relationship_statements"]:
-        invalid_relationship_quotes.extend(check_quotes_in_list(statement["quotes"]))
+    if "relationship_statements" in response:
+        for statement in response["relationship_statements"]:
+            invalid_relationship_quotes.extend(check_quotes_in_list(statement["quotes"]))
 
     # Validate general_rules
     invalid_general_rule_quotes: list[QuoteEntry] = []
@@ -859,21 +867,6 @@ def dump_chunks(chunks: list[Chunk]):
     print("===== End Dump =====")
 
 
-class GameAgentInputState(MessagesState):
-    query: str
-    """The user's query"""
-    recursion_depth: int
-    """The current recursion depth"""
-    evidence: list[Chunk]
-
-
-class GameAgentOutputState(MessagesState):
-    response: str
-    """The answer to the user's query"""
-    evidence: list[Chunk]
-    """The evidence chunks supporting the answer"""
-
-
 class ClarifyingQA(TypedDict):
     question: str
     """A clarifying question about the original question asked"""
@@ -883,17 +876,67 @@ class ClarifyingQA(TypedDict):
     """The evidence chunks supporting the answer"""
 
 
+class GameAgentInputState(MessagesState):
+    query: str
+    """The user's query"""
+    recursion_depth: int
+    """The current recursion depth"""
+    evidence: list[Chunk]
+    clarifying_questions: NotRequired[list[ClarifyingQA]]
+
+
+class GameAgentOutputState(MessagesState):
+    response: str
+    """The answer to the user's query"""
+    evidence: list[Chunk]
+    """The evidence chunks supporting the answer"""
+
+
 class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
-    clarifying_questions: list[ClarifyingQA]
     analysis: QaResponse
     rounds_clarification: int
     """The number of rounds of clarification performed"""
     validation_attempts: int
     """Track how many times we've attempted to fix/validate quotes"""
+    refine_current_partition: NotRequired[int]
+    """If set, indicates which partition index is being refined currently"""
+    refine_saved_evidence: NotRequired[list[Chunk]]
+    """If set, the evidence saved before refinement started"""
+    answer: str
+    reasoning: str
+    invalid_quotes: list[QuoteEntry]
+
+
+def get_evidence(state: GameAgentOverallState) -> list[Chunk]:
+    # Gather the context we've collected so far
+    documents = []
+    # If we've already acquired evidence, use that.
+    if "evidence" in state and state["evidence"]:
+        documents.extend(state["evidence"])
+    else:
+        # Otherwise, extract from message history
+        documents.extend(get_all_chunks_from_message_history(state["messages"]))
+    # Add evidence from clarifying questions too
+    for qa in state.get("clarifying_questions", []):
+        documents.extend(qa.get("evidence", []))
+    return documents
+
+def sort_chunks(chunks: list[Chunk], gp: Manifest) -> list[Chunk]:
+    # Sort chunks by rulebook priority and page number
+    rulebook_order = [rulebook["name"] for rulebook in gp["rulebooks"]]
+    rulebook_priority = {name: index for index, name in enumerate(rulebook_order)}
+    def chunk_sort_key(chunk: Chunk) -> tuple[int, int]:
+        rulebook_name = chunk["rulebook_name"]
+        page = chunk["page"]
+        priority = rulebook_priority.get(rulebook_name, len(rulebook_priority))
+        return (priority, page)
+    sorted_chunks = sorted(chunks, key=chunk_sort_key)
+    return sorted_chunks
 
 
 def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_prompt: ChatPromptTemplate) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
-    tools = [list_rulebooks, retrieve_page, search_chunks]
+    # tools = [list_rulebooks, retrieve_page, search_chunks]
+    tools = [search_chunks]
     tool_node = ToolNode(tools)
 
     async def retrieve_data(state: GameAgentInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
@@ -935,20 +978,6 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
         return {
             "messages": message_edits
         }
-    
-    def get_evidence(state: GameAgentOverallState) -> list[Chunk]:
-        # Gather the context we've collected so far
-        documents = []
-        # If we've already acquired evidence, use that.
-        if "evidence" in state and state["evidence"]:
-            documents.extend(state["evidence"])
-        else:
-            # Otherwise, extract from message history
-            documents.extend(get_all_chunks_from_message_history(state["messages"]))
-        # Add evidence from clarifying questions too
-        for qa in state.get("clarifying_questions", []):
-            documents.extend(qa.get("evidence", []))
-        return documents
 
     async def analyze_evidence(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
         """Take all the input chunks, determines which are relevant to the query, produces clarifying questions if needed, and produces an answer with evidence."""
@@ -956,6 +985,10 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
 
         # Gather the context we've collected so far
         documents = get_evidence(state)
+        # Sort the chunks by their order in the rulebooks
+        #
+        # TODO: Does this help the LLM understand the context better?
+        documents = sort_chunks(documents, manifest)
 
         answer_prompt = ChatPromptTemplate.from_messages(
             [
@@ -968,9 +1001,10 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
 
         answer_chat_model = chat_model.with_structured_output(
             QaResponse, include_raw=True
-        ).bind(
-            temperature=0.3, top_p=0.6
         )
+        # .bind(
+        #     temperature=0.3, top_p=0.6
+        # )
 
         chain = answer_prompt | answer_chat_model
         chain = chain.with_config(run_name="game_agent_answer_chain")
@@ -983,6 +1017,13 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
             query=state["query"],
             clarifying_questions_and_answers=state.get("clarifying_questions", []),
         )
+
+        if state.get("refinement_current_partition", -1) >= 0:
+            input["draft_response"] = serialize_typeddict(state["analysis"], QaResponse)
+            logger.info("Refining analysis with draft response")
+        else:
+            input["draft_response"] = False
+            logger.info("Analyzing evidence")
 
         result = await chain.ainvoke(input, config=config)
         assert isinstance(result, dict)
@@ -1057,6 +1098,138 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
 
         return output
 
+    def partition_chunks_for_refinement(chunks: list[Chunk], num_partitions: int, manifest: Manifest) -> list[list[Chunk]]:
+        """Partition chunks into roughly equal groups for refinement."""
+        # Step 0: Sort chunks by rulebook and page
+        chunks = sort_chunks(chunks, manifest)
+
+        # Step 1: Partition by (rulebook_name, page) to keep chunks from same page
+        # together
+        chunk_groups = []
+        current_rulebook = None
+        current_page = -1
+        for chunk in chunks:
+            if chunk["rulebook_name"] != current_rulebook or chunk["page"] != current_page:
+                current_rulebook = chunk["rulebook_name"]
+                current_page = chunk["page"]
+                chunk_groups.append([])
+            chunk_groups[-1].append(chunk)
+    
+        # Step 2: Now partition these groups into num_partitions roughly equal parts
+        # Add groups to current partition until we exceed target size
+        partitions: list[list[Chunk]] = [[]]
+        target_size = max(1, len(chunks) // num_partitions)
+        for group in chunk_groups:
+            current_partition = partitions[-1]
+            current_partition.extend(group)
+            if len(current_partition) >= target_size and len(partitions) < num_partitions:
+                partitions.append([])
+
+        # Remove any empty partitions
+        partitions = [p for p in partitions if len(p) > 0]
+        return partitions
+    
+    def is_currently_refining(state: GameAgentOverallState) -> bool:
+        refine_partition = state.get("refine_current_partition", -1)
+        return -1 < refine_partition < REFINEMENT_PARTITION_NUMBER
+    
+    def clear_analysis_reasoning(analysis: QaResponse) -> QaResponse:
+        analysis = copy.deepcopy(analysis)
+        paths_to_clear = [
+            ("reasoning"),
+            ("precedence_analysis"),
+            ("identified_mechanics", "*", "reasoning"),
+        ]
+        for path in paths_to_clear:
+            def clear_path(d: Any, p: tuple):
+                if len(p) == 0:
+                    return
+                key = p[0]
+                if key == "*":
+                    if isinstance(d, list):
+                        for item in d:
+                            clear_path(item, p[1:])
+                else:
+                    if key in d:
+                        if len(p) == 1:
+                            d[key] = ""
+                        else:
+                            clear_path(d[key], p[1:])
+            clear_path(analysis, path)
+        return analysis
+
+    async def refine_analysis(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        """
+        Here we look at a validated analysis and see if we can improve it
+        further. We do this by iterative refinement, asking the LLM to improve
+        the analysis based successive groups of evidence chunks.
+        """
+        # Our current evidence will be derived from these chunks we originally
+        # retrieved.
+        chunks_from_retrieval = get_all_chunks_from_message_history(state["messages"])
+
+        current_partition_idx = state.get("refine_current_partition", -1)
+        current_partition_idx += 1
+
+        # Partition into 3 groups for refinement
+        partitions = partition_chunks_for_refinement(chunks_from_retrieval, num_partitions=REFINEMENT_PARTITION_NUMBER, manifest=runtime.context.manifest)
+
+        # Collect evidence
+        current_evidence = get_evidence(state)
+        saved_evidence = state.get("refine_saved_evidence", [])
+
+        for saved_chunk in saved_evidence:
+            if saved_chunk not in current_evidence:
+                current_evidence.append(saved_chunk)
+
+        if current_partition_idx >= REFINEMENT_PARTITION_NUMBER or current_partition_idx >= len(partitions):
+            # We're done refining
+            return {
+                "refine_current_partition": REFINEMENT_PARTITION_NUMBER,
+                # This will include any evidence that _appeared_ relevant during
+                # refinement, but maybe didn't make it into the final analysis.
+                "evidence": current_evidence,
+            }
+
+        logger.info("Partitions for refinement", partitions=partitions)
+        logger.info("Refining analysis", current_partition_idx=current_partition_idx, total_partitions=len(partitions))
+
+        current_partition = partitions[current_partition_idx]
+
+        # Include in new_evidence all chunks from the current evidence that
+        # are not part of the current partition
+        new_evidence = []
+        partition_set = set((chunk["rulebook_name"], chunk["page"]) for chunk in current_partition)
+        for chunk in current_evidence:
+            key = (chunk["rulebook_name"], chunk["page"])
+            if key not in partition_set:
+                new_evidence.append(chunk)
+        
+        # The order here, probably, matters. Our existing evidence has already
+        # survived analysis and validation, so we want the LLM to pay more
+        # attention to it. By putting it first, we hope to bias the LLM to
+        # focus on it more. The remaining chunks from the current partition go
+        # at the end.
+        new_evidence = sort_chunks(new_evidence, runtime.context.manifest)
+        current_partition = sort_chunks(current_partition, runtime.context.manifest)
+        new_evidence.extend(current_partition)
+
+        # Let's remove any existing reasoning from the current analysis to avoid
+        # confusion
+        analysis = clear_analysis_reasoning(state["analysis"])
+
+        output = {
+            "evidence": new_evidence,
+            # We need to save the current evidence in case it gets dropped
+            # during a round of refinement
+            "refine_saved_evidence": current_evidence,
+            "refine_current_partition": current_partition_idx,
+            "analysis": analysis,
+            "validation_attempts": 0,
+        }
+
+        return output
+
     async def address_clarifying_questions(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
         """If there are clarifying questions, ask them and incorporate the answers."""
         analysis = state["analysis"]
@@ -1123,7 +1296,7 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
             "evidence": evidence,
         }
 
-    def check_response_status(state: GameAgentOverallState) -> Literal["analyze_evidence", "address_clarifying_questions", "produce_response"]:
+    def check_response_status(state: GameAgentOverallState) -> Literal["analyze_evidence", "address_clarifying_questions", "refine_analysis"]:
         analysis = state["analysis"]
 
         # If the analysis isn't valid, try analyze_evidence again
@@ -1131,7 +1304,7 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
         if len(invalid_quotes) > 0:
             # If we are over max attempts, just produce response
             if state.get("validation_attempts", 0) >= 3:
-                return "produce_response"
+                return "refine_analysis"
             
             # We aren't over our max attempts, so retry analysis
             return "analyze_evidence"
@@ -1155,8 +1328,17 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
             return "address_clarifying_questions"
         
         # Otherwise, we're done
-        return "produce_response"
+        return "refine_analysis"
     
+    def check_refinement_complete(state: GameAgentOverallState) -> Literal["produce_response", "analyze_evidence"]:
+        # We continue refining by going back to analyze_evidence which will
+        # iterate on the current analysis
+        if is_currently_refining(state):
+            return "analyze_evidence"
+        
+        # Otherwise, proceed to produce response
+        return "produce_response"
+
     def select_start_node(state: GameAgentInputState) -> Literal["analyze_evidence", "retrieve_data"]:
         # If provided evidence up-front, start with analyze_evidence
         if state.get("evidence"):
@@ -1181,6 +1363,7 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
     graph.add_node("produce_response", produce_response)
     graph.add_node("retrieve_data", retrieve_data)
     graph.add_node("dedupe_chunks", dedupe_chunks)
+    graph.add_node("refine_analysis", refine_analysis)
 
     graph.add_conditional_edges(START, select_start_node)
     graph.add_edge("retrieve_data", "tool_node")
@@ -1191,6 +1374,7 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
     graph.add_edge("dedupe_chunks", "analyze_evidence")
     graph.add_edge("analyze_evidence", "validate_analysis")
     graph.add_conditional_edges("validate_analysis", check_response_status)
+    graph.add_conditional_edges("refine_analysis", check_refinement_complete)
     graph.add_edge("address_clarifying_questions", "analyze_evidence")
     graph.add_edge("produce_response", END)
 
@@ -1199,204 +1383,561 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
     return agent
 
 
-# def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_prompt: ChatPromptTemplate=qa_prompt) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
-#     tools = [list_rulebooks, retrieve_page, search_chunks]
-#     tool_node = ToolNode(tools)
-    
-#     async def check_answer_progress(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-#         assert runtime is not None
-#         manifest = runtime.context.manifest
+class QuestionAnalysisOverallState(MessagesState):
+    direct_rule_interactions: list[str]
+    documents: list[Chunk]
+    question_analysis: str
+    reasoning: str
+    query: str
 
-#         # Set up structlog context with the run ID - this will automatically
-#         # add run_id to all log calls within this function and any functions it calls
-#         run_id = get_run_id_from_config(config)
-#         with structlog.contextvars.bound_contextvars(run_id=run_id):
-#             chunks = get_all_chunks_from_message_history(state["messages"])
 
-#             # Print all the chunks found
-#             dump_chunks(chunks)
+def create_question_analysis_state(query, **kwargs) -> QuestionAnalysisOverallState:
+    state = QuestionAnalysisOverallState(
+        documents=[],
+        messages=[],
+        direct_rule_interactions=[],
+        question_analysis="",
+        reasoning="",
+        query=query,
+    )
+    state.update(**kwargs)
+    return state
 
-#             answer_prompt = ChatPromptTemplate.from_messages(
-#                 [
-#                     ("system", system_prompt_template),
-#                     ("user", answer_template),
 
-#                 ],
-#                 template_format="mustache"
-#             )
+@dataclass
+class QuestionAnalysisContext:
+    manifest: Manifest
+    chunk_search_service: ChunkSearchService
 
-#             answer_chat_model = chat_model.with_structured_output(
-#                 QaResponse, include_raw=True
-#             ).bind(
-#                 logprobs=True, top_logprobs=2, temperature=0.3, top_p=0.6
-#             )
 
-#             chain = answer_prompt | answer_chat_model
-#             chain = chain.with_config(run_name="game_agent_answer_chain")
+analyze_user_query_template = """\
+Examine the user query in light of the provided documents. What is the user asking? Do not answer the question, just explain what the question is.
+"""
 
-#             input = dict(
-#                 # game_summary=manifest.get("summary", ""),
-#                 game_summary="",
-#                 game_name=manifest["name"],
-#                 documents=chunks,
-#                 query=state["query"]
-#             )
+analyze_user_query_retrieval_template = """\
+Examine the user query. What is the user asking? Do not answer the question, just explain what the question is. You can lookup any particular terms in the user query by using the `search_chunks` tool.
+"""
 
-#             quote_validation_result = None
-#             for _ in range(3):
-#                 result = await chain.ainvoke(input, config=config)
-#                 assert isinstance(result, dict)
-#                 parsed = result["parsed"]
-#                 raw = result["raw"]
+list_essential_rule_interactions_template = """\
+Some rule interactions are transitive (X has Y which interacts with Z) others are direct (Y interacts with Z). We care about the direct rule interactions essential to answering the user's query. Given the user's query and the explanation of what the user is asking, identify the direct rule interactions that are the crux of what the user is asking. List them in the format "Y interacts with Z" where Y and Z are the names of rules (no citations required here). Do not include parenthetical elements or commentary. Provide the output as a json list of strings.
+"""
 
-#                 # Ensure every quote reference in the response is valid
-#                 quote_validation_result = tweak_and_validate_quotes_response(parsed, chunks)
+short_system_prompt_template = """\
+You are an expert Rules Lawyer specializing in boardgame rules. Being "technically correct" is your highest aspiration. You believe in "the rules as written" above all else, because the rules are not merely words on a page, they are devine truth. You are sensitive to even the slimmest nuances in wording, and you always interpret the rules in the most literal way possible. You never make assumptions or inferences beyond what is explicitly written in the rules, because that would be the greatest of heresies. You have a keen eye for detail, and you always notice even the smallest distinctions in wording that others might overlook.
 
-#                 # This is a pretty big thing to log, only do it if things changed
-#                 if parsed != quote_validation_result.revised_response:
-#                     logger.info("QAResponse before and after tweak", before=parsed, after=quote_validation_result.revised_response, invalid_quote_count=len(quote_validation_result.invalid_quotes))
+{{#query}}
+## User query
+
+<query>
+{{query}}
+</query>
+{{/query}}
+"""
+
+
+class EssentialRuleInteractionResponse(TypedDict):
+    essential_rule_interactions: Annotated[list[str], ..., "list of essential direct rule interactions needed to answer the query. Format each as 'Y interacts with Z' where Y and Z are the names of rules. No citations required."]
+
+
+def build_analyze_question_graph(
+    checkpoint_saver: BaseCheckpointSaver,
+    chat_model: BaseChatModel
+) -> CompiledStateGraph[QuestionAnalysisOverallState, QuestionAnalysisContext, QuestionAnalysisOverallState, QuestionAnalysisOverallState]:
+    tools = [search_chunks]
+    tool_node = ToolNode(tools)
+
+    async def retrieve_data(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
+        # chunk_search_service = runtime.context.chunk_search_service
+        manifest = runtime.context.manifest
+
+        retrieval_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", query_documents_guidelines_template),
+                ("user", analyze_user_query_retrieval_template),
+
+            ],
+            template_format="mustache"
+        )
+
+        chat_model_with_tools = chat_model.bind_tools(tools, tool_choice="any")
         
-#                 parsed = quote_validation_result.revised_response
+        chain = retrieval_prompt | chat_model_with_tools
 
-#                 # Log as warning every invalid quote
-#                 if not quote_validation_result.valid:
-#                     for invalid_quote in quote_validation_result.invalid_quotes:
-#                         logger.warning(
-#                             "Invalid quote detected in answer",
-#                             text=invalid_quote["text"],
-#                             rulebook_name=invalid_quote["rulebook_name"],
-#                             page=invalid_quote["page"],
-#                         )
-                
-#                 # Print all clarifying questions
-#                 for definition in parsed["definitions"]:
-#                     if definition["clarifying_question"]:
-#                         logger.info("Clarifying question from definition", question=definition["clarifying_question"])
-#                 for exception in parsed["exceptions"]:
-#                     if exception["clarifying_question"]:
-#                         logger.info("Clarifying question from exception", question=exception["clarifying_question"])
+        input = {
+            "game_summary": manifest.get("summary", ""),
+            "game_name": manifest["name"],
+            "query": state["query"],
+            "documents": [],
+            "clarifying_questions_and_answers": []
+        }
 
-#                 if quote_validation_result.valid:
-#                     evidence: list[QuoteEntry] = quote_validation_result.valid_quotes
-#                     return {
-#                         "response": parsed["final_answer"],
-#                         "messages": [raw],
-#                         "response_evidence": compile_evidence_from_documents(
-#                             evidence,
-#                             quote_validation_result.chunks_referenced
-#                         ),
-#                     }
+        try:
+            message = await chain.ainvoke(input, config=config)
+        except Exception as e:
+            raise
 
-#             assert quote_validation_result is not None
+        return {
+            "messages": [message]
+        }
 
-#             if not quote_validation_result.valid:
-#                 response = QaResponse(
-#                     definitions=[],
-#                     exceptions=[],
-#                     reasoning="",
-#                     final_answer="I'm sorry, but I was unable to provide a valid answer with correct citations based on the provided rulebooks.",
-#                     sufficient_information_to_answer=False
-#                 )
-#                 new_message = AIMessage(content=json.dumps(response, indent=2))
-#                 return {
-#                     "response": response["final_answer"],
-#                     "messages": state["messages"] + [new_message],
-#                     "evidence": [],
-#                 }
- 
+    async def analyze_question(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
+        manifest = runtime.context.manifest
+        documents = get_all_chunks_from_message_history(state["messages"])
+        documents = sort_chunks(documents, manifest)
 
-#     async def llm_call(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-#         manifest = runtime.context.manifest
+        analyze_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", query_documents_guidelines_template),
+                ("user", analyze_user_query_template),
 
-#         if len(state["messages"]) == 0:
-#             chat_model_with_tools = chat_model.bind_tools(tools, tool_choice="any")
-#         else:
-#             chat_model_with_tools = chat_model.bind_tools(tools)
+            ],
+            template_format="mustache"
+        )
 
-#         chain = qa_prompt | chat_model_with_tools
+        input = dict(
+            game_name=manifest["name"],
+            documents=documents,
+            query=state["query"],
+            clarifying_questions_and_answers=[],
+        )
 
-#         input = {
-#             "game_summary": manifest.get("summary", ""),
-#             "game_name": manifest["name"],
-#             "query": state["query"],
-#             "messages": state["messages"],
-#         }
+        logger.info("Analyzing question", query=state["query"], document_count=len(documents))
 
-#         logger.info("Invoking LLM with input", message_count=len(state["messages"]))
-#         try:
-#             final_message = await chain.ainvoke(input, config=config)
-#         except Exception as e:
-#             logger.error(f"Error invoking LLM: {e}")
-#             for m in state["messages"]:
-#                 m.pretty_print()
-#             raise
+        chain = analyze_prompt | chat_model
 
-#         return {
-#             "messages": [final_message]
-#         }
+        result = await chain.ainvoke(input, config=config)
+
+        logger.info("Question analysis result", analysis=result.text)
+
+        return {
+            "question_analysis": result.text,
+            "documents": documents
+        }
     
-#     async def dedupe_chunks(state: GameAgentOverallState) -> dict:
-#         """Dedupe chunks in the message history"""
-#         messages = state["messages"]
-#         message_edits = dedupe_chunks_in_message_history(messages)
-#         return {
-#             "messages": message_edits
-#         }
+    async def determine_rule_interactions(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
+        rule_interaction_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", short_system_prompt_template),
+                ("user", analyze_user_query_template),
+                ("assistant", "{{question_analysis}}"),
+                ("user", list_essential_rule_interactions_template),
+            ],
+            template_format="mustache"
+        )
+
+        input = dict(
+            documents=[],
+            query=state["query"],
+            question_analysis=state["question_analysis"],
+        )
+
+        chat_model_structured = chat_model.with_structured_output(
+            EssentialRuleInteractionResponse
+        )
+
+        chain = rule_interaction_prompt | chat_model_structured
+        result = cast(EssentialRuleInteractionResponse, await chain.ainvoke(input, config=config))
+        rule_interactions = result["essential_rule_interactions"]
+
+        logger.info("Determined direct rule interactions", interactions=rule_interactions)
+
+        return {
+            "direct_rule_interactions": rule_interactions
+        }
     
-#     async def should_continue(state: GameAgentOverallState) -> Literal["tool_node", "ask_to_answer", "response"]:
-#         """Decide if we should continue the loop or stop based upon whether the LLM made a tool call"""
-
-#         messages = state["messages"]
-#         last_message = messages[-1]
-
-#         # If the LLM makes a tool call, then perform an action
-#         if getattr(last_message, "tool_calls", None):
-#             return "tool_node"
-
-#         if not state.get("ready_to_answer", False):
-#             return "ask_to_answer"
-
-#         # Otherwise, we stop (reply to the user)
-#         return "response"
+    async def produce_response(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
+        return {}
     
-#     async def check_answer_edge(state: GameAgentOverallState) -> Literal["__end__", "dedupe_chunks"]:
-#         """Determine if we should dedupe chunks or end the workflow"""
 
-#         if state.get("response"):
-#             return "__end__"
-#         else:
-#             return "dedupe_chunks"
+    graph = StateGraph(
+        state_schema=QuestionAnalysisOverallState,
+        context_schema=QuestionAnalysisContext,
+    )
+
+    graph.add_node("tool_node", tool_node)
+    graph.add_node("retrieve_data", retrieve_data)
+    graph.add_node("analyze_question", analyze_question)
+    graph.add_node("determine_rule_interactions", determine_rule_interactions)
+    graph.add_node("produce_response", produce_response)
+    graph.add_node("dedupe_chunks", dedupe_chunks_node)
+
+    graph.add_edge(START, "retrieve_data")
+    graph.add_edge("retrieve_data", "tool_node")
+    graph.add_edge("tool_node", "dedupe_chunks")
+    graph.add_edge("dedupe_chunks", "analyze_question")
+    graph.add_edge("analyze_question", "determine_rule_interactions")
+    graph.add_edge("determine_rule_interactions", "produce_response")
+    graph.add_edge("produce_response", END)
+
+    agent = graph.compile(checkpointer=checkpoint_saver)
+    return agent
+
+
+class CoordinationInputState(TypedDict):
+    query: str
+
+
+class CoordinationOutputState(TypedDict):
+    response: str
+    evidence: list[Chunk]
+
+
+class CoordinationOverallState(TypedDict):
+    query: str
+    direct_rule_interactions: list[str]
+    question_analysis: str
+    clarifying_questions: list[ClarifyingQA]
+    response: str
+    evidence: list[Chunk]
+
+
+def build_coordinating_agent_graph(
+    checkpoint_saver: BaseCheckpointSaver,
+    analyze_question_agent: CompiledStateGraph[QuestionAnalysisOverallState, QuestionAnalysisContext, QuestionAnalysisOverallState, QuestionAnalysisOverallState],
+    game_agent: CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState],
+) -> CompiledStateGraph[CoordinationOverallState, GameAgentContext, CoordinationInputState, CoordinationOutputState]:
     
-#     # Build workflow
-#     agent_builder = StateGraph(
-#         GameAgentOverallState,
-#         context_schema=GameAgentContext,
-#         input_schema=GameAgentInputState,
-#         output_schema=GameAgentOutputState
-#     )
+    async def analyze_question(state: CoordinationInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        state_analyze_question = create_question_analysis_state(query=state["query"])
+        context_analyze_question = QuestionAnalysisContext(
+            manifest=runtime.context.manifest,
+            chunk_search_service=runtime.context.chunk_search_service,
+        )
+        result = await analyze_question_agent.ainvoke(
+            state_analyze_question,
+            context=context_analyze_question,
+            config=config
+        )
 
-#     # Add nodes
-#     # NOTE: The node name "llm_call" is used by the QA service for streaming filtering.
-#     # If you rename this node, update the streaming logic in build_qa_service.
-#     agent_builder.add_node("llm_call", llm_call)
-#     agent_builder.add_node("tool_node", tool_node)
-#     agent_builder.add_node("dedupe_chunks", dedupe_chunks)
-#     agent_builder.add_node("check_answer_progress", check_answer_progress)
-#     # agent_builder.add_node("response", populate_response)
+        return {
+            "direct_rule_interactions": result["direct_rule_interactions"],
+            "question_analysis": result["question_analysis"],
+            "evidence": result["documents"],
+        }
+    
+    class AskSubquestionsInputState(TypedDict):
+        direct_rule_interactions: list[str]
 
-#     # Add edges to connect nodes
-#     agent_builder.add_edge(START, "llm_call")
-#     agent_builder.add_edge("llm_call", "tool_node")
-#     agent_builder.add_edge("tool_node", "dedupe_chunks")
-#     agent_builder.add_edge("dedupe_chunks", "check_answer_progress")
-#     agent_builder.add_edge("check_answer_progress", END)
-#     # agent_builder.add_edge("response", END)
+    async def ask_subquestions(state: AskSubquestionsInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        inputs = []
+        interactions = state["direct_rule_interactions"]
+        subquestions = [f"How does {interaction}?" for interaction in interactions]
+        for question in subquestions:
+            input = {
+                "query": question,
+            }
+            inputs.append(input)
+        
+        responses: list[GameAgentOutputState] = await game_agent.abatch(
+            inputs,
+            context=runtime.context,
+            config=config
+        )
 
-#     # Compile the agent
-#     agent = agent_builder.compile(checkpointer=checkpoint_saver)
+        subquestions_answers: list[ClarifyingQA] = []
+        for question, response in zip(subquestions, responses):
+            subquestions_answers.append(
+                ClarifyingQA(
+                    question=question,
+                    answer=response["response"],
+                    evidence=[],
+                )
+            )
 
-#     return agent
+        return {
+            "clarifying_questions": subquestions_answers
+        }
+    
+    class CombineSubanswersInputState(TypedDict):
+        query: str
+        clarifying_questions: list[ClarifyingQA]
 
+    async def combine_subanswers(state: CombineSubanswersInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        input = {
+            "query": state["query"],
+            "clarifying_questions": state.get("clarifying_questions", []),
+            "documents": state.get("evidence", [])
+        }
+        response = await game_agent.ainvoke(
+            input,
+            context=runtime.context,
+            config=config
+        )
+
+        return {
+            "response": response["response"],
+            "evidence": response["evidence"],
+        }
+
+    async def produce_response(state: CoordinationOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        return {}
+
+    graph = StateGraph(
+        state_schema=CoordinationOverallState,
+        input_schema=CoordinationInputState,
+        output_schema=CoordinationOutputState,
+        context_schema=GameAgentContext,
+    )
+
+    graph.add_node("analyze_question", analyze_question)
+    graph.add_node("ask_subquestions", ask_subquestions)
+    graph.add_node("combine_subanswers", combine_subanswers)
+    graph.add_node("produce_response", produce_response)
+
+    graph.add_edge(START, "analyze_question")
+    graph.add_edge("analyze_question", "ask_subquestions")
+    graph.add_edge("ask_subquestions", "combine_subanswers")
+    graph.add_edge("combine_subanswers", "produce_response")
+    graph.add_edge("produce_response", END)
+
+    agent = graph.compile(checkpointer=checkpoint_saver)
+    return agent
+
+
+async def dedupe_chunks_node(state: MessagesState) -> dict:
+    """Dedupe chunks in the message history"""
+    messages = state["messages"]
+    message_edits = dedupe_chunks_in_message_history(messages)
+    return {
+        "messages": message_edits
+    }
+
+
+def build_question_answer_graph(
+    checkpoint_saver: BaseCheckpointSaver,
+    chat_model: BaseChatModel,
+) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
+    
+    tools = [search_chunks]
+    tool_node = ToolNode(tools)
+    
+    async def retrieve_data(state: GameAgentInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        logger.info("Retrieving data for query", query=state["query"])
+        manifest = runtime.context.manifest
+        retrieve_data_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", query_documents_guidelines_template),
+                ("user", retrieve_documents_template),
+            ],
+            template_format="mustache"
+        )
+        chat_model_with_tools = chat_model.bind_tools(tools, tool_choice="any")
+        chain = retrieve_data_prompt | chat_model_with_tools
+
+        input = {
+            "game_summary": manifest.get("summary", ""),
+            "game_name": runtime.context.manifest["name"],
+            "query": state["query"],
+            "documents": [],
+            "clarifying_questions_and_answers": state.get("clarifying_questions", []),
+        }
+
+        message = await chain.ainvoke(input, config=config)
+
+        return {
+            "messages": [message]
+        }
+
+    def extract_reasoning_and_answer(response: str) -> dict:
+        reasoning_start = response.find("<reasoning>")
+        # Find last occurrence of </reasoning>
+        reasoning_end = response.rfind("</reasoning>")
+
+        if reasoning_start != -1 and reasoning_end != -1:
+            reasoning = response[reasoning_start + len("<reasoning>"):reasoning_end].strip()
+            answer = response[reasoning_end + len("</reasoning>"):].strip()
+        else:
+            reasoning = ""
+            answer = response.strip()
+        return {
+            "reasoning": reasoning,
+            "answer": answer
+        }
+
+    async def answer_question(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        logger.info("Answering question", query=state["query"])
+        manifest = runtime.context.manifest
+        documents = get_evidence(state)
+        documents = sort_chunks(documents, manifest)
+        dump_chunks(documents)
+
+        answer_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", query_documents_guidelines_template),
+                ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query inside <reasoning> </reasoning> tags. Then answer the user's query."),
+            ],
+            template_format="mustache"
+        )
+
+        input = dict(
+            # No need for a game summary here, we will have plenty of context
+            # from the documents
+            game_summary=False,
+            game_name=manifest["name"],
+            documents=documents,
+            query=state["query"],
+            clarifying_questions_and_answers=state.get("clarifying_questions", [])
+        )
+
+        chain = answer_prompt | chat_model
+        chain = chain.with_config(run_name="qa_graph_answer_chain")
+        result = await chain.ainvoke(input, config=config)
+        extracted = extract_reasoning_and_answer(result.text)
+    
+        logger.info("Answer question result", answer=extracted["answer"], document_count=len(documents))
+        print("Reasoning:\n", extracted["reasoning"])
+        print("Answer:\n", extracted["answer"])
+        return {
+            "answer": extracted["answer"],
+            "reasoning": extracted["reasoning"],
+        }
+    
+    def get_quotes(fix_quote_result: FixQuoteCitationsResult) -> Tuple[list[QuoteEntry], list[QuoteEntry]]:
+        valid_quotes: list[QuoteEntry] = []
+        invalid_quotes: list[QuoteEntry] = []
+
+        for vq in fix_quote_result.valid_quotes:
+            valid_quotes.append(
+                QuoteEntry(
+                    text=vq["quote"],
+                    rulebook_name=vq["citation"]["ref_name"] if vq["citation"] else "",
+                    page=int(vq["citation"]["page"]) if vq["citation"] else -1
+                )
+            )
+
+        for iq in fix_quote_result.unfixable_quotes:
+            citation = iq["citation"]
+            if not citation:
+                citation = {"ref_name": "", "page": -1}
+            invalid_quotes.append(
+                QuoteEntry(
+                    text=iq["quote"],
+                    rulebook_name=citation["ref_name"],
+                    page=int(citation["page"])
+                )
+            )
+
+        return valid_quotes, invalid_quotes
+
+    async def validate_answer(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        documents = get_evidence(state)
+        reasoning = state["reasoning"]
+        answer = state["answer"]
+
+        # validate all citations in reasoning and fix if possible
+        reasoning_result = fix_quote_citations_in_text(reasoning, documents)
+        reasoning_valid_quotes, reasoning_invalid_quotes = get_quotes(reasoning_result)
+
+        # validate all citations in answer and fix if possible
+        answer_result = fix_quote_citations_in_text(answer, documents)
+        answer_valid_quotes, answer_invalid_quotes = get_quotes(answer_result)
+
+        if len(reasoning_invalid_quotes) > 0 or len(answer_invalid_quotes) > 0:
+            logger.info(
+                "Invalid quotes found during validation",
+                invalid_quotes=reasoning_invalid_quotes + answer_invalid_quotes,
+                attempt=state.get("validation_attempts", 0)
+            )
+            return {
+                "validation_attempts": state.get("validation_attempts", 0) + 1,
+                "invalid_quotes": reasoning_invalid_quotes + answer_invalid_quotes,
+            }
+        
+        evidence = compile_evidence_from_documents(
+            reasoning_valid_quotes + answer_valid_quotes,
+            documents
+        )
+
+        return {
+            "validation_attempts": 0,
+            "invalid_quotes": [],
+            "answer": answer_result.fixed_text,
+            "reasoning": reasoning_result.fixed_text,
+            "evidence": evidence,
+        }
+
+    async def format_answer(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        documents = get_evidence(state)
+        dump_chunks(documents)
+        documents = sort_chunks(documents, runtime.context.manifest)
+        manifest = runtime.context.manifest
+        documents = get_evidence(state)
+
+        format_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt_template),
+                ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query inside <reasoning> </reasoning> tags. Then answer the user's query."),
+                ("assistant", "<reasoning>{{reasoning}}</reasoning>\n{{answer}}"),
+                ("user", markdown_format_response_template),
+            ],
+            template_format="mustache"
+        )
+
+        input = dict(
+            game_summary="",
+            game_name=manifest["name"],
+            documents=documents,
+            query=state["query"],
+            reasoning=state["reasoning"],
+            answer=state["answer"],
+        )
+
+        chain = format_prompt | chat_model
+        chain = chain.with_config(run_name="format_answer_chain")
+        result = await chain.ainvoke(input, config=config)
+    
+        return {
+            "response": result.text,
+        }
+
+    async def provide_response(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        return {
+            "response": state["response"],
+            "evidence": get_evidence(state),
+        }
+
+    async def check_validation_result(state: GameAgentOverallState) -> Literal["format_answer", "answer_question"]:
+        if state.get("invalid_quotes", []) and state.get("validation_attempts", 0) < 5:
+            return "answer_question"
+        return "format_answer"
+    
+    def select_start_node(state: GameAgentInputState) -> Literal["answer_question", "retrieve_data"]:
+        # If provided evidence up-front, skip retrieval
+        if state.get("evidence"):
+            logger.info("Starting with provided evidence, skipping data retrieval")
+            return "answer_question"
+
+        logger.info("Starting with data retrieval")
+        return "retrieve_data"
+
+    graph = StateGraph(
+        state_schema=GameAgentOverallState,
+        input_schema=GameAgentInputState,
+        output_schema=GameAgentOutputState,
+        context_schema=GameAgentContext,
+    )
+
+    graph.add_node("retrieve_data", retrieve_data)
+    graph.add_node("dedupe_chunks", dedupe_chunks_node)
+    graph.add_node("answer_question", answer_question)
+    graph.add_node("validate_answer", validate_answer)
+    graph.add_node("format_answer", format_answer)
+    graph.add_node("provide_response", provide_response)
+    graph.add_node("tool_node", tool_node)
+
+    graph.add_conditional_edges(START, select_start_node)
+    graph.add_edge("retrieve_data", "tool_node")
+    graph.add_edge("tool_node", "dedupe_chunks")
+    graph.add_edge("dedupe_chunks", "answer_question")
+    graph.add_edge("answer_question", "validate_answer")
+    graph.add_conditional_edges("validate_answer", check_validation_result)
+    graph.add_edge("format_answer", "provide_response")
+    graph.add_edge("provide_response", END)
+
+    # Compile the agent
+    agent = graph.compile(checkpointer=checkpoint_saver)
+    return agent
+    
 
 class QAServiceInput(GameAgentInputState):
     manifest: Manifest
@@ -1412,10 +1953,14 @@ def build_qa_service(
     chunk_search_service: ChunkSearchService,
     qa_prompt: ChatPromptTemplate=qa_prompt,
 ) -> QAService:
-    agent_graph = build_game_agent_graph(
+    # agent_graph = build_game_agent_graph(
+    #     checkpoint_saver,
+    #     chat_model,
+    #     qa_prompt
+    # )
+    agent_graph = build_question_answer_graph(
         checkpoint_saver,
         chat_model,
-        qa_prompt
     )
 
     # Create a custom Runnable that properly handles both streaming and non-streaming

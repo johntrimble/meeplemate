@@ -16,6 +16,7 @@ Read the user query and the documents below carefully. Provide a detailed and ac
 {{/documents}}
 </documents>
 
+{{#clarifying_questions_and_answers.0}}
 ## Clarifying Questions and Answers
 
 These are additional clarifying questions and answers to help resolve ambiguities in the user query and the rules. Use them to better understand how the rules interact with each other and to resolve uncertainties about definitions and exceptions.
@@ -34,6 +35,7 @@ IMPORTANT: These questions and answers are only to be used to clarify ambiguitie
 </clarifying_question_and_answer>
 {{/clarifying_questions_and_answers}}
 </clarifying_questions_and_answers>
+{{/clarifying_questions_and_answers.0}}
 
 ## Core Rules for Reasoning (follow these strictly)
 
@@ -255,114 +257,18 @@ These examples demonstrate the logical patterns you should follow. They use gene
 - After each quoted rule, include a citation in the form: (Rulebook name, p. X).
 - Quotes should be at least a couple of sentences or a paragraph long if possible. Avoid use of added ellipses (...) unless absolutely necessary.
 
-## Output as JSON
+{{#draft_response}}
+## Draft Response
 
-```json
-{
-  "identified_mechanics": {
-    "primary_mechanics": ["<the main mechanic(s) the user is asking about>"],
-    "secondary_mechanics": ["<other mechanics mentioned or implied that might affect the primary mechanics>"],
-    "reasoning": "<brief explanation of why these were identified and how they relate to each other>"
-  },
-  
-  "relationship_statements": [
-    {
-      "mechanics": ["<mechanic 1>", "<mechanic 2>"],
-      "relationship_type": "separate|same|subset|other",
-      "quotes": [
-        {
-          "text": "<verbatim quote>",
-          "rulebook_name": "<rulebook name>",
-          "page": X
-        }
-      ],
-      "interpretation": "<what this relationship means for the query>"
-    }
-  ],
-  
-  "definitions": [
-    {
-      "term": "<term name>",
-      "quotes": [
-        {
-          "text": "<verbatim quote>",
-          "rulebook_name": "<rulebook name>",
-          "page": X
-        }
-      ],
-      "defines_term": true/false,
-      "clarifying_question": "<if defines_term is false, write a clarifying question here; otherwise, leave empty>"
-    }
-  ],
-  
-  "general_rules": [
-    {
-      "mechanic": "<mechanic this rule governs>",
-      "quotes": [
-        {
-          "text": "<verbatim quote>",
-          "rulebook_name": "<rulebook name>",
-          "page": X
-        }
-      ],
-      "summary": "<brief summary of what the rule states>"
-    }
-  ],
-  
-  "exceptions": [
-    {
-      "exception_source": "<where the exception comes from: card name, ability name, etc.>",
-      "exception_scope_language": "<exact language describing what the exception affects>",
-      "target_mechanic": "<the mechanic in the user's query>",
-      
-      "step1_scope_analysis": "<what language does the exception use?>",
-      
-      "step2_explicit_naming": {
-        "does_exception_name_target": true/false,
-        "explanation": "<brief explanation>"
-      },
-      
-      "step3_relationship_check": {
-        "relationship_exists": true/false/"unclear",
-        "quotes": [
-          {
-            "text": "<verbatim quote showing relationship>",
-            "rulebook_name": "<rulebook name>",
-            "page": X
-          }
-        ],
-        "explanation": "<explanation of relationship or lack thereof>"
-      },
-      
-      "step4_separation_check": {
-        "separation_exists": true/false,
-        "quotes": [
-          {
-            "text": "<verbatim quote showing separation>",
-            "rulebook_name": "<rulebook name>",
-            "page": X
-          }
-        ],
-        "explanation": "<explanation of separation or lack thereof>"
-      },
-      
-      "does_exception_apply": true/false/"clarification_needed",
-      "precedence_level": "<from rule #10: level 1-5>",
-      "clarifying_question": "<if clarification_needed, write question here; otherwise, leave empty>"
-    }
-  ],
+The following is a draft response to the user query. Use the provided documents and rules above to refine the repsonse, correcting any errors and ensuring full compliance with the core rules for reasoning. Pay special attention to rule interactions, category separations, and exception applications.
 
-  "precedence_analysis": "<if multiple rules apply, explain which takes precedence and why, using rule #10>",
+Any quote appearing in the draft response MUST be provided in the refined response.
 
-  "reasoning": "<step-by-step reasoning process using bullet points>",
+<draft_response>
+{{draft_response}}
+</draft_response>
+{{/draft_response}}
 
-  // Follow rule #1 for document first, quote-first answering. ALso, follow
-  // quoting and citation requirements strinctly. This means using blockquotes
-  // instead of inline quotes, and including citations after each quote in the
-  // form (Rulebook name, p. X). Do NOT refer to rule interpretation criteria
-  // names (e.g. "Rule #10") in the final answer; only use them in the reasoning section.
-  "final_answer": "<free form markdown text following all citation requirements>",
-  
-  "sufficient_information_to_answer": true/false
-}
-```
+## Output Format
+
+Respond with JSON matching the QaResponse schema. The schema will be provided to you automatically with detailed descriptions for each field.

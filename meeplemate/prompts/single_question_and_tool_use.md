@@ -1,5 +1,13 @@
 Read the user query and use the available tools to gather relevant information (such as `search_chunks`). Provide a detailed and accurate answer based on the official rules in the retrieved documents.
 
+{{#game_summary}}
+The game summary is non-authoritative context. Use it only to orient yourself; do not use it as evidence for a rules conclusion.
+
+<game_summary>
+{{game_summary}}
+</game_summary>
+{{/game_summary}}
+
 ## User Query
 
 <query>

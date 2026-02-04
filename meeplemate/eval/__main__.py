@@ -9,7 +9,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.stores import BaseStore
 import structlog
 from uuid_utils import uuid7
-from meeplemate.eval import collect_runs_by_name_iter, load_persisted_run, skip_run_types, snake_case, test_suites, TestRunTracer, get_test_run_file_path
+from meeplemate.eval import collect_runs_by_name_iter, load_persisted_run, skip_run_types, snake_case, test_suites, TestRunTracer, get_test_run_file_path, parse_group_run_id
 from dev_system import areload, get_service
 from dataclasses import dataclass
 import fnmatch
@@ -171,12 +171,15 @@ async def _print_summary_of_run(filter: str = "*", group_run_id: str | None = No
 
     eval_runs_dir = get_eval_generation_runs_dir()
 
+    # Parse group_run_id to extract base ID and run number
+    base_group_run_id, run_number = parse_group_run_id(group_run_id)
+
     for test_suite in test_suites:
         for test_case in test_suite["test_cases"]:
             if not fnmatch.fnmatch(test_case["name"], filter):
                 continue
 
-            run_file = get_test_run_file_path(eval_runs_dir, group_run_id, test_suite["name"], test_case["name"])
+            run_file = get_test_run_file_path(eval_runs_dir, base_group_run_id, test_suite["name"], test_case["name"], run_number=run_number)
             if not run_file.exists():
                 continue
 
@@ -224,12 +227,14 @@ async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_ru
         extra_components=extra_components
     )
 
-    # Use format __run001, __run002, etc for each run suffix
-    group_run_ids = [f"{group_run_id}__run{str(i+1).zfill(3)}" for i in range(number_of_runs)]
+    # Generate multiple runs with run numbers
     tasks = []
-    for run_id in group_run_ids:
+    for i in range(number_of_runs):
+        run_number = i + 1
         tasks.append(
-            asyncio.create_task(_run_qa_gen_no_start_system(filter, run_id, skip_retrieval=skip_retrieval))
+            asyncio.create_task(
+                _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=run_number)
+            )
         )
     await asyncio.gather(*tasks)
 
@@ -247,10 +252,10 @@ async def _run_qa_gen(filter: str, group_run_id: str, skip_retrieval: bool = Fal
         ["game_service", "qa_service", "checkpointer"],
         extra_components=extra_components
     )
-    await _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval)
+    await _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=None)
 
 
-async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retrieval: bool = False):
+async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retrieval: bool = False, run_number: int | None = None):
     game_service: GameService = get_service("game_service")
     qa_service: QAService = get_service("qa_service")
 
@@ -291,6 +296,7 @@ async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retri
                 "test_suite": test_suite["name"],
                 "test_case": test_case["name"],
                 "skip_retrieval": skip_retrieval,
+                "run_number": run_number,
             }
             config: RunnableConfig = {
                 "callbacks": [
@@ -344,59 +350,87 @@ def get_correctness_metric(model) -> BaseMetric:
     return correctness_metric
 
 
-async def _run_qa_eval(filter: str, group_run_id: str):
-    # extra_components = {
-    #     # Lets not persist the graph state during evals
-    #     "checkpointer": (
-    #         factory(InMemorySaver, ignore_context_manager=True)(),
-    #         []
-    #     )
-    # }
+async def _run_qa_eval(filter: str, base_group_run_id: str):
+    """Evaluate all runs for a given base group_run_id.
 
-    # await areload(
-    #     ["game_service", "qa_service", "checkpointer"],
-    #     extra_components=extra_components
-    # )
+    Discovers all runs (e.g., __run001, __run002, etc.) and evaluates them.
+    All results are stored in a single directory: qa_evals/{base_group_run_id}/
+    """
+    from meeplemate.eval.analysis import find_run_groups
 
     llm = StructuredLocalModel(
-        model="Qwen/Qwen3-32B",
+        model="NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4",
         api_key="dummy",
         base_url="http://192.168.0.44:8000/v1"
     )
 
-    # game_service: GameService = get_service("game_service")
+    # Find all runs for this group
+    run_groups = find_run_groups(base_group_run_id)
+
+    if not run_groups:
+        click.echo(f"No runs found for {base_group_run_id}")
+        return
+
+    click.echo(f"Found {len(run_groups)} runs to evaluate: {run_groups}")
+    click.echo()
+
     llm_tests = []
 
-    for test_suite in test_suites:
-        game_id = test_suite["params"]["game_id"]
-        for test_case in test_suite["test_cases"]:
-            if not fnmatch.fnmatch(test_case["name"], filter):
-                continue
+    # Iterate through all discovered runs
+    for run_id in run_groups:
+        # Parse to get base ID and run number
+        parsed_base_id, run_number = parse_group_run_id(run_id)
 
-            if "reference_answer" not in test_case:
-                click.echo(f"Skipping test case without reference_answer: {test_case['name']}")
-                continue
+        click.echo(f"Processing {run_id}...")
 
-            run_file = get_test_run_file_path(get_eval_generation_runs_dir(), group_run_id, test_suite["name"], test_case["name"])
-            if not run_file.exists():
-                click.echo(f"Run file not found: {run_file}")
-                continue
-            run = load_persisted_run(run_file)
+        for test_suite in test_suites:
+            game_id = test_suite["params"]["game_id"]
+            for test_case in test_suite["test_cases"]:
+                if not fnmatch.fnmatch(test_case["name"], filter):
+                    continue
 
-            # Get the actual output from the run
-            assert run.outputs is not None, "No outputs in run"
-            actual_output = run.outputs["response"]
+                if "reference_answer" not in test_case:
+                    continue
 
-            llm_test = LLMTestCase(
-                input=test_case["query"],
-                actual_output=actual_output,
-                expected_output=test_case["reference_answer"],
-                name=f"{snake_case(test_suite['name'])}__{snake_case(test_case['name'])}",
-            )
-            llm_tests.append(llm_test)
-    
+                run_file = get_test_run_file_path(
+                    get_eval_generation_runs_dir(),
+                    parsed_base_id,
+                    test_suite["name"],
+                    test_case["name"],
+                    run_number=run_number
+                )
+
+                if not run_file.exists():
+                    continue
+
+                run = load_persisted_run(run_file)
+
+                # Get the actual output from the run
+                assert run.outputs is not None, "No outputs in run"
+                actual_output = run.outputs["response"]
+
+                # Create unique test name including run ID
+                test_name = f"{snake_case(test_suite['name'])}__{snake_case(test_case['name'])}"
+                if run_number is not None:
+                    test_name += f"__run{str(run_number).zfill(3)}"
+
+                llm_test = LLMTestCase(
+                    input=test_case["query"],
+                    actual_output=actual_output,
+                    expected_output=test_case["reference_answer"],
+                    name=test_name,
+                )
+                llm_tests.append(llm_test)
+
+    if not llm_tests:
+        click.echo("No test cases found to evaluate")
+        return
+
+    click.echo(f"\nEvaluating {len(llm_tests)} test cases across {len(run_groups)} runs...")
     metrics: list[BaseMetric] = [get_correctness_metric(model=llm), AnswerRelevancyMetric(model=llm)]
     results = evaluate(llm_tests, metrics)
+
+    click.echo(f"\n✓ Evaluation complete! Results saved to: {get_eval_generation_runs_dir().parent / 'qa_evals' / base_group_run_id}")
          
 
 @click.group()

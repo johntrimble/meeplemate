@@ -427,7 +427,11 @@ def find_quote_with_gaps(
 
 
 def expand_to_full_paragraphs(doc_markdown: str, quote: str, *, max_additional_chars: int = sys.maxsize) -> str:
-    """Expand the matched quote to full paragraphs in the original markdown."""
+    """Expand the matched quote to full paragraphs in the original markdown.
+
+    If there's a heading (line starting with '#') immediately above the paragraph,
+    it will be included in the expansion (subject to max_additional_chars constraint).
+    """
     # Find the match in the original markdown
     match = find_quote_with_gaps(doc_markdown, quote)
     if match is None:
@@ -448,10 +452,37 @@ def expand_to_full_paragraphs(doc_markdown: str, quote: str, *, max_additional_c
     if para_end == -1:
         para_end = len(doc_markdown)
 
-    # Limit expansion by max_additional_chars
-    additional_chars = (start - para_start) + (para_end - end)
-    if additional_chars > max_additional_chars:
+    # Look for heading above paragraph
+    heading_start = para_start  # default: no heading
+    if para_start > 0:
+        # Skip backwards over newlines
+        pos = para_start - 1
+        while pos >= 0 and doc_markdown[pos] in '\n\r':
+            pos -= 1
+
+        if pos >= 0:
+            # Find start of this line
+            line_start = doc_markdown.rfind('\n', 0, pos)
+            line_start = 0 if line_start == -1 else line_start + 1
+
+            # Check if it's a heading
+            if line_start < len(doc_markdown) and doc_markdown[line_start] == '#':
+                heading_start = line_start
+
+    # Check max_additional_chars with graceful fallback
+    additional_chars_para = (start - para_start) + (para_end - end)
+    if additional_chars_para > max_additional_chars:
         return match.matched_text  # Return matched text without expansion
 
-    expanded_quote = doc_markdown[para_start:para_end].strip()
+    # Determine final start position
+    if heading_start < para_start:
+        additional_chars_with_heading = (start - heading_start) + (para_end - end)
+        if additional_chars_with_heading <= max_additional_chars:
+            final_start = heading_start
+        else:
+            final_start = para_start  # Graceful fallback: include paragraph but not heading
+    else:
+        final_start = para_start
+
+    expanded_quote = doc_markdown[final_start:para_end].strip()
     return expanded_quote

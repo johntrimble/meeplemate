@@ -390,10 +390,14 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 api_key=api_key,
                 streaming=True,
                 extra_body={
-                    "chat_template_kwargs": {
-                        "enable_thinking": False,
-                    }
-                } if cfg.chat.explicit_disable_thinking else {}
+                    "top_k": 20,
+                    "min_p": 0.0,
+                    **({
+                        "chat_template_kwargs": {
+                            "enable_thinking": False,
+                        }
+                    } if cfg.chat.explicit_disable_thinking else {})
+                }
             )
         else:
             raise ValueError(f"Unsupported chat endpoint type: {cfg.chat.endpoint_type}")
@@ -708,10 +712,14 @@ class Services:
                 base_url=self.cfg.chat.endpoint,
                 api_key=api_key,
                 extra_body={
-                    "chat_template_kwargs": {
-                        "enable_thinking": False,
-                    }
-                } if self.cfg.chat.explicit_disable_thinking else {}
+                    "top_k": 20,
+                    "min_p": 0.0,
+                    **({
+                        "chat_template_kwargs": {
+                            "enable_thinking": False,
+                        }
+                    } if self.cfg.chat.explicit_disable_thinking else {})
+                }
             )
         else:
             raise ValueError(f"Unsupported chat endpoint type: {self.cfg.chat.endpoint_type}")

@@ -504,3 +504,120 @@ def load_template(template_path: str) -> str:
     import meeplemate
     path = Path(meeplemate.__path__[0]) / "prompts" / template_path
     return path.read_text()
+
+
+def reorder_dict_by_typeddict(data, typeddict_class=None):
+    """
+    Recursively reorder dict/list structure to match TypedDict field definitions.
+
+    Fields defined in the TypedDict are placed first in definition order.
+    Extra fields not in the TypedDict are preserved and placed last (sorted alphabetically).
+
+    The reordered dict will pass an equality test with the original dict (same keys/values).
+
+    Args:
+        data: The data to reorder (dict, list, or primitive)
+        typeddict_class: The TypedDict class defining the expected structure
+
+    Returns:
+        Reordered data with dict keys matching TypedDict field order, extra keys at end
+
+    Example:
+        >>> from meeplemate.qa_graph import QaResponse
+        >>> response = {...}  # Unordered dict, may have extra LLM-generated fields
+        >>> ordered = reorder_dict_by_typeddict(response, QaResponse)
+        >>> ordered == response  # True (same keys/values, different order)
+    """
+    from typing import get_type_hints, get_origin, get_args, Annotated
+
+    # Handle non-dict cases
+    if not isinstance(data, (dict, list)):
+        return data
+
+    if isinstance(data, list):
+        # For lists, we don't know the item type unless passed in
+        # So we just recurse without type info
+        return [reorder_dict_by_typeddict(item, None) for item in data]
+
+    # Must be a dict at this point
+    if typeddict_class is None:
+        # No type info, return as-is (or could try to infer)
+        return data
+
+    # Get type hints for the TypedDict
+    hints = get_type_hints(typeddict_class, include_extras=True)
+
+    # Get field order from __annotations__
+    if not hasattr(typeddict_class, '__annotations__'):
+        return data
+    field_order = list(typeddict_class.__annotations__.keys())
+
+    # First, add fields in the TypedDict-defined order
+    reordered = {}
+    for field in field_order:
+        if field not in data:
+            continue
+
+        value = data[field]
+        field_type = hints.get(field)
+
+        if field_type is None:
+            reordered[field] = value
+            continue
+
+        # Unwrap Annotated[Type, ...] -> Type
+        if get_origin(field_type) is Annotated:
+            field_type = get_args(field_type)[0]
+
+        # Handle list[SomeTypedDict]
+        if get_origin(field_type) is list:
+            if not isinstance(value, list):
+                reordered[field] = value
+                continue
+
+            item_type = get_args(field_type)[0] if get_args(field_type) else None
+
+            # Check if item_type is a TypedDict
+            if item_type and hasattr(item_type, '__annotations__'):
+                reordered[field] = [
+                    reorder_dict_by_typeddict(item, item_type)
+                    for item in value
+                ]
+            else:
+                reordered[field] = value
+
+        # Handle nested TypedDict
+        elif hasattr(field_type, '__annotations__'):
+            reordered[field] = reorder_dict_by_typeddict(value, field_type)
+
+        # Primitive types or unknown
+        else:
+            reordered[field] = value
+
+    # Then, add any extra keys not in the TypedDict (preserves LLM-added fields)
+    extra_keys = set(data.keys()) - set(field_order)
+    for key in sorted(extra_keys):  # Sort extra keys alphabetically for consistency
+        reordered[key] = data[key]
+
+    return reordered
+
+
+def serialize_typeddict(data: Any, typeddict_class, **json_kwargs) -> str:
+    """
+    Serialize a dict to JSON with field order matching TypedDict definition.
+
+    Args:
+        data: Dict to serialize (e.g., QaResponse instance)
+        typeddict_class: The TypedDict class defining field order
+        **json_kwargs: Additional arguments to pass to json.dumps()
+
+    Returns:
+        JSON string with fields in TypedDict definition order
+
+    Example:
+        >>> from meeplemate.qa_graph import QaResponse
+        >>> response = {...}
+        >>> json_str = serialize_typeddict(response, QaResponse, indent=2)
+    """
+    reordered = reorder_dict_by_typeddict(data, typeddict_class)
+    return json.dumps(reordered, **json_kwargs)

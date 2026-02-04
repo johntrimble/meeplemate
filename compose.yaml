@@ -87,9 +87,13 @@ services:
     command:
       - --model
       # - RedHatAI/Qwen3-32B-NVFP4A16
-      - RedHatAI/Qwen3-32B-NVFP4
+      # - RedHatAI/Qwen3-32B-NVFP4
+      - NVFP4/Qwen3-30B-A3B-Instruct-2507-FP4
+      # - NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4
       - "--served-model-name"
-      - "Qwen/Qwen3-32B"
+      # - "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+      # - "Qwen/Qwen3-32B"
+      - Qwen/Qwen3-30B-A3B-Instruct-2507
       - --enable-auto-tool-choice
       - --tool-call-parser
       - hermes
@@ -173,6 +177,22 @@ services:
               # device_ids: ['0', '1']   # to expose multiple GPUs
               device_ids: ['1']
               capabilities: [gpu]
+
+
+  open-webui:
+    <<: *base-service
+    image: ghcr.io/open-webui/open-webui:main
+    ipc: host
+    ports:
+      - 3000:8080
+    environment:
+      - OPENAI_API_BASE_URL=http://vllm:8000/v1
+      - OPENAI_API_KEYS=anything
+      - WEBUI_AUTH=False
+    volumes:
+    - ./data/open-webui/data:/app/backend/data
+    - ./data/open-webui/static:/app/backend/open_webui/static
+
 
   tei:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8

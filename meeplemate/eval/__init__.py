@@ -39,13 +39,64 @@ class RunEncoder(json.JSONEncoder):
             return str(o)
 
 
-def get_test_run_file_path(eval_runs_dir: Path, test_group_run_id: str, test_suite: str, test_case: str) -> Path:
+def get_test_run_file_path(
+    eval_runs_dir: Path,
+    test_group_run_id: str,
+    test_suite: str,
+    test_case: str,
+    run_number: int | None = None
+) -> Path:
+    """Get the file path for a test run.
+
+    Args:
+        eval_runs_dir: Base directory for evaluation runs
+        test_group_run_id: Group run identifier (e.g., "2026-01-25")
+        test_suite: Test suite name
+        test_case: Test case name
+        run_number: Optional run number (1, 2, 3, etc.). If None, creates base run file.
+
+    Returns:
+        Path to the run file. Examples:
+        - run_number=None: eval_runs_dir/2026-01-25/test_suite__test_case.json
+        - run_number=1: eval_runs_dir/2026-01-25/test_suite__test_case.run001.json
+    """
     test_suite = snake_case(test_suite)
     test_case = snake_case(test_case)
     group_output_dir = eval_runs_dir / test_group_run_id
     group_output_dir.mkdir(exist_ok=True)
-    run_file = group_output_dir / f"{test_suite}__{test_case}.json"
+
+    # Construct filename with optional run suffix
+    base_name = f"{test_suite}__{test_case}"
+    if run_number is not None:
+        filename = f"{base_name}.run{str(run_number).zfill(3)}.json"
+    else:
+        filename = f"{base_name}.json"
+
+    run_file = group_output_dir / filename
     return run_file
+
+
+def parse_group_run_id(group_run_id: str) -> tuple[str, int | None]:
+    """Parse group_run_id into base ID and run number.
+
+    Args:
+        group_run_id: Group run identifier, optionally with __runXXX suffix
+
+    Returns:
+        Tuple of (base_group_run_id, run_number)
+
+    Examples:
+        "2026-01-25" -> ("2026-01-25", None)
+        "2026-01-25__run001" -> ("2026-01-25", 1)
+        "2026-01-25__run042" -> ("2026-01-25", 42)
+    """
+    if "__run" in group_run_id:
+        parts = group_run_id.split("__run")
+        base_id = parts[0]
+        run_num = int(parts[1])
+        return base_id, run_num
+    else:
+        return group_run_id, None
 
 
 def load_persisted_run(run_file_path: Path|str) -> Run:
@@ -424,7 +475,14 @@ class TestRunTracer(AsyncBaseTracer):
                 return
 
         # Update the run file
-        run_file = get_test_run_file_path(self.eval_runs_dir, metadata["test_group_run_id"], metadata["test_suite"], metadata["test_case"])
+        run_number = metadata.get("run_number", None)  # Extract run number (optional)
+        run_file = get_test_run_file_path(
+            self.eval_runs_dir,
+            metadata["test_group_run_id"],
+            metadata["test_suite"],
+            metadata["test_case"],
+            run_number=run_number
+        )
         run_file.parent.mkdir(parents=True, exist_ok=True)
 
         with run_file.open("w") as f:
