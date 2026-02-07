@@ -1,0 +1,1 @@
+Examine the user's query and retrieve relevant rules from the rulebooks to answer it. Do not retrieve documents for individual simple words.
