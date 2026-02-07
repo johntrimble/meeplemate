@@ -4,23 +4,21 @@ import json
 from shlex import quote
 import sys
 from typing import Annotated, Any, Literal, NotRequired, Protocol, Sequence, Tuple, TypedDict, cast
+from unittest import result
 from langchain.messages import AIMessage, AnyMessage, ToolMessage
-from langchain_classic.chains.sql_database import query
-from langchain_classic.tools.ainetwork import rule
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.load import Serializable
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable, RunnableConfig, chain
+from langchain_core.runnables import Runnable,  RunnableConfig, chain, config
 from langchain_core.stores import BaseStore
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 from langgraph.prebuilt import ToolNode
-from langgraph.types import Command
 
-from meeplemate import quote_util
+from meeplemate import config, quote_util
 from meeplemate.ingest.gamepackage import Manifest, get_page_id
 from meeplemate.search import ChunkSearchService, ChunkSearchServiceInput, CompiledStateGraph
 import structlog
@@ -131,30 +129,68 @@ class ContextWithSearchChunkService:
     chunk_search_service: ChunkSearchService
     
 
-# TODO: Fix search service to accept multiple queries at once
-@tool(description="""Search for chunks, blocks of text from rulebook pages, relevant to the given search terms. Multiple sets of search terms can be provided. Search is performed using RAG against a semantic vector database, and then further refined by an LLM-judge to determine which chunks should be returned. Every returned chunk will have an associated "relevance_reason" indicating why that chunk was relevant to the provided search terms. The chunks will also indicate the rulebook they are from and which page. This information can then be used with `retrieve_page` to retrieve the entire page if desired.""")
-async def search_chunks(search_terms: str|list[str], runtime: ToolRuntime[ContextWithSearchChunkService]) -> Sequence[ChunkSearchResult]:
-    # TODO: Fix this hack. We keep searching on these terms needlessly
-    search_terms = [term for term in search_terms if term not in ['interaction', 'mechanic', 'mechanics', 'relationship']]
+# Token budget constants for context window management
+MAX_CONTEXT_SIZE = 29_000
+MAX_RESPONSE_TOKENS = 10_024
+BUDGET_BUFFER = 1_000
 
-    logger.info("search_chunks called", search_terms=search_terms)
-    if isinstance(search_terms, str):
-        search_terms = [search_terms]
+
+def _build_answer_prompt():
+    """Build the answer prompt template. Shared between retrieve_data (for budget
+    calculation) and answer_question (for the actual LLM call) so they stay in sync."""
+    return ChatPromptTemplate.from_messages(
+        [
+            ("system", query_documents_guidelines_template),
+            ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query inside <reasoning> </reasoning> tags. Then answer the user's query."),
+        ],
+        template_format="mustache"
+    )
+
+
+# TODO: Fix search service to accept multiple queries at once
+@tool(description="""Search for relevant rules from game rulebooks. Uses semantic vector search - the search understands meaning, not just keywords.
+Best practices for queries:
+- Use separate queries for distinct rules or mechanics (e.g. use ["What are the rules for firing a bow?", "How does movement work?"] instead of ["Can I fire a bow after moving?"])
+- Use one query per rule or mechanic you are looking for
+- Do not provide multiple phrasings of the same rule or mechanic
+- Avoid very generic terms like 'mechanics', 'interactions', etc. in search queries
+- When using multiple queries, put them in order of importance (most important first)
+- Limit to 5 queries""")
+async def search_chunks(search_queries: list[str], runtime: ToolRuntime[ContextWithSearchChunkService]) -> Sequence[ChunkSearchResult]:
+    token_budget = None
+
+    # Get the tokens used from the graph state
+    if "tokens_used" in runtime.state:
+        tokens_used_so_far = runtime.state["tokens_used"]
+        token_budget = MAX_CONTEXT_SIZE - tokens_used_so_far - MAX_RESPONSE_TOKENS - BUDGET_BUFFER
+
+    logger.info("search_chunks called", token_budget=token_budget, search_terms=search_queries)
+    if isinstance(search_queries, str):
+        search_queries = [search_queries]
+
+    # TODO: Fix this hack. We keep searching on these terms needlessly
+    search_queries = [term for term in search_queries if term not in ['interaction', 'mechanic', 'mechanics', 'relationship']]
+
+    # Get the query from the graph context
+    user_query = runtime.state["query"]
 
     manifest = runtime.context.manifest
     chunk_search_service = runtime.context.chunk_search_service
     seen_chunk_ids: set = set()
     results: list[ChunkSearchResult] = []
-    for query in search_terms:
+    # for query in search_queries:
+    if True:
         input = ChunkSearchServiceInput(
             manifest=manifest,
-            query=query,
-            user_main_query=query
+            query=search_queries,
+            user_main_query=user_query
         )
 
-        chunk_search_result = await chunk_search_service.ainvoke(input, config=runtime.config)
-        logger.info("Retrieved results", query=query, relevant_count=len([c for c in chunk_search_result["relevance"]["chunks"] if c["is_relevant"]]), total_retrieved_count=len(chunk_search_result["relevance"]["chunks"]))
+        if token_budget is not None:
+            input["token_budget"] = token_budget
 
+        chunk_search_result = await chunk_search_service.ainvoke(input, config=runtime.config)
+        logger.info("Retrieved results", query=user_query, relevant_count=len([c for c in chunk_search_result["relevance"]["chunks"] if c["is_relevant"]]), total_retrieved_count=len(chunk_search_result["relevance"]["chunks"]))
         for relevance_result in chunk_search_result["relevance"]["chunks"]:
             reasoning = relevance_result["reasoning"]
             chunk_id = relevance_result["id"]
@@ -905,6 +941,7 @@ class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
     answer: str
     reasoning: str
     invalid_quotes: list[QuoteEntry]
+    tokens_used: NotRequired[int]
 
 
 def get_evidence(state: GameAgentOverallState) -> list[Chunk]:
@@ -1383,22 +1420,35 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
     return agent
 
 
+class Subproblem(TypedDict):
+    description: Annotated[str, ..., "description of the subproblem to solve"]
+    question: Annotated[str, ..., "specific question this subproblem seeks to answer"]
+    related_rule_names: Annotated[list[str], ..., "list of related rules needed to solve the subproblem. These should be names of individual rules, not combinations of rules. Use plain text. Do not include '#' header symbols."]
+
+
+class Analysis(TypedDict):
+    analysis: Annotated[str, ..., "detailed analysis of the user's query. Do not attempt to answer the question here. Just explain what the user asking and identify the main questions that need to be resolved to answer it. Do not provide parenthetical commentary on the rules here."]
+    subproblems: Annotated[list[Subproblem], ..., "list of subproblems that need to be solved to answer the user's query. Each subproblem should deal with an essential aspect of the overall question. The subproblems should collectively cover all the key issues needed to answer the user's query."]
+    deduped_subproblems: Annotated[list[Subproblem], ..., "list of deduped subproblems that are distinct and non-overlapping while collectively covering all key issues needed to answer the user's query. Each subproblem should have a clear description, a specific question it seeks to answer, and a list of related rule names needed to solve it."]
+
+
 class QuestionAnalysisOverallState(MessagesState):
-    direct_rule_interactions: list[str]
     documents: list[Chunk]
-    question_analysis: str
     reasoning: str
     query: str
+    analysis: str
+    rule_interactions: list[str]
+    tokens_used: NotRequired[int]
 
 
 def create_question_analysis_state(query, **kwargs) -> QuestionAnalysisOverallState:
     state = QuestionAnalysisOverallState(
         documents=[],
         messages=[],
-        direct_rule_interactions=[],
-        question_analysis="",
         reasoning="",
         query=query,
+        analysis="",
+        rule_interactions=[],
     )
     state.update(**kwargs)
     return state
@@ -1415,11 +1465,54 @@ Examine the user query in light of the provided documents. What is the user aski
 """
 
 analyze_user_query_retrieval_template = """\
-Examine the user query. What is the user asking? Do not answer the question, just explain what the question is. You can lookup any particular terms in the user query by using the `search_chunks` tool.
+Examine the user query. What is the user asking? Do not answer the question, just explain what the question is. Enumerate the names of all the rules involved in the user's question. You can lookup information for rules questions by using the `search_chunks` tool.
 """
+# analyze_user_query_retrieval_template = """\
+# Examine the user query and retrieve relevant documents using the `search_chunks` tool. What is the user asking? Do not answer the question, just explain what the question is. Enumerate the key issues involved in the user's question. Enumerate the pairs of interactions between different named rules. Try and understand the crux of the question. Do NOT provide parenthetical commentary or make assumptions. Do NOT draw conclusions. Then, breakdown the problem presented by the user's query into smaller subproblems that need to be solved in order to answer the overall question. The subproblems should be solvable independently so that they me solved in parallel. Do NOT create a subproblem that is just the original problem restated.
+# """
+
+# analyze_user_query_retrieval_template = """\
+# Examine the user query and retrieve relevant documents using the `search_chunks` tool. Analyze the user's query in light of the retrieved documents:
+
+# 1. Identify what the user is asking.
+# 2. Enumerate the rules involved in the user's question. List them by name.
+# 3. Enumerate the key issues involved in the user's question.
+# 4. Some rules have indirect interactions (X has Y which interacts with Z) and some have direct interactions (Y interacts with Z). Identify the direct rule interactions that are the crux of what the user is asking. Ensure to list interactions that might be exceptions to a general rule. List them in the format "Y interacts with Z" where Y and Z are the names of rules (no citations required here). Do not include parenthetical elements or commentary.
+# 5. Then, based on the result of 4 above, breakdown the problem presented by the user's query into smaller subproblems that need to be solved in order to answer the overall question. The subproblems should be solvable independently so that they me solved in parallel. Do NOT create a subproblem that is just the original problem restated.
+# 6. Use the `submit_analysis` tool to submit the analysis you just performed.
+
+# Do NOT answer the user's question. Do NOT draw conclusions. Do NOT make assumptions. Someone else will be responsible for determining the answer. Your job is just to analyze the question, identify the key issues, and break it down into subproblems for someone else to solve.
+# """
+
+# analyze_user_query_retrieval_template = """\
+# You are analyzing a complex board game rules question. Your task is to identify the MINIMAL set of independent subprombles that must be solved to resolve the original question.
+
+# 1. Retrieve relevant documents using the `search_chunks` tool.
+
+# 2. Examine the user query with respect to the retrieved documents. Explain what the user is asking in detail. Identify the key issues involved in the user's question. Do NOT provide parenthetical commentary or make assumptions. Do NOT draw conclusions. Do NOT answer the question.
+
+# 3. Think through the logical chain:
+# - What properties/abilities does each entity mentioned have?
+# - Do those abilities reference other game terms that need definition?
+# - What is the mechanical sequence that determines the outcome?
+
+# 4. Breakdown the user's question into subproblems:
+
+#   a) Identify ATOMIC rule facts - single definitional or mechanical relationships
+
+#   b) Each subproblem should verify ONE link in the logical chain (e.g., "Does X have property Y?" not "Does X ultimately benefit from Z?")
+
+#   c) Follow the rule chain step-by-step: if a unit has an ability that references another rule term, ask about that term explicitly
+
+#   d) Avoid "shortcut" questions that skip intermediate rules (e.g., don't ask "Can a Rogue use a Heavy Crossbow?" - instead ask: "Is a Heavy Crossbow a martial weapon?", "Does the Rogue class grant martial weapon proficiency?")
+
+#   e) Frame as specific rule lookups: "Does [entity] have [property]?" or "Is [term A] defined as [term B]?"
+
+# 5. Call the `submit_analysis` tool to submit your analysis, including the identified subproblems.
+# """
 
 list_essential_rule_interactions_template = """\
-Some rule interactions are transitive (X has Y which interacts with Z) others are direct (Y interacts with Z). We care about the direct rule interactions essential to answering the user's query. Given the user's query and the explanation of what the user is asking, identify the direct rule interactions that are the crux of what the user is asking. List them in the format "Y interacts with Z" where Y and Z are the names of rules (no citations required here). Do not include parenthetical elements or commentary. Provide the output as a json list of strings.
+Some rule interactions are transitive (X has Y which interacts with Z) others are direct (Y interacts with Z). We care about the direct rule interactions (X has Y and Y interacts with Z) essential to answering the user's query. Given the user's query and the explanation of what the user is asking, identify the direct rule interactions that are the crux of what the user is asking. Ensure to list interactions that might be exceptions to a general rule. List them in the format "Y interacts with Z" where Y and Z are the names of rules (no citations required here). Provide no more than 5. Do not include parenthetical elements or commentary. Provide the output as a json list of strings.
 """
 
 short_system_prompt_template = """\
@@ -1439,37 +1532,63 @@ class EssentialRuleInteractionResponse(TypedDict):
     essential_rule_interactions: Annotated[list[str], ..., "list of essential direct rule interactions needed to answer the query. Format each as 'Y interacts with Z' where Y and Z are the names of rules. No citations required."]
 
 
+@tool(description="""Submit the final analysis of the user's question.
+Call this ONLY after retrieving relevant documents with search_chunks.
+Provide a complete structured analysis based on the retrieved documents.""")
+async def submit_analysis(
+    data: Analysis,  # Single param - Analysis TypedDict is the source of truth
+    runtime: ToolRuntime[QuestionAnalysisContext]
+) -> str:
+    """Submit the final structured analysis. This is a terminal action."""
+    # Tool doesn't execute - we extract args directly from the tool call
+    return "Analysis submitted"
+
+
 def build_analyze_question_graph(
     checkpoint_saver: BaseCheckpointSaver,
-    chat_model: BaseChatModel
+    chat_model: BaseChatModel,
+    tokenizer: Any
 ) -> CompiledStateGraph[QuestionAnalysisOverallState, QuestionAnalysisContext, QuestionAnalysisOverallState, QuestionAnalysisOverallState]:
     tools = [search_chunks]
     tool_node = ToolNode(tools)
 
     async def retrieve_data(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
-        # chunk_search_service = runtime.context.chunk_search_service
         manifest = runtime.context.manifest
 
         retrieval_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", query_documents_guidelines_template),
                 ("user", analyze_user_query_retrieval_template),
-
+                ("placeholder", "{messages}")
             ],
             template_format="mustache"
         )
 
-        chat_model_with_tools = chat_model.bind_tools(tools, tool_choice="any")
-        
+        # Check if we've already done retrieval (look for ToolMessage from search_chunks)
+        has_retrieved = any(
+            isinstance(msg, ToolMessage) for msg in state["messages"]
+        )
+
+        if not has_retrieved:
+            # Round 1: Force document retrieval
+            chat_model_with_tools = chat_model.bind_tools([search_chunks], tool_choice="any")
+        else:
+            # Round 2: Force structured analysis submission
+            chat_model_with_tools = chat_model.bind_tools([search_chunks], tool_choice="none")
+
         chain = retrieval_prompt | chat_model_with_tools
 
         input = {
-            "game_summary": manifest.get("summary", ""),
+            "game_summary": False,
             "game_name": manifest["name"],
             "query": state["query"],
             "documents": [],
-            "clarifying_questions_and_answers": []
+            "clarifying_questions_and_answers": [],
+            "messages": state["messages"],
         }
+
+        tokens_used = calculate_tokens_used(tokenizer, retrieval_prompt, input)
+        logger.info("Tokens used by prompt", tokens_used=tokens_used, message_count=len(state["messages"]))
 
         try:
             message = await chain.ainvoke(input, config=config)
@@ -1477,60 +1596,111 @@ def build_analyze_question_graph(
             raise
 
         return {
+            "tokens_used": tokens_used,
+            "messages": [message]
+        }
+    
+    async def consolidate_search_calls(state: MessagesState) -> dict:
+        message = state["messages"][-1]
+        tool_calls = getattr(message, "tool_calls", [])
+        # Copy the list so that we don't edit the original
+        tool_calls = copy.deepcopy(tool_calls)
+        # Find indices of search_chunks calls
+        seach_chunks_indices = [i for i, call in enumerate(tool_calls) if call["name"] == "search_chunks"]
+
+        # Bail early if we don't have multiple search calls
+        if len(seach_chunks_indices) <= 1:
+            return {}
+        
+        # Okay, we have multiple search calls, let's collect the queries
+        queries = []
+        for index in seach_chunks_indices:
+            tool_call = tool_calls[index]
+            query = tool_call["args"]["query"]
+            if isinstance(query, str):
+                queries.append(query)
+            elif isinstance(query, list):
+                queries.extend(query)
+            else:
+                logger.warning("Unexpected query format in search_chunks tool call", query=query)
+        
+        # Remove all but the first search_chunks call
+        for index in reversed(seach_chunks_indices[1:]):
+            del tool_calls[index]
+        
+        # Update the first search_chunks call to include all queries
+        first_index = seach_chunks_indices[0]
+        tool_calls[first_index]["args"]["query"] = queries
+
+        # Update the message with the consolidated tool calls
+        setattr(message, "tool_calls", tool_calls)
+
+        # Now return an update for the specific message
+        return {
+            # Should match on ID and replace the existing message
             "messages": [message]
         }
 
-    async def analyze_question(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
+
+    async def route_by_tool_type(
+        state: MessagesState,
+        *,
+        runtime: Runtime[QuestionAnalysisContext],
+        config: RunnableConfig | None = None
+    ) -> Literal["tool_node", "extract_analysis"]:
+        """Route based on which tool was called."""
+        last_message: AnyMessage = state["messages"][-1]
+        tool_calls = getattr(last_message, "tool_calls", [])
+
+        if not tool_calls:
+            # Shouldn't happen with tool_choice="any", but handle gracefully
+            logger.warning("No tool calls found, defaulting to extract_analysis")
+            return "extract_analysis"
+
+        tool_name = tool_calls[0]["name"]
+        if tool_name == "search_chunks":
+            return "tool_node"
+        else:  # submit_analysis or any other
+            return "extract_analysis"
+
+
+    async def extract_analysis(
+        state: QuestionAnalysisOverallState,
+        *,
+        runtime: Runtime[QuestionAnalysisContext],
+        config: RunnableConfig | None = None
+    ) -> dict:
+        """Extract Analysis from submit_analysis tool call arguments."""
         manifest = runtime.context.manifest
+        last_message = state["messages"][-1]
+
+        # Get documents from message history
         documents = get_all_chunks_from_message_history(state["messages"])
         documents = sort_chunks(documents, manifest)
 
-        analyze_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", query_documents_guidelines_template),
-                ("user", analyze_user_query_template),
-
-            ],
-            template_format="mustache"
-        )
-
-        input = dict(
-            game_name=manifest["name"],
-            documents=documents,
-            query=state["query"],
-            clarifying_questions_and_answers=[],
-        )
-
-        logger.info("Analyzing question", query=state["query"], document_count=len(documents))
-
-        chain = analyze_prompt | chat_model
-
-        result = await chain.ainvoke(input, config=config)
-
-        logger.info("Question analysis result", analysis=result.text)
-
         return {
-            "question_analysis": result.text,
-            "documents": documents
+            "analysis": last_message.text,
+            "documents": documents,
         }
-    
+
     async def determine_rule_interactions(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
         rule_interaction_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", short_system_prompt_template),
+                ("system", query_documents_guidelines_template),
                 ("user", analyze_user_query_template),
-                ("assistant", "{{question_analysis}}"),
+                ("placeholder", "{messages}"),
                 ("user", list_essential_rule_interactions_template),
             ],
             template_format="mustache"
         )
-
+ 
         input = dict(
             documents=[],
             query=state["query"],
-            question_analysis=state["question_analysis"],
+            messages=state["messages"],
+            clarifying_questions_and_answers=[],
         )
-
+ 
         chat_model_structured = chat_model.with_structured_output(
             EssentialRuleInteractionResponse
         )
@@ -1542,9 +1712,9 @@ def build_analyze_question_graph(
         logger.info("Determined direct rule interactions", interactions=rule_interactions)
 
         return {
-            "direct_rule_interactions": rule_interactions
+            "rule_interactions": rule_interactions
         }
-    
+
     async def produce_response(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
         return {}
     
@@ -1554,18 +1724,28 @@ def build_analyze_question_graph(
         context_schema=QuestionAnalysisContext,
     )
 
+    # Nodes (tool_node only handles search_chunks)
     graph.add_node("tool_node", tool_node)
+    graph.add_node("consolidate_search_calls", consolidate_search_calls)
     graph.add_node("retrieve_data", retrieve_data)
-    graph.add_node("analyze_question", analyze_question)
+    graph.add_node("extract_analysis", extract_analysis)
     graph.add_node("determine_rule_interactions", determine_rule_interactions)
     graph.add_node("produce_response", produce_response)
     graph.add_node("dedupe_chunks", dedupe_chunks_node)
 
+    # Edges
     graph.add_edge(START, "retrieve_data")
-    graph.add_edge("retrieve_data", "tool_node")
+    graph.add_edge("retrieve_data", "consolidate_search_calls")
+
+    # Route based on which tool was called
+    graph.add_conditional_edges("consolidate_search_calls", route_by_tool_type)
+
+    # After search_chunks execution, loop back to retrieve_data
     graph.add_edge("tool_node", "dedupe_chunks")
-    graph.add_edge("dedupe_chunks", "analyze_question")
-    graph.add_edge("analyze_question", "determine_rule_interactions")
+    graph.add_edge("dedupe_chunks", "retrieve_data")
+
+    # After extract_analysis, continue to downstream nodes
+    graph.add_edge("extract_analysis", "determine_rule_interactions")
     graph.add_edge("determine_rule_interactions", "produce_response")
     graph.add_edge("produce_response", END)
 
@@ -1580,12 +1760,13 @@ class CoordinationInputState(TypedDict):
 class CoordinationOutputState(TypedDict):
     response: str
     evidence: list[Chunk]
+    clarifying_questions: list[ClarifyingQA]
 
 
 class CoordinationOverallState(TypedDict):
     query: str
-    direct_rule_interactions: list[str]
     question_analysis: str
+    rule_interactions: list[str]
     clarifying_questions: list[ClarifyingQA]
     response: str
     evidence: list[Chunk]
@@ -1598,6 +1779,7 @@ def build_coordinating_agent_graph(
 ) -> CompiledStateGraph[CoordinationOverallState, GameAgentContext, CoordinationInputState, CoordinationOutputState]:
     
     async def analyze_question(state: CoordinationInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        logger.info("Analyzing question", query=state["query"])
         state_analyze_question = create_question_analysis_state(query=state["query"])
         context_analyze_question = QuestionAnalysisContext(
             manifest=runtime.context.manifest,
@@ -1610,19 +1792,25 @@ def build_coordinating_agent_graph(
         )
 
         return {
-            "direct_rule_interactions": result["direct_rule_interactions"],
-            "question_analysis": result["question_analysis"],
+            "question_analysis": result["analysis"],
+            "rule_interactions": result["rule_interactions"],
             "evidence": result["documents"],
         }
     
     class AskSubquestionsInputState(TypedDict):
-        direct_rule_interactions: list[str]
+        question_analysis: str
+        rule_interactions: list[str]
 
     async def ask_subquestions(state: AskSubquestionsInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        analysis = state["question_analysis"]
+        # Get the subquestions
+        subquestions = [
+            f"How does {rule_interaction}?" for rule_interaction in state["rule_interactions"]
+        ]
+
         inputs = []
-        interactions = state["direct_rule_interactions"]
-        subquestions = [f"How does {interaction}?" for interaction in interactions]
         for question in subquestions:
+            logger.info("Asking subquestion", question=question)
             input = {
                 "query": question,
             }
@@ -1640,7 +1828,7 @@ def build_coordinating_agent_graph(
                 ClarifyingQA(
                     question=question,
                     answer=response["response"],
-                    evidence=[],
+                    evidence=response["evidence"],
                 )
             )
 
@@ -1653,10 +1841,26 @@ def build_coordinating_agent_graph(
         clarifying_questions: list[ClarifyingQA]
 
     async def combine_subanswers(state: CombineSubanswersInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        # Collect evidence from the subquestion answers
+        evidence = []
+        for qa in state.get("clarifying_questions", []):
+            evidence.extend(qa["evidence"])
+        
+        # Deduplicate evidence
+        seen = set()
+        deduped_evidence = []
+        for chunk in evidence:
+            # TODO: We still get duplicates... I think we get slight rewordings
+            # of the same thing maybe?
+            chunk_key = (chunk["rulebook_name"], chunk["page"], chunk["content"][:100])
+            if chunk_key not in seen:
+                seen.add(chunk_key)
+                deduped_evidence.append(chunk)
+
         input = {
             "query": state["query"],
             "clarifying_questions": state.get("clarifying_questions", []),
-            "documents": state.get("evidence", [])
+            # "evidence": deduped_evidence
         }
         response = await game_agent.ainvoke(
             input,
@@ -1703,9 +1907,27 @@ async def dedupe_chunks_node(state: MessagesState) -> dict:
     }
 
 
+def calculate_tokens_used(tokenizer: Any,prompt: ChatPromptTemplate, input: dict) -> int:
+    messages_formatted = prompt.format_messages(**input)
+
+    role_map = role_map = {"human": "user", "ai": "assistant", "system": "system"}
+    message_dicts = [
+        {"role": role_map.get(m.type, m.type), "content": m.text} for m in messages_formatted
+    ]
+
+    prompt_tokens = len(
+        tokenizer.apply_chat_template(
+            message_dicts, tokenize=True, add_generation_prompt=True
+        )
+    )
+
+    return prompt_tokens
+
+
 def build_question_answer_graph(
     checkpoint_saver: BaseCheckpointSaver,
     chat_model: BaseChatModel,
+    tokenizer: Any,
 ) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
     
     tools = [search_chunks]
@@ -1724,18 +1946,31 @@ def build_question_answer_graph(
         chat_model_with_tools = chat_model.bind_tools(tools, tool_choice="any")
         chain = retrieve_data_prompt | chat_model_with_tools
 
+        # Collect evidence chunks from clarifying questions, since
+        # get_evidence() will add these to the documents list in answer_question.
+        clarifying_evidence = []
+        for qa in state.get("clarifying_questions", []):
+            clarifying_evidence.extend(qa.get("evidence", []))
+
         input = {
-            "game_summary": manifest.get("summary", ""),
+            "game_summary": False,
             "game_name": runtime.context.manifest["name"],
             "query": state["query"],
-            "documents": [],
+            "documents": clarifying_evidence,
             "clarifying_questions_and_answers": state.get("clarifying_questions", []),
         }
+
+        # Compute the token budget against the ANSWER prompt (not the retrieval
+        # prompt), since that's where the retrieved documents will ultimately be
+        # consumed. This accounts for both the clarifying Q&A text AND their
+        # evidence chunks, which get_evidence() merges into the documents list.
+        answer_overhead = calculate_tokens_used(tokenizer, _build_answer_prompt(), input)
 
         message = await chain.ainvoke(input, config=config)
 
         return {
-            "messages": [message]
+            "messages": [message],
+            "tokens_used": answer_overhead
         }
 
     def extract_reasoning_and_answer(response: str) -> dict:
@@ -1759,15 +1994,9 @@ def build_question_answer_graph(
         manifest = runtime.context.manifest
         documents = get_evidence(state)
         documents = sort_chunks(documents, manifest)
-        dump_chunks(documents)
+        # dump_chunks(documents)
 
-        answer_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", query_documents_guidelines_template),
-                ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query inside <reasoning> </reasoning> tags. Then answer the user's query."),
-            ],
-            template_format="mustache"
-        )
+        answer_prompt = _build_answer_prompt()
 
         input = dict(
             # No need for a game summary here, we will have plenty of context
@@ -1858,7 +2087,7 @@ def build_question_answer_graph(
 
     async def format_answer(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
         documents = get_evidence(state)
-        dump_chunks(documents)
+        # dump_chunks(documents)
         documents = sort_chunks(documents, runtime.context.manifest)
         manifest = runtime.context.manifest
         documents = get_evidence(state)
@@ -1952,6 +2181,7 @@ def build_qa_service(
     full_page_store: BaseStore[str, Serializable],
     chunk_search_service: ChunkSearchService,
     qa_prompt: ChatPromptTemplate=qa_prompt,
+    tokenizer: Any = None,
 ) -> QAService:
     # agent_graph = build_game_agent_graph(
     #     checkpoint_saver,
@@ -1961,6 +2191,7 @@ def build_qa_service(
     agent_graph = build_question_answer_graph(
         checkpoint_saver,
         chat_model,
+        tokenizer
     )
 
     # Create a custom Runnable that properly handles both streaming and non-streaming

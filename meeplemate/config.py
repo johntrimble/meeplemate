@@ -43,7 +43,9 @@ from meeplemate.pdf import parse_pdf
 from meeplemate.qa import build_qa_chain
 from chainlit.data.base import BaseDataLayer
 
-from meeplemate.search import ChunkSearchService, build_chunk_search_service
+from meeplemate.search import (
+    ChunkSearchService, build_chunk_search_service, build_chunk_search_service_2
+)
 
 
 class IngestConfig(BaseModel):
@@ -526,13 +528,22 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     "retriever": "retriever",
                 }
             ),
+            "chunk_search_service_2": (
+                factory(build_chunk_search_service_2)(default_token_budget=15_000),
+                {
+                    "vectorstore": "vector_store",
+                    "docstore": "docstore",
+                    "tokenizer": "tokenizer",
+                }
+            ),
             "qa_service": (
                 factory(build_qa_service)(),
                 {
                     "checkpoint_saver": "checkpointer",
                     "chat_model": "chat_model",
                     "full_page_store": "full_page_store",
-                    "chunk_search_service": "chunk_search_service",
+                    "chunk_search_service": "chunk_search_service_2",
+                    "tokenizer": "tokenizer"
                 }
             ),
             "chatloop_service": (

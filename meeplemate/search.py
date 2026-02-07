@@ -10,6 +10,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.retrievers import BaseRetriever, RetrieverInput, RetrieverOutput
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda, RunnablePassthrough, RunnableSerializable, chain
+from langchain_core.stores import BaseStore
+from langchain_core.vectorstores import VectorStore
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
@@ -17,7 +19,9 @@ from langchain_core.runnables.config import patch_config
 
 from meeplemate.ingest.gamepackage import Manifest
 from meeplemate.util import select_keys, slugify
+from structlog import get_logger
 
+logger = get_logger(__name__)
 
 system_prompt_template = """\
 You are an expert Rules Lawyer specializing in boardgame rules. Being "technically correct" is your highest aspiration. You believe in "the rules as written" above all else, because the rules are not merely words on a page, they are devine truth. You are sensitive to even the slimmest nuances in wording, and you always interpret the rules in the most literal way possible. You never make assumptions or inferences beyond what is explicitly written in the rules, because that would be the greatest of heresis.
@@ -167,6 +171,7 @@ class ChunkSearchInputState(TypedDict):
 class ChunkSearchOutputState(TypedDict):
     chunks: list[Document]
     relevance: ChunksRelevanceResults
+    tokens_used: int
 
 
 def add_chunk_ids(documents: list[Document]) -> list[Document]:
@@ -427,13 +432,14 @@ def build_chunk_search_graph(
     builder.add_edge("skip_selection", END)
 
     graph = builder.compile(checkpointer=checkpoint_saver)
-    return graph
+    return graph 
 
 
 class ChunkSearchServiceInput(TypedDict):
     manifest: Manifest
-    query: str
+    query: str|list[str]
     user_main_query: NotRequired[str]
+    token_budget: NotRequired[int]
 
 
 ChunkSearchService = Runnable[ChunkSearchServiceInput, ChunkSearchOutputState]
@@ -454,7 +460,10 @@ def build_chunk_search_service(
 
     @chain
     async def chain_func(input: ChunkSearchServiceInput, config: RunnableConfig|None = None) -> ChunkSearchOutputState:
-        
+        if isinstance(input["query"], list):
+            # Raise a value error
+            raise ValueError("Expected query to be a string, but got a list. Please provide a single query string.")
+    
         graph_input: ChunkSearchInputState = {
             "game_id": input["manifest"]["game_id"],
             "game_version": input["manifest"].get("game_version", ""),
@@ -466,5 +475,151 @@ def build_chunk_search_service(
         output = await graph.ainvoke(input=graph_input, config=config)
         
         return cast(ChunkSearchOutputState, output)
+
+    return chain_func
+
+
+def find_cutoff_adaptive_k(scores, post_k_buffer=5, find_gap_within_top_percent=0.9):
+    """
+    From "Efficient Context Selection for Long-Context QA: No Tuning, No
+    Iteration, Just Adaptive-k" by Taguchi et al. 2025
+    https://arxiv.org/abs/2506.08479
+    """
+    if not scores:
+        return -1
+    
+    # Assert scores are sorted in descending order
+    assert all(scores[i] >= scores[i+1] for i in range(len(scores)-1)), "Scores must be sorted in descending order"
+
+    # Compute score deltas. We use these to find the biggest drop-off point
+    score_deltas = [scores[i] - scores[i+1] for i in range(len(scores)-1)]
+
+    # To guard against k landing amongst low relevance docs, only consider the
+    # top percentage of scores
+    cutoff_index = int(len(scores) * find_gap_within_top_percent)
+    relevant_deltas = score_deltas[:cutoff_index]
+
+    # Find the index of the maximum delta
+    max_delta_index = relevant_deltas.index(max(relevant_deltas))
+
+    # Now add the post_k_buffer to ensure we don't cut off too early
+    adaptive_k = max_delta_index + post_k_buffer + 1
+
+    return adaptive_k
+
+
+def build_chunk_search_service_2(
+    vectorstore: VectorStore,
+    docstore: BaseStore[str, Document],
+    tokenizer: Any,
+    default_token_budget: int = 13000,
+):
+    @chain
+    def chain_func(input: ChunkSearchServiceInput) -> ChunkSearchOutputState:
+        budget = input.get("token_budget", default_token_budget)
+
+        query = input["query"]
+        if isinstance(query, str):
+            query = [query]
+        
+        # Assert we have a game version
+        assert "game_version" in input["manifest"], "Game version is required in the manifest"
+        
+        manifest = input["manifest"]
+        game_id = manifest["game_id"]
+        game_version = manifest["game_version"]
+
+        filter = {"game_id": game_id, "game_version": game_version}
+
+        retrieved_results = []
+
+        for q in query:
+            # Step 1: Retrieve a large set of potentially relevant chunks using
+            # the vectorstore
+            docs_and_scores = vectorstore.similarity_search_with_relevance_scores(
+                q,
+                filter=filter,
+                k=50
+            )
+
+            # Step 2: Use the adaptive k algorithm to find the cutoff point in
+            # the retrieved results
+            scores = [score for _, score in docs_and_scores]
+            docs = [doc for doc, _ in docs_and_scores]
+            adaptive_k = find_cutoff_adaptive_k(scores)
+            selected_docs = docs[:adaptive_k]
+
+            # Step 3: Add the selected chunks to the overall results
+            retrieved_results.extend(selected_docs)
+
+        # Step 4: Get parent chunks
+        parent_doc_ids = []
+        for doc in retrieved_results:
+            parent_doc_ids.append(doc.metadata.get("doc_id"))
+        # Make parent_doc_ids unique keeping first occurrence
+        seen = set()
+        unique_parent_doc_ids = []
+        for doc_id in parent_doc_ids:
+            if doc_id not in seen:
+                unique_parent_doc_ids.append(doc_id)
+                seen.add(doc_id)
+        parent_docs = docstore.mget(unique_parent_doc_ids)
+        # Log warning for missing docs
+        for doc_id, doc in zip(unique_parent_doc_ids, parent_docs):
+            if doc is None:
+                logger.warning(f"Parent document with ID not found in docstore.", doc_id=doc_id)
+        parent_docs = [doc for doc in parent_docs if doc is not None]
+
+        # Step 5: Enforce the token budget
+        docs_in_budget = []
+        remaining_budget = budget
+        budget_used = 0
+        for doc in parent_docs:
+            doc_tokens = len(tokenizer.encode(doc.page_content))
+            
+            if doc_tokens <= remaining_budget:
+                docs_in_budget.append(doc)
+                remaining_budget -= doc_tokens
+                budget_used += doc_tokens
+            else:
+                # We've hit the token budget, so we stop adding more documents
+                break
+        
+        # Step 6: Sort the final documents by rulebook order
+        rulebook_priority = {
+            rulebook["name"]: i
+            for i, rulebook in enumerate(manifest["rulebooks"])
+        }
+        docs_in_budget.sort(
+            key=lambda doc: (
+                rulebook_priority.get(doc.metadata.get("rulebook_name", ""), float("inf")),
+                doc.metadata.get("page_num", float("inf")),
+                doc.metadata.get("start_index", float("inf"))
+            )
+        )
+
+        # Step 7: Add chunk IDs to the documents
+        docs_in_budget = add_chunk_ids(docs_in_budget)
+
+        # Step 8: Create result object
+        relevance_results: ChunksRelevanceResults = {
+            "chunks": [
+                ChunkRelevanceResult(
+                    id=get_chunk_id(doc),
+                    reasoning="Selected based on vector similarity and adaptive k cutoff.",
+                    is_relevant=True,
+                )
+                for doc in docs_in_budget
+            ]
+        }
+
+        logger.info("Used tokens", query=input["query"], total_retrieved_count=len(docs_in_budget), tokens_used=budget_used)
+
+        output: ChunkSearchOutputState = {
+            "chunks": docs_in_budget,
+            "relevance": relevance_results,
+            "tokens_used": budget_used,
+        }
+        return output
 
     return chain_func
