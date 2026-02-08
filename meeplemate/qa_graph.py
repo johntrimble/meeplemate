@@ -18,7 +18,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 from langgraph.prebuilt import ToolNode
 
-from meeplemate import config, quote_util
+from meeplemate import quote_util
 from meeplemate.ingest.gamepackage import Manifest, get_page_id
 from meeplemate.search import ChunkSearchService, ChunkSearchServiceInput, CompiledStateGraph
 import structlog
@@ -546,6 +546,8 @@ def should_reformat_blockquote_citation(quote_text: str, citation_start_index: i
 
 
 def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitationsResult:
+    original_text = text
+
     # Track referenced chunks
     referenced_chunks: list[Chunk] = []
 
@@ -606,6 +608,7 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
                         else:
                             # Citation already inline or not a blockquote, add as-is
                             valid_or_fixed_quotes.append(quote_info)
+                        break  # Stop after first matching chunk to avoid stale-index rewrites
 
         if citation_correct:
             continue
@@ -708,7 +711,7 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
 
     # Find and remove standalone citations that aren't protected
     standalone_citation_pattern = re.compile(
-        r'\n\s*\n\s*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))\s*(?=\n|$)',
+        r'\n\s*\n\s*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))[^\S\n]*(?=\n|$)',
         re.MULTILINE
     )
 
@@ -722,6 +725,9 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
     # Remove in reverse order to preserve indices
     for match in reversed(matches_to_remove):
         text = text[:match.start()] + text[match.end():]
+
+    if original_text != text:
+        logger.info("Fixed quote citations in text", text=original_text, fixed_text=text)
 
     return FixQuoteCitationsResult(
         fixed_text=text,
@@ -941,6 +947,8 @@ class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
     answer: str
     reasoning: str
     invalid_quotes: list[QuoteEntry]
+    format_attempts: int
+    """Track how many times we've attempted format_answer with quote validation"""
     tokens_used: NotRequired[int]
 
 
@@ -1420,18 +1428,6 @@ def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
     return agent
 
 
-class Subproblem(TypedDict):
-    description: Annotated[str, ..., "description of the subproblem to solve"]
-    question: Annotated[str, ..., "specific question this subproblem seeks to answer"]
-    related_rule_names: Annotated[list[str], ..., "list of related rules needed to solve the subproblem. These should be names of individual rules, not combinations of rules. Use plain text. Do not include '#' header symbols."]
-
-
-class Analysis(TypedDict):
-    analysis: Annotated[str, ..., "detailed analysis of the user's query. Do not attempt to answer the question here. Just explain what the user asking and identify the main questions that need to be resolved to answer it. Do not provide parenthetical commentary on the rules here."]
-    subproblems: Annotated[list[Subproblem], ..., "list of subproblems that need to be solved to answer the user's query. Each subproblem should deal with an essential aspect of the overall question. The subproblems should collectively cover all the key issues needed to answer the user's query."]
-    deduped_subproblems: Annotated[list[Subproblem], ..., "list of deduped subproblems that are distinct and non-overlapping while collectively covering all key issues needed to answer the user's query. Each subproblem should have a clear description, a specific question it seeks to answer, and a list of related rule names needed to solve it."]
-
-
 class QuestionAnalysisOverallState(MessagesState):
     documents: list[Chunk]
     reasoning: str
@@ -1467,49 +1463,6 @@ Examine the user query in light of the provided documents. What is the user aski
 analyze_user_query_retrieval_template = """\
 Examine the user query. What is the user asking? Do not answer the question, just explain what the question is. Enumerate the names of all the rules involved in the user's question. You can lookup information for rules questions by using the `search_chunks` tool.
 """
-# analyze_user_query_retrieval_template = """\
-# Examine the user query and retrieve relevant documents using the `search_chunks` tool. What is the user asking? Do not answer the question, just explain what the question is. Enumerate the key issues involved in the user's question. Enumerate the pairs of interactions between different named rules. Try and understand the crux of the question. Do NOT provide parenthetical commentary or make assumptions. Do NOT draw conclusions. Then, breakdown the problem presented by the user's query into smaller subproblems that need to be solved in order to answer the overall question. The subproblems should be solvable independently so that they me solved in parallel. Do NOT create a subproblem that is just the original problem restated.
-# """
-
-# analyze_user_query_retrieval_template = """\
-# Examine the user query and retrieve relevant documents using the `search_chunks` tool. Analyze the user's query in light of the retrieved documents:
-
-# 1. Identify what the user is asking.
-# 2. Enumerate the rules involved in the user's question. List them by name.
-# 3. Enumerate the key issues involved in the user's question.
-# 4. Some rules have indirect interactions (X has Y which interacts with Z) and some have direct interactions (Y interacts with Z). Identify the direct rule interactions that are the crux of what the user is asking. Ensure to list interactions that might be exceptions to a general rule. List them in the format "Y interacts with Z" where Y and Z are the names of rules (no citations required here). Do not include parenthetical elements or commentary.
-# 5. Then, based on the result of 4 above, breakdown the problem presented by the user's query into smaller subproblems that need to be solved in order to answer the overall question. The subproblems should be solvable independently so that they me solved in parallel. Do NOT create a subproblem that is just the original problem restated.
-# 6. Use the `submit_analysis` tool to submit the analysis you just performed.
-
-# Do NOT answer the user's question. Do NOT draw conclusions. Do NOT make assumptions. Someone else will be responsible for determining the answer. Your job is just to analyze the question, identify the key issues, and break it down into subproblems for someone else to solve.
-# """
-
-# analyze_user_query_retrieval_template = """\
-# You are analyzing a complex board game rules question. Your task is to identify the MINIMAL set of independent subprombles that must be solved to resolve the original question.
-
-# 1. Retrieve relevant documents using the `search_chunks` tool.
-
-# 2. Examine the user query with respect to the retrieved documents. Explain what the user is asking in detail. Identify the key issues involved in the user's question. Do NOT provide parenthetical commentary or make assumptions. Do NOT draw conclusions. Do NOT answer the question.
-
-# 3. Think through the logical chain:
-# - What properties/abilities does each entity mentioned have?
-# - Do those abilities reference other game terms that need definition?
-# - What is the mechanical sequence that determines the outcome?
-
-# 4. Breakdown the user's question into subproblems:
-
-#   a) Identify ATOMIC rule facts - single definitional or mechanical relationships
-
-#   b) Each subproblem should verify ONE link in the logical chain (e.g., "Does X have property Y?" not "Does X ultimately benefit from Z?")
-
-#   c) Follow the rule chain step-by-step: if a unit has an ability that references another rule term, ask about that term explicitly
-
-#   d) Avoid "shortcut" questions that skip intermediate rules (e.g., don't ask "Can a Rogue use a Heavy Crossbow?" - instead ask: "Is a Heavy Crossbow a martial weapon?", "Does the Rogue class grant martial weapon proficiency?")
-
-#   e) Frame as specific rule lookups: "Does [entity] have [property]?" or "Is [term A] defined as [term B]?"
-
-# 5. Call the `submit_analysis` tool to submit your analysis, including the identified subproblems.
-# """
 
 list_essential_rule_interactions_template = """\
 Some rule interactions are transitive (X has Y which interacts with Z) others are direct (Y interacts with Z). We care about the direct rule interactions (X has Y and Y interacts with Z) essential to answering the user's query. Given the user's query and the explanation of what the user is asking, identify the direct rule interactions that are the crux of what the user is asking. Ensure to list interactions that might be exceptions to a general rule. List them in the format "Y interacts with Z" where Y and Z are the names of rules (no citations required here). Provide no more than 5. Do not include parenthetical elements or commentary. Provide the output as a json list of strings.
@@ -1530,18 +1483,6 @@ You are an expert Rules Lawyer specializing in boardgame rules. Being "technical
 
 class EssentialRuleInteractionResponse(TypedDict):
     essential_rule_interactions: Annotated[list[str], ..., "list of essential direct rule interactions needed to answer the query. Format each as 'Y interacts with Z' where Y and Z are the names of rules. No citations required."]
-
-
-@tool(description="""Submit the final analysis of the user's question.
-Call this ONLY after retrieving relevant documents with search_chunks.
-Provide a complete structured analysis based on the retrieved documents.""")
-async def submit_analysis(
-    data: Analysis,  # Single param - Analysis TypedDict is the source of truth
-    runtime: ToolRuntime[QuestionAnalysisContext]
-) -> str:
-    """Submit the final structured analysis. This is a terminal action."""
-    # Tool doesn't execute - we extract args directly from the tool call
-    return "Analysis submitted"
 
 
 def build_analyze_question_graph(
@@ -1660,7 +1601,7 @@ def build_analyze_question_graph(
         tool_name = tool_calls[0]["name"]
         if tool_name == "search_chunks":
             return "tool_node"
-        else:  # submit_analysis or any other
+        else:
             return "extract_analysis"
 
 
@@ -1670,7 +1611,6 @@ def build_analyze_question_graph(
         runtime: Runtime[QuestionAnalysisContext],
         config: RunnableConfig | None = None
     ) -> dict:
-        """Extract Analysis from submit_analysis tool call arguments."""
         manifest = runtime.context.manifest
         last_message = state["messages"][-1]
 
@@ -2082,15 +2022,25 @@ def build_question_answer_graph(
             "invalid_quotes": [],
             "answer": answer_result.fixed_text,
             "reasoning": reasoning_result.fixed_text,
-            "evidence": evidence,
+            # "evidence": evidence,
         }
 
     async def format_answer(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        format_attempts = state.get("format_attempts", 0)
+
+        # If we've exhausted all attempts, return an error response
+        if format_attempts >= 5:
+            logger.error("format_answer failed after 5 attempts, returning error response")
+            return {
+                "response": "I was unable to generate a response with valid quotes. Please try again.",
+                "evidence": [],
+                "invalid_quotes": state.get("invalid_quotes", []),
+                "format_attempts": format_attempts,
+            }
+
         documents = get_evidence(state)
-        # dump_chunks(documents)
         documents = sort_chunks(documents, runtime.context.manifest)
         manifest = runtime.context.manifest
-        documents = get_evidence(state)
 
         format_prompt = ChatPromptTemplate.from_messages(
             [
@@ -2114,9 +2064,35 @@ def build_question_answer_graph(
         chain = format_prompt | chat_model
         chain = chain.with_config(run_name="format_answer_chain")
         result = await chain.ainvoke(input, config=config)
-    
+
+        # Validate quotes in the formatted response
+        fix_result = fix_quote_citations_in_text(result.text, documents)
+        valid_quotes, invalid_quotes = get_quotes(fix_result)
+
+        if invalid_quotes:
+            for iq in invalid_quotes:
+                logger.warning(
+                    "Invalid quote in formatted answer",
+                    text=iq["text"],
+                    rulebook_name=iq["rulebook_name"],
+                    page=iq["page"],
+                    attempt=format_attempts + 1,
+                    documents=documents,
+                )
+            return {
+                "response": fix_result.fixed_text,
+                "invalid_quotes": invalid_quotes,
+                "format_attempts": format_attempts + 1,
+            }
+
+        # All quotes valid — build evidence from the quotes in the response
+        evidence = compile_evidence_from_documents(valid_quotes, documents)
+
         return {
-            "response": result.text,
+            "response": fix_result.fixed_text,
+            "evidence": list(evidence),
+            "invalid_quotes": [],
+            "format_attempts": 0,
         }
 
     async def provide_response(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
@@ -2129,6 +2105,13 @@ def build_question_answer_graph(
         if state.get("invalid_quotes", []) and state.get("validation_attempts", 0) < 5:
             return "answer_question"
         return "format_answer"
+
+    def check_format_result(state: GameAgentOverallState) -> Literal["format_answer", "provide_response"]:
+        invalid_quotes = state.get("invalid_quotes", [])
+        format_attempts = state.get("format_attempts", 0)
+        if invalid_quotes and 0 < format_attempts < 5:
+            return "format_answer"
+        return "provide_response"
     
     def select_start_node(state: GameAgentInputState) -> Literal["answer_question", "retrieve_data"]:
         # If provided evidence up-front, skip retrieval
@@ -2160,7 +2143,7 @@ def build_question_answer_graph(
     graph.add_edge("dedupe_chunks", "answer_question")
     graph.add_edge("answer_question", "validate_answer")
     graph.add_conditional_edges("validate_answer", check_validation_result)
-    graph.add_edge("format_answer", "provide_response")
+    graph.add_conditional_edges("format_answer", check_format_result)
     graph.add_edge("provide_response", END)
 
     # Compile the agent

@@ -1,6 +1,6 @@
 from langchain.messages import AnyMessage, ToolMessage
 from langchain_core.messages.content import ToolCall
-from meeplemate.qa_graph import Chunk, ChunkSearchResult, QaResponse, dedupe_chunks_in_message_history, get_chunk_id_tuple, tweak_and_validate_quotes_response
+from meeplemate.qa_graph import Chunk, ChunkSearchResult, QaResponse, dedupe_chunks_in_message_history, fix_quote_citations_in_text, get_chunk_id_tuple, tweak_and_validate_quotes_response
 from langchain_core.messages import AIMessage, BaseMessage
 from typing import List
 import json
@@ -592,3 +592,226 @@ def test_multiline_blockquote_citation_next_line():
     result = tweak_and_validate_quotes_response(response, chunks)
 
     assert result.revised_response['final_answer'] == expected
+
+def test_fix_quote_citations_in_text():
+    chunk_content = inspect.cleandoc(
+        '''\
+        Some rulebook text. It goes on and on. For some sentences.
+
+        Look, it has paragraphs too!
+
+        Here is another one too!
+        '''
+    )
+
+    chunks: list[Chunk] = [
+        {
+            "content": chunk_content,
+            "rulebook_name": "Some Rulebook",
+            "page": 44,
+            "offset": 0,
+        },
+    ]
+
+    before = inspect.cleandoc(
+        '''\
+        According to the rules:
+
+        > "Some rulebook text. It goes on and on. For some sentences."
+
+        (Some Rulebook, p. 44)
+
+        This indicates that the rule has multiple paragraphs.
+
+        > "Look, it has paragraphs too!"
+        > (Some Rulebook, p. 44)
+
+        Finally, we see:
+
+        > "Here is another one too!"
+        >
+        > (Some Rulebook, p. 44)
+
+        Some concluding text.
+        '''
+    )
+    expected = inspect.cleandoc(
+        '''\
+        According to the rules:
+
+        > "Some rulebook text. It goes on and on. For some sentences." (Some Rulebook, p. 44)
+
+        This indicates that the rule has multiple paragraphs.
+
+        > "Look, it has paragraphs too!"
+        > (Some Rulebook, p. 44)
+
+        Finally, we see:
+
+        > "Here is another one too!"
+        >
+        > (Some Rulebook, p. 44)
+
+        Some concluding text.
+        '''
+    )
+
+    result = fix_quote_citations_in_text(before, chunks)
+    assert result.fixed_text == expected
+
+
+def test_fix_quote_citations_in_text_2():
+
+    chunks: list[Chunk] = [
+        {
+            "content": "The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away This is called a Break test.",
+            "rulebook_name": "Warhammer Rulebook",
+            "page": 42,
+            "offset": 0,
+        },
+        {
+            "content": "The unit never needs test for any of the psychology rules, whether panic, fear, terror or whatever. The Knights are unaffected by any psychology.",
+            "rulebook_name": "Bretonnia Army Book",
+            "page": 49,
+            "offset": 0,
+        },
+        {
+            "content": "However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.",
+            "rulebook_name": "Warhammer Rulebook",
+            "page": 47,
+            "offset": 0,
+        },
+    ]
+
+    before = inspect.cleandoc(
+        '''\
+        **Yes, the Grail Knights must take a Break test when they lose combat against a Green Dragon.**
+
+        The rulebook clearly states that losing combat triggers a Break test:
+
+        > The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away This is called a Break test.
+
+        (Warhammer Rulebook, p. 42)
+
+        This means that regardless of the enemy type or unit abilities, any unit that loses a combat must perform a Break test.
+
+        However, the Grail Knights have a special immunity that protects them from psychological effects:
+
+        > The unit never needs test for any of the psychology rules, whether panic, fear, terror or whatever. The Knights are unaffected by any psychology.
+
+        (Bretonnia Army Book, p. 49)
+
+        This protection applies specifically to psychology-related tests, including those caused by Fear, Panic, or similar effects.
+
+        But the Break test is explicitly not a psychology test:
+
+        > However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.
+
+        (Warhammer Rulebook, p. 47)
+
+        Since the Break test is functionally distinct from psychology tests, and the Grail Knights’ immunity only applies to psychology rules, their protection does not extend to Break tests.
+
+        Therefore, even though the Grail Knights are immune to the Green Dragon’s corrosive fumes (which trigger a Leadership test “in the same way as for a fear or other psychology test”), this does not affect the outcome of the Break test after combat loss.
+
+        In conclusion: Losing combat triggers a Break test, and since the Break test is not a psychology test, the Grail Knights’ immunity does not prevent them from taking it.
+        '''
+    )
+
+    expected = inspect.cleandoc(
+        '''\
+        **Yes, the Grail Knights must take a Break test when they lose combat against a Green Dragon.**
+
+        The rulebook clearly states that losing combat triggers a Break test:
+
+        > The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away This is called a Break test. (Warhammer Rulebook, p. 42)
+
+        This means that regardless of the enemy type or unit abilities, any unit that loses a combat must perform a Break test.
+
+        However, the Grail Knights have a special immunity that protects them from psychological effects:
+
+        > The unit never needs test for any of the psychology rules, whether panic, fear, terror or whatever. The Knights are unaffected by any psychology. (Bretonnia Army Book, p. 49)
+
+        This protection applies specifically to psychology-related tests, including those caused by Fear, Panic, or similar effects.
+
+        But the Break test is explicitly not a psychology test:
+
+        > However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests. (Warhammer Rulebook, p. 47)
+
+        Since the Break test is functionally distinct from psychology tests, and the Grail Knights’ immunity only applies to psychology rules, their protection does not extend to Break tests.
+
+        Therefore, even though the Grail Knights are immune to the Green Dragon’s corrosive fumes (which trigger a Leadership test “in the same way as for a fear or other psychology test”), this does not affect the outcome of the Break test after combat loss.
+
+        In conclusion: Losing combat triggers a Break test, and since the Break test is not a psychology test, the Grail Knights’ immunity does not prevent them from taking it.
+        '''
+    )
+
+    result = fix_quote_citations_in_text(before, chunks)
+    assert result.fixed_text == expected
+
+    assert result.fixed_text == expected
+
+def test_fix_quote_citations_in_text_3():
+    chunks: list[Chunk] = [
+        {
+            "content": "The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test.",
+            "rulebook_name": "Warhammer Rulebook",
+            "page": 42,
+            "offset": 0,
+        },
+        {
+            "content": "Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.",
+            "rulebook_name": "Bretonnia Army Book",
+            "page": 44,
+            "offset": 0,
+        },
+        {
+            "content": "However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.",
+            "rulebook_name": "Warhammer Rulebook",
+            "page": 47,
+            "offset": 0,
+        },
+    ]
+
+    before = '**Yes, Grail Knights must take a Break test when they lose combat, despite their immunity to psychological effects.**\n\nThe general rule for losing combat requires a Break test:\n\n> The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test. You need to take a separate Break test for every unit involved in the combat.\n\n(Warhammer Rulebook, p. 42)\n\nThis means that any unit which loses a combat must attempt a Break test, regardless of other traits.\n\nHowever, Grail Knights possess the Grail Virtue, which grants immunity to psychological effects:\n\n> Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.\n\n(Bretonnia Army Book, p. 44)\n\nThe key distinction lies in the categorization of Break tests:\n\n> However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.\n\n(Warhammer Rulebook, p. 47)\n\nSince Break tests are explicitly stated to be *not* psychology tests, and the Grail Virtue only applies to "psychology rules" and "such tests" — which refer exclusively to Panic, Fear, Terror, and Stupidity — the immunity does not extend to Break tests.\n\nTherefore, even though Grail Knights are immune to psychological effects, they are still required to take a Break test when they lose combat, as the rule for Break tests is not overridden by the Grail Virtue.'
+
+    fixed = '**Yes, Grail Knights must take a Break test when they lose combat, despite their immunity to psychological effects.**\n\nThe general rule for losing combat requires a Break test:\n\n> The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test. You need to take a separate Break test for every unit involved in the combat. (Warhammer Rulebook, p. 42)\n\nThis means that any unit which loses a combat must attempt a Break test, regardless of other traits.\n\nHowever, Grail Knights possess the Grail Virtue, which grants immunity to psychological effects:\n\n> Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery. (Bretonnia Army Book, p. 44)\n\nThe key distinction lies in the categorization of Break tests:\n\n> However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests. (Warhammer Rulebook, p. 47)\n\nSince Break tests are explicitly stated to be *not* psychology tests, and the Grail Virtue only applies to "psychology rules" and "such tests" — which refer exclusively to Panic, Fear, Terror, and Stupidity — the immunity does not extend to Break tests.\n\nTherefore, even though Grail Knights are immune to psychological effects, they are still required to take a Break test when they lose combat, as the rule for Break tests is not overridden by the Grail Virtue.'
+
+    result = fix_quote_citations_in_text(before, chunks)
+    print(result.fixed_text)
+    assert result.fixed_text == fixed
+
+
+def test_fix_quote_citations_duplicate_chunks():
+    """Regression test: duplicate chunks for same page must not corrupt text after blockquotes."""
+    chunk_content = "Some quote text here matching chunk content."
+
+    # Multiple chunks for the same (rulebook, page) key
+    chunks: list[Chunk] = [
+        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "offset": 0},
+        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "offset": -1},
+        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "offset": -2},
+    ]
+
+    before = inspect.cleandoc(
+        '''\
+        According to the rules:
+
+        > Some quote text here matching chunk content.
+
+        (Some Rulebook, p. 42)
+
+        This is the text after the quote.
+        '''
+    )
+    expected = inspect.cleandoc(
+        '''\
+        According to the rules:
+
+        > Some quote text here matching chunk content. (Some Rulebook, p. 42)
+
+        This is the text after the quote.
+        '''
+    )
+
+    result = fix_quote_citations_in_text(before, chunks)
+    assert result.fixed_text == expected
