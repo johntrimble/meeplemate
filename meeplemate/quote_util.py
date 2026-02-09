@@ -354,6 +354,12 @@ def find_quote_with_gaps(
             we = ws + window_size
             score = fuzz.partial_ratio(first, norm_doc[ws:we])
             candidates.append((score, ws, we))
+        # Always include a window covering the tail of the document,
+        # otherwise up to window_step-1 trailing chars can be missed.
+        last_ws = n - window_size
+        if not candidates or candidates[-1][1] != last_ws:
+            score = fuzz.partial_ratio(first, norm_doc[last_ws:n])
+            candidates.append((score, last_ws, n))
         candidates.sort(reverse=True, key=lambda x: x[0])
         candidates = candidates[:top_k_windows]
 

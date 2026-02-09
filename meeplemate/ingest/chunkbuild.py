@@ -9,7 +9,7 @@ from langchain_core.documents import Document
 from langchain_core.load import dumps, loads
 from langchain_text_splitters import TextSplitter
 
-from meeplemate.ingest.gamepackage import GamePackage, Page, get_pages_iter, load_game_package, page_md, page_to_document, get_page_chunk_id
+from meeplemate.ingest.gamepackage import GamePackage, Page, get_pages_iter, load_game_package, load_page_metadata, page_md, page_to_document, get_page_chunk_id
 from meeplemate.text_splitters import FixedRecursiveCharacterTextSplitter
 from meeplemate.util import amap, aspit
 
@@ -87,13 +87,16 @@ def split_document(parent_splitter: TextSplitter, child_splitter: TextSplitter, 
     parent_chunks = parent_splitter.split_documents([document])
     for parent_idx, parent_chunk in enumerate(parent_chunks):
         parent_chunk.metadata = {**document.metadata, **parent_chunk.metadata}
-        parent_chunk.metadata["chunk_index"] = parent_idx
-        parent_chunk.metadata["chunk_count"] = len(parent_chunks)
+        parent_chunk.metadata["page_chunk_index"] = parent_idx
+        parent_chunk.metadata["page_chunk_count"] = len(parent_chunks)
         parent_chunk.id = f"{document.id}#{parent_idx}"
         child_chunks = child_splitter.split_documents([parent_chunk])
+        parent_start = parent_chunk.metadata.get("start_index", 0)
         for child_idx, child_chunk in enumerate(child_chunks):
             child_chunk.id = f"{parent_chunk.id}#{child_idx}"
             child_chunk.metadata = {**parent_chunk.metadata, **child_chunk.metadata}
+            child_chunk.metadata["start_index"] += parent_start
+            child_chunk.metadata["end_index"] += parent_start
             child_chunk.metadata["doc_id"] = parent_chunk.id
             child_chunk.metadata["child_chunk_index"] = child_idx
             child_chunk.metadata["child_chunk_count"] = len(child_chunks)
@@ -105,6 +108,7 @@ async def write_parent_and_child_chunks(
     parent_splitter: TextSplitter,
     child_splitter: TextSplitter,
     page: Page,
+    page_document_offset: int = 0,
 ):
     tasks = []
     document = await page_to_document(page)
@@ -114,11 +118,15 @@ async def write_parent_and_child_chunks(
         document,
     )
     for parent_idx, (parent_doc, child_docs) in enumerate(documents_split):
-        parent_chunk_path = get_chunk_path_for_index(page, parent_idx)
-        tasks.append(aspit(dumps(parent_doc), parent_chunk_path))
+        parent_doc.metadata["start_index"] += page_document_offset
+        parent_doc.metadata["end_index"] += page_document_offset
         for child_idx, child_doc in enumerate(child_docs):
+            child_doc.metadata["start_index"] += page_document_offset
+            child_doc.metadata["end_index"] += page_document_offset
             child_chunk_path = get_child_chunk_path_for_index(page, parent_idx, child_idx)
             tasks.append(aspit(dumps(child_doc), child_chunk_path))
+        parent_chunk_path = get_chunk_path_for_index(page, parent_idx)
+        tasks.append(aspit(dumps(parent_doc), parent_chunk_path))
     await asyncio.gather(*tasks)
  
 
@@ -152,16 +160,42 @@ class BuildChunksJob:
             add_start_index=True,
         )
 
-        tasks = []
+        write_tasks = []
         for rulebook in self.gp["rulebooks"]:
-            chunks_path = get_chunks_directory_path(self.gp, rulebook["document_key"])
+            document_key = rulebook["document_key"]
+            chunks_path = get_chunks_directory_path(self.gp, document_key)
             chunks_path.mkdir(exist_ok=True)
-            async for page in get_pages_iter(self.gp, rulebook["document_key"]):
-                tasks.append(
-                    write_parent_and_child_chunks(
-                        parent_splitter,
-                        child_splitter,
-                        page,
-                    )
-                )
-        await asyncio.gather(*tasks)
+
+            # Phase 1: split all pages to determine document-level chunk count
+            page_splits: list[Tuple[Page, int, Sequence[Tuple[Document, Sequence[Document]]]]] = []
+            async for page in get_pages_iter(self.gp, document_key):
+                page_metadata = load_page_metadata(page)
+                page_document_offset = page_metadata["start_index"]
+                document = await page_to_document(page)
+                splits = split_document(parent_splitter, child_splitter, document)
+                page_splits.append((page, page_document_offset, splits))
+
+            document_chunk_count = sum(len(splits) for _, _, splits in page_splits)
+
+            # Phase 2: assign document-level indices and write
+            document_chunk_idx = 0
+            for page, page_document_offset, splits in page_splits:
+                for parent_idx, (parent_doc, child_docs) in enumerate(splits):
+                    parent_doc.metadata["start_index"] += page_document_offset
+                    parent_doc.metadata["end_index"] += page_document_offset
+                    parent_doc.metadata["chunk_index"] = document_chunk_idx
+                    parent_doc.metadata["chunk_count"] = document_chunk_count
+
+                    for child_idx, child_doc in enumerate(child_docs):
+                        child_doc.metadata["start_index"] += page_document_offset
+                        child_doc.metadata["end_index"] += page_document_offset
+                        child_doc.metadata["chunk_index"] = document_chunk_idx
+                        child_doc.metadata["chunk_count"] = document_chunk_count
+                        child_chunk_path = get_child_chunk_path_for_index(page, parent_idx, child_idx)
+                        write_tasks.append(aspit(dumps(child_doc), child_chunk_path))
+
+                    parent_chunk_path = get_chunk_path_for_index(page, parent_idx)
+                    write_tasks.append(aspit(dumps(parent_doc), parent_chunk_path))
+                    document_chunk_idx += 1
+
+        await asyncio.gather(*write_tasks)

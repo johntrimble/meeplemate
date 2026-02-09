@@ -1,6 +1,6 @@
 import pytest
 
-from meeplemate.ingest import (
+from meeplemate.ingest.ocr import (
     fix_dangling_sentences,
     markdown_text_to_structured_metadata,
     markdown_with_metadata_to_plain_markdown,

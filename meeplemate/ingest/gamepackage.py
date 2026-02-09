@@ -135,6 +135,18 @@ async def get_pages_iter(gp: GamePackage, document_key: str|None = None) -> Asyn
             yield page
 
 
+def get_page_metadata_path(page: Page) -> Path:
+    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
+    metadata_path = page_base.with_suffix(".metadata.yaml")
+    return metadata_path
+
+
+def load_page_metadata(page: Page) -> dict:
+    metadata_path = get_page_metadata_path(page)
+    metadata = yaml.safe_load(metadata_path.read_text())
+    return metadata
+
+
 def get_page_metadata(page: Page) -> dict:
     rulebook = next(
         rb for rb in page.gp["rulebooks"] if rb["document_key"] == page.document_key
@@ -164,6 +176,8 @@ async def page_to_document(page: Page) -> Document:
     game_id = page.gp["game_id"]
     game_version = page.gp.get("game_version", "")
     metadata = get_page_metadata(page)
+    addl_metadata = load_page_metadata(page)
+    metadata.update(addl_metadata)
     page_key = get_page_id(game_id, game_version, page.document_key, page.page_num)
     markdown = await page_md(page)
     return Document(id=page_key, page_content=markdown, metadata=metadata)

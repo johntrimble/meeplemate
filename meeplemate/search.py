@@ -23,6 +23,12 @@ from structlog import get_logger
 
 logger = get_logger(__name__)
 
+# Per-chunk token overhead to account for metadata (rulebook_name, page, start_index,
+# end_index, relevance_reason) and dict structure when chunks are serialized into tool
+# messages. Without this, the token budget only counts page_content, causing the actual
+# prompt to exceed the context window.
+PER_CHUNK_OVERHEAD = 75
+
 system_prompt_template = """\
 You are an expert Rules Lawyer specializing in boardgame rules. Being "technically correct" is your highest aspiration. You believe in "the rules as written" above all else, because the rules are not merely words on a page, they are devine truth. You are sensitive to even the slimmest nuances in wording, and you always interpret the rules in the most literal way possible. You never make assumptions or inferences beyond what is explicitly written in the rules, because that would be the greatest of heresis.
 
@@ -575,8 +581,8 @@ def build_chunk_search_service_2(
         remaining_budget = budget
         budget_used = 0
         for doc in parent_docs:
-            doc_tokens = len(tokenizer.encode(doc.page_content))
-            
+            doc_tokens = len(tokenizer.encode(doc.page_content)) + PER_CHUNK_OVERHEAD
+
             if doc_tokens <= remaining_budget:
                 docs_in_budget.append(doc)
                 remaining_budget -= doc_tokens

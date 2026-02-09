@@ -1,17 +1,14 @@
 import copy
 from dataclasses import dataclass
 import json
-from shlex import quote
-import sys
-from typing import Annotated, Any, Literal, NotRequired, Protocol, Sequence, Tuple, TypedDict, cast
-from unittest import result
-from langchain.messages import AIMessage, AnyMessage, ToolMessage
+from typing import Annotated, Any, Literal, NotRequired, Sequence, Tuple, TypedDict, cast
+from langchain.messages import AnyMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.load import Serializable
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable,  RunnableConfig, chain, config
+from langchain_core.runnables import Runnable,  RunnableConfig, chain
 from langchain_core.stores import BaseStore
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -21,7 +18,6 @@ from langgraph.prebuilt import ToolNode
 from meeplemate import quote_util
 from meeplemate.ingest.gamepackage import Manifest, get_page_id
 from meeplemate.search import ChunkSearchService, ChunkSearchServiceInput, CompiledStateGraph
-import structlog
 from structlog import get_logger
 
 from meeplemate.util import load_template, serialize_typeddict
@@ -61,7 +57,8 @@ class Page(TypedDict):
 class Chunk(TypedDict):
     rulebook_name: str
     page: int
-    offset: int
+    start_index: int
+    end_index: int
     content: str
 
 
@@ -121,7 +118,7 @@ async def retrieve_page(rulebook_name: str, page: int, runtime: ToolRuntime[Game
 
 
 def get_chunk_id_tuple(chunk: Chunk) -> Tuple[str, int, int]:
-    return (chunk["rulebook_name"], chunk["page"], chunk["offset"])
+    return (chunk["rulebook_name"], chunk["page"], chunk["start_index"])
 
 @dataclass
 class ContextWithSearchChunkService:
@@ -217,6 +214,10 @@ async def search_chunks(search_queries: list[str], runtime: ToolRuntime[ContextW
             if "start_index" in metadata and isinstance(metadata["start_index"], int):
                 start_index = metadata["start_index"]
 
+            end_index: int = -1
+            if "end_index" in metadata and isinstance(metadata["end_index"], int):
+                end_index = metadata["end_index"]
+
             rulebook_name: str = "unknown_rulebook"
             if "rulebook_name" in metadata and isinstance(metadata["rulebook_name"], str):
                 rulebook_name = metadata["rulebook_name"]
@@ -229,7 +230,8 @@ async def search_chunks(search_queries: list[str], runtime: ToolRuntime[ContextW
                         "chunk": Chunk(
                             rulebook_name=rulebook_name,
                             page=page_number,
-                            offset=start_index,
+                            start_index=start_index,
+                            end_index=end_index,
                             content=chunk_document.page_content
                         )
                     }
@@ -395,39 +397,56 @@ def compile_evidence_from_documents(quote_entries: Sequence[QuoteEntry], documen
         if not key in documents_by_rulebook_and_page:
             documents_by_rulebook_and_page[key] = []
         documents_by_rulebook_and_page[key].append(document)
-    
-    # Expand quotes to a paragraph large
-    for quote in quote_entries:
+
+    # Match quotes against documents, expand to full paragraphs, and track positions
+    match_info: dict[int, tuple[str, int, int]] = {}  # quote index -> (content, start_index, end_index)
+
+    for i, quote in enumerate(quote_entries):
         key = (quote["rulebook_name"], quote["page"])
         candidate_documents = documents_by_rulebook_and_page.get(key, [])
         for document in candidate_documents:
             page_content = document["content"]
             match = quote_util.find_quote_with_gaps(page_content, quote["text"])
             if match:
-                new_text = quote_util.expand_to_full_paragraphs(page_content, match.matched_text) 
-                if len(new_text) > len(quote["text"]):
-                    quote["text"] = new_text
-    
+                expanded = quote_util.expand_to_full_paragraphs(page_content, match.matched_text)
+                content = expanded if len(expanded) > len(quote["text"]) else match.matched_text
+                pos = page_content.find(content)
+                doc_start = document["start_index"]
+                if doc_start >= 0 and pos >= 0:
+                    abs_start = doc_start + pos
+                    abs_end = abs_start + len(content)
+                else:
+                    abs_start, abs_end = -1, -1
+                quote["text"] = content
+                match_info[i] = (content, abs_start, abs_end)
+                break
+
     # Dedupe quotes
     seen_texts: set = set()
-    deduped_quote_entries: list[QuoteEntry] = []
-    for quote in quote_entries:
+    deduped: list[tuple[QuoteEntry, int]] = []  # (quote, original index)
+    for i, quote in enumerate(quote_entries):
         if quote["text"] not in seen_texts:
-            deduped_quote_entries.append(quote)
+            deduped.append((quote, i))
             seen_texts.add(quote["text"])
-    quote_entries = deduped_quote_entries
-    
-    # Convert quote entries to chunks
+
+    # Convert to chunks, using match info when available
     chunks: list[Chunk] = []
-    for quote in quote_entries:
+    for quote, orig_idx in deduped:
+        if orig_idx in match_info:
+            content, start_index, end_index = match_info[orig_idx]
+        else:
+            content, start_index, end_index = quote["text"], -1, -1
         chunk = Chunk(
             rulebook_name=quote["rulebook_name"],
             page=quote["page"],
-            offset=-1,
-            content=quote["text"]
+            start_index=start_index,
+            end_index=end_index,
+            content=content,
         )
         chunks.append(chunk)
     
+    chunks = dedupe_chunks(chunks)
+
     return chunks
 
 
@@ -450,17 +469,46 @@ def get_chunks_by_rulebook_and_page(chunks: list[Chunk]) -> dict[tuple[str, int]
 
 
 def dedupe_chunks(chunks: list[Chunk]) -> list[Chunk]:
-    def chunk_id(chunk: Chunk) -> tuple[str, int, str]:
-        return (chunk["rulebook_name"], chunk["page"], chunk["content"])
-
-    seen_chunk_ids: set = set()
-    deduped_chunks: list[Chunk] = []
+    # Group by (rulebook_name, page), preserving first-seen order
+    groups: dict[tuple[str, int], list[Chunk]] = {}
+    group_order: list[tuple[str, int]] = []
     for chunk in chunks:
-        id = chunk_id(chunk)
-        if id not in seen_chunk_ids:
-            deduped_chunks.append(chunk)
-            seen_chunk_ids.add(id)
-    return deduped_chunks
+        key = (chunk["rulebook_name"], chunk["page"])
+        if key not in groups:
+            groups[key] = []
+            group_order.append(key)
+        groups[key].append(chunk)
+
+    result: list[Chunk] = []
+    for key in group_order:
+        group = groups[key]
+        indexed = [c for c in group if c["start_index"] >= 0]
+        unindexed = [c for c in group if c["start_index"] < 0]
+
+        # Merge overlapping/adjacent indexed chunks
+        if indexed:
+            indexed.sort(key=lambda c: c["start_index"])
+            merged: list[Chunk] = [indexed[0].copy()]
+            for chunk in indexed[1:]:
+                prev = merged[-1]
+                if chunk["start_index"] <= prev["end_index"]:  # overlap or adjacent
+                    if chunk["end_index"] > prev["end_index"]:
+                        overlap = prev["end_index"] - chunk["start_index"]
+                        prev["content"] += chunk["content"][overlap:]
+                        prev["end_index"] = chunk["end_index"]
+                    # else: fully contained, skip
+                else:
+                    merged.append(chunk.copy())
+            result.extend(merged)
+
+        # Dedup unindexed by content
+        seen: set[str] = set()
+        for chunk in unindexed:
+            if chunk["content"] not in seen:
+                result.append(chunk)
+                seen.add(chunk["content"])
+
+    return result
 
 
 def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) -> str:
@@ -932,6 +980,7 @@ class GameAgentOutputState(MessagesState):
     """The answer to the user's query"""
     evidence: list[Chunk]
     """The evidence chunks supporting the answer"""
+    valid: bool
 
 
 class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
@@ -964,6 +1013,9 @@ def get_evidence(state: GameAgentOverallState) -> list[Chunk]:
     # Add evidence from clarifying questions too
     for qa in state.get("clarifying_questions", []):
         documents.extend(qa.get("evidence", []))
+    
+    documents = dedupe_chunks(documents)
+
     return documents
 
 def sort_chunks(chunks: list[Chunk], gp: Manifest) -> list[Chunk]:
@@ -977,455 +1029,6 @@ def sort_chunks(chunks: list[Chunk], gp: Manifest) -> list[Chunk]:
         return (priority, page)
     sorted_chunks = sorted(chunks, key=chunk_sort_key)
     return sorted_chunks
-
-
-def build_game_agent_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_prompt: ChatPromptTemplate) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
-    # tools = [list_rulebooks, retrieve_page, search_chunks]
-    tools = [search_chunks]
-    tool_node = ToolNode(tools)
-
-    async def retrieve_data(state: GameAgentInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        """Retrieves relevant chunks for the given query."""
-        # chunk_search_service = runtime.context.chunk_search_service
-        manifest = runtime.context.manifest
-
-        if len(state["messages"]) == 0:
-            chat_model_with_tools = chat_model.bind_tools(tools, tool_choice="any")
-        else:
-            chat_model_with_tools = chat_model.bind_tools(tools)
-        
-        chain = qa_prompt | chat_model_with_tools
-
-        input = {
-            "game_summary": manifest.get("summary", ""),
-            "game_name": manifest["name"],
-            "query": state["query"],
-            "messages": state["messages"],
-        }
-
-        logger.info("Invoking LLM with input", message_count=len(state["messages"]))
-        try:
-            final_message = await chain.ainvoke(input, config=config)
-        except Exception as e:
-            logger.error(f"Error invoking LLM: {e}")
-            for m in state["messages"]:
-                m.pretty_print()
-            raise
-
-        return {
-            "messages": [final_message]
-        }
-
-    async def dedupe_chunks(state: GameAgentOverallState) -> dict:
-        """Dedupe chunks in the message history"""
-        messages = state["messages"]
-        message_edits = dedupe_chunks_in_message_history(messages)
-        return {
-            "messages": message_edits
-        }
-
-    async def analyze_evidence(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        """Take all the input chunks, determines which are relevant to the query, produces clarifying questions if needed, and produces an answer with evidence."""
-        manifest = runtime.context.manifest
-
-        # Gather the context we've collected so far
-        documents = get_evidence(state)
-        # Sort the chunks by their order in the rulebooks
-        #
-        # TODO: Does this help the LLM understand the context better?
-        documents = sort_chunks(documents, manifest)
-
-        answer_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system_prompt_template),
-                ("user", answer_template),
-
-            ],
-            template_format="mustache"
-        )
-
-        answer_chat_model = chat_model.with_structured_output(
-            QaResponse, include_raw=True
-        )
-        # .bind(
-        #     temperature=0.3, top_p=0.6
-        # )
-
-        chain = answer_prompt | answer_chat_model
-        chain = chain.with_config(run_name="game_agent_answer_chain")
-
-        input = dict(
-            # game_summary=manifest.get("summary", ""),
-            game_summary="",
-            game_name=manifest["name"],
-            documents=documents,
-            query=state["query"],
-            clarifying_questions_and_answers=state.get("clarifying_questions", []),
-        )
-
-        if state.get("refinement_current_partition", -1) >= 0:
-            input["draft_response"] = serialize_typeddict(state["analysis"], QaResponse)
-            logger.info("Refining analysis with draft response")
-        else:
-            input["draft_response"] = False
-            logger.info("Analyzing evidence")
-
-        result = await chain.ainvoke(input, config=config)
-        assert isinstance(result, dict)
-        parsed = result["parsed"]
-
-        return {
-            "analysis": parsed,
-        }
-
-    async def validate_analysis(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        """Validates the analysis output, ensuring all quotes are valid."""
-        # Ensure every quote reference in the response is valid
-        analysis = state["analysis"]
-        chunks = get_evidence(state)
-        quote_validation_result = tweak_and_validate_quotes_response(analysis, chunks)
-        analysis_updated = (analysis != quote_validation_result.revised_response)
-
-        # This is a pretty big thing to log, only do it if things changed
-        if analysis_updated:
-            logger.info("QAResponse before and after tweak", before=analysis, after=quote_validation_result.revised_response, invalid_quote_count=len(quote_validation_result.invalid_quotes))
-
-        analysis = quote_validation_result.revised_response
-
-        # Log as warning every invalid quote
-        if not quote_validation_result.valid:
-            for invalid_quote in quote_validation_result.invalid_quotes:
-                logger.warning(
-                    "Invalid quote detected in answer",
-                    text=invalid_quote["text"],
-                    rulebook_name=invalid_quote["rulebook_name"],
-                    page=invalid_quote["page"],
-                )
-
-        # Print all clarifying questions
-        for definition in analysis["definitions"]:
-            if definition["clarifying_question"]:
-                logger.info("Clarifying question from definition", question=definition["clarifying_question"])
-        for exception in analysis["exceptions"]:
-            if exception["clarifying_question"]:
-                logger.info("Clarifying question from exception", question=exception["clarifying_question"])
-
-        output = {}
-
-        # Include updated analysis if it changed
-        if analysis_updated:
-            output["analysis"] = analysis
-
-        # Track invalid quotes
-        output["invalid_quotes"] = quote_validation_result.invalid_quotes
-
-        if not quote_validation_result.valid:
-            # Increment validation attempts counter since we had invalid quotes
-            output["validation_attempts"] = state.get("validation_attempts", 0) + 1
-            return output
-
-        # Okay, everything is valid
-
-        # Reset validation attempts
-        output["validation_attempts"] = 0
-
-        # Build the evidence
-        #
-        # This is based off the quotes that were validated in the response. The
-        # hope is that these quotes are sufficient to support the answer.
-        evidence = compile_evidence_from_documents(
-            quote_validation_result.valid_quotes,
-            quote_validation_result.chunks_referenced
-        )
-
-        # Add evidence to output
-        output["evidence"] = evidence
-
-        return output
-
-    def partition_chunks_for_refinement(chunks: list[Chunk], num_partitions: int, manifest: Manifest) -> list[list[Chunk]]:
-        """Partition chunks into roughly equal groups for refinement."""
-        # Step 0: Sort chunks by rulebook and page
-        chunks = sort_chunks(chunks, manifest)
-
-        # Step 1: Partition by (rulebook_name, page) to keep chunks from same page
-        # together
-        chunk_groups = []
-        current_rulebook = None
-        current_page = -1
-        for chunk in chunks:
-            if chunk["rulebook_name"] != current_rulebook or chunk["page"] != current_page:
-                current_rulebook = chunk["rulebook_name"]
-                current_page = chunk["page"]
-                chunk_groups.append([])
-            chunk_groups[-1].append(chunk)
-    
-        # Step 2: Now partition these groups into num_partitions roughly equal parts
-        # Add groups to current partition until we exceed target size
-        partitions: list[list[Chunk]] = [[]]
-        target_size = max(1, len(chunks) // num_partitions)
-        for group in chunk_groups:
-            current_partition = partitions[-1]
-            current_partition.extend(group)
-            if len(current_partition) >= target_size and len(partitions) < num_partitions:
-                partitions.append([])
-
-        # Remove any empty partitions
-        partitions = [p for p in partitions if len(p) > 0]
-        return partitions
-    
-    def is_currently_refining(state: GameAgentOverallState) -> bool:
-        refine_partition = state.get("refine_current_partition", -1)
-        return -1 < refine_partition < REFINEMENT_PARTITION_NUMBER
-    
-    def clear_analysis_reasoning(analysis: QaResponse) -> QaResponse:
-        analysis = copy.deepcopy(analysis)
-        paths_to_clear = [
-            ("reasoning"),
-            ("precedence_analysis"),
-            ("identified_mechanics", "*", "reasoning"),
-        ]
-        for path in paths_to_clear:
-            def clear_path(d: Any, p: tuple):
-                if len(p) == 0:
-                    return
-                key = p[0]
-                if key == "*":
-                    if isinstance(d, list):
-                        for item in d:
-                            clear_path(item, p[1:])
-                else:
-                    if key in d:
-                        if len(p) == 1:
-                            d[key] = ""
-                        else:
-                            clear_path(d[key], p[1:])
-            clear_path(analysis, path)
-        return analysis
-
-    async def refine_analysis(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        """
-        Here we look at a validated analysis and see if we can improve it
-        further. We do this by iterative refinement, asking the LLM to improve
-        the analysis based successive groups of evidence chunks.
-        """
-        # Our current evidence will be derived from these chunks we originally
-        # retrieved.
-        chunks_from_retrieval = get_all_chunks_from_message_history(state["messages"])
-
-        current_partition_idx = state.get("refine_current_partition", -1)
-        current_partition_idx += 1
-
-        # Partition into 3 groups for refinement
-        partitions = partition_chunks_for_refinement(chunks_from_retrieval, num_partitions=REFINEMENT_PARTITION_NUMBER, manifest=runtime.context.manifest)
-
-        # Collect evidence
-        current_evidence = get_evidence(state)
-        saved_evidence = state.get("refine_saved_evidence", [])
-
-        for saved_chunk in saved_evidence:
-            if saved_chunk not in current_evidence:
-                current_evidence.append(saved_chunk)
-
-        if current_partition_idx >= REFINEMENT_PARTITION_NUMBER or current_partition_idx >= len(partitions):
-            # We're done refining
-            return {
-                "refine_current_partition": REFINEMENT_PARTITION_NUMBER,
-                # This will include any evidence that _appeared_ relevant during
-                # refinement, but maybe didn't make it into the final analysis.
-                "evidence": current_evidence,
-            }
-
-        logger.info("Partitions for refinement", partitions=partitions)
-        logger.info("Refining analysis", current_partition_idx=current_partition_idx, total_partitions=len(partitions))
-
-        current_partition = partitions[current_partition_idx]
-
-        # Include in new_evidence all chunks from the current evidence that
-        # are not part of the current partition
-        new_evidence = []
-        partition_set = set((chunk["rulebook_name"], chunk["page"]) for chunk in current_partition)
-        for chunk in current_evidence:
-            key = (chunk["rulebook_name"], chunk["page"])
-            if key not in partition_set:
-                new_evidence.append(chunk)
-        
-        # The order here, probably, matters. Our existing evidence has already
-        # survived analysis and validation, so we want the LLM to pay more
-        # attention to it. By putting it first, we hope to bias the LLM to
-        # focus on it more. The remaining chunks from the current partition go
-        # at the end.
-        new_evidence = sort_chunks(new_evidence, runtime.context.manifest)
-        current_partition = sort_chunks(current_partition, runtime.context.manifest)
-        new_evidence.extend(current_partition)
-
-        # Let's remove any existing reasoning from the current analysis to avoid
-        # confusion
-        analysis = clear_analysis_reasoning(state["analysis"])
-
-        output = {
-            "evidence": new_evidence,
-            # We need to save the current evidence in case it gets dropped
-            # during a round of refinement
-            "refine_saved_evidence": current_evidence,
-            "refine_current_partition": current_partition_idx,
-            "analysis": analysis,
-            "validation_attempts": 0,
-        }
-
-        return output
-
-    async def address_clarifying_questions(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        """If there are clarifying questions, ask them and incorporate the answers."""
-        analysis = state["analysis"]
-
-        # Collect questions to ask
-        inputs: list[GameAgentInputState] = []
-        for definition in analysis["definitions"]:
-            question = definition.get("clarifying_question", "")
-            if question:
-                game_agent_input: GameAgentInputState = {
-                    "query": question,
-                    "recursion_depth": state.get("recursion_depth", 0) + 1,
-                    "messages": [],
-                    "evidence": []
-                }
-                inputs.append(game_agent_input)
-
-        for exception in analysis["exceptions"]:
-            question = exception.get("clarifying_question", "")
-            if question:
-                game_agent_input: GameAgentInputState = {
-                    "query": question,
-                    "recursion_depth": state.get("recursion_depth", 0) + 1,
-                    "messages": [],
-                    "evidence": [],
-                }
-                inputs.append(game_agent_input)
-
-        # If for some reason we do not have any questions, return early
-        if len(inputs) == 0:
-            return {}
-
-        # Ask the questions using the game agent graph
-        responses = await agent.abatch(
-            inputs, 
-            context=runtime.context,
-            config=config
-        )
-
-        # Update the state with the answers
-        clarifying_qas: list[ClarifyingQA] = []
-        for i, response in enumerate(responses):
-            answer = response["response"]
-            question = inputs[i]["query"]
-            clarifying_qas.append(
-                ClarifyingQA(
-                    question=question,
-                    answer=answer,
-                    evidence=response["evidence"]
-                )
-            )
-
-        return {
-            "clarifying_questions": clarifying_qas,
-            "rounds_clarification": state.get("rounds_clarification", 0) + 1
-        }
-
-    async def produce_response(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        """Produce the final answer based on the analysis and clarifying questions."""
-        evidence = state.get("evidence", [])
-        logger.info("Producing response", answer=state["analysis"], evidence=evidence)
-        return {
-            "response": state["analysis"]["final_answer"],
-            "evidence": evidence,
-        }
-
-    def check_response_status(state: GameAgentOverallState) -> Literal["analyze_evidence", "address_clarifying_questions", "refine_analysis"]:
-        analysis = state["analysis"]
-
-        # If the analysis isn't valid, try analyze_evidence again
-        invalid_quotes = state.get("invalid_quotes", [])
-        if len(invalid_quotes) > 0:
-            # If we are over max attempts, just produce response
-            if state.get("validation_attempts", 0) >= 3:
-                return "refine_analysis"
-            
-            # We aren't over our max attempts, so retry analysis
-            return "analyze_evidence"
-        
-        # If there are clarifying questions to ask, go to address_clarifying_questions
-        questions_to_answer = False
-        sufficient_information = True
-        analysis = state.get("analysis")
-        if analysis:
-            sufficient_information = analysis["sufficient_information_to_answer"]
-            for definition in analysis["definitions"]:
-                if definition.get("clarifying_question", ""):
-                    questions_to_answer = True
-            for exception in analysis["exceptions"]:
-                if exception.get("clarifying_question", ""):
-                    questions_to_answer = True
-
-        at_recursion_limit = state.get("recursion_depth", 0) >= 2
-
-        if questions_to_answer and not at_recursion_limit and not sufficient_information:
-            return "address_clarifying_questions"
-        
-        # Otherwise, we're done
-        return "refine_analysis"
-    
-    def check_refinement_complete(state: GameAgentOverallState) -> Literal["produce_response", "analyze_evidence"]:
-        # We continue refining by going back to analyze_evidence which will
-        # iterate on the current analysis
-        if is_currently_refining(state):
-            return "analyze_evidence"
-        
-        # Otherwise, proceed to produce response
-        return "produce_response"
-
-    def select_start_node(state: GameAgentInputState) -> Literal["analyze_evidence", "retrieve_data"]:
-        # If provided evidence up-front, start with analyze_evidence
-        if state.get("evidence"):
-            logger.info("Starting with provided evidence, skipping data retrieval")
-            return "analyze_evidence"
-        
-        # Always start with retrieve_data
-        logger.info("Starting with data retrieval")
-        return "retrieve_data"
-
-    graph = StateGraph(
-        state_schema=GameAgentOverallState,
-        input_schema=GameAgentInputState,
-        output_schema=GameAgentOutputState,
-        context_schema=GameAgentContext,
-    )
-
-    graph.add_node("tool_node", tool_node)
-    graph.add_node("analyze_evidence", analyze_evidence)
-    graph.add_node("validate_analysis", validate_analysis)
-    graph.add_node("address_clarifying_questions", address_clarifying_questions)
-    graph.add_node("produce_response", produce_response)
-    graph.add_node("retrieve_data", retrieve_data)
-    graph.add_node("dedupe_chunks", dedupe_chunks)
-    graph.add_node("refine_analysis", refine_analysis)
-
-    graph.add_conditional_edges(START, select_start_node)
-    graph.add_edge("retrieve_data", "tool_node")
-    # TODO: As of right now, we only do one round of tool calls to retrieve data
-    # before moving on to analysis. We should consider looping back to retrieve
-    # more data if needed.
-    graph.add_edge("tool_node", "dedupe_chunks")
-    graph.add_edge("dedupe_chunks", "analyze_evidence")
-    graph.add_edge("analyze_evidence", "validate_analysis")
-    graph.add_conditional_edges("validate_analysis", check_response_status)
-    graph.add_conditional_edges("refine_analysis", check_refinement_complete)
-    graph.add_edge("address_clarifying_questions", "analyze_evidence")
-    graph.add_edge("produce_response", END)
-
-    # Compile the agent
-    agent = graph.compile(checkpointer=checkpoint_saver)
-    return agent
 
 
 class QuestionAnalysisOverallState(MessagesState):
@@ -1764,6 +1367,10 @@ def build_coordinating_agent_graph(
 
         subquestions_answers: list[ClarifyingQA] = []
         for question, response in zip(subquestions, responses):
+            if not response["valid"]:
+                logger.error("Subquestion answer was not valid", question=question, answer=response["response"])
+                continue
+
             subquestions_answers.append(
                 ClarifyingQA(
                     question=question,
@@ -1786,21 +1393,12 @@ def build_coordinating_agent_graph(
         for qa in state.get("clarifying_questions", []):
             evidence.extend(qa["evidence"])
         
-        # Deduplicate evidence
-        seen = set()
-        deduped_evidence = []
-        for chunk in evidence:
-            # TODO: We still get duplicates... I think we get slight rewordings
-            # of the same thing maybe?
-            chunk_key = (chunk["rulebook_name"], chunk["page"], chunk["content"][:100])
-            if chunk_key not in seen:
-                seen.add(chunk_key)
-                deduped_evidence.append(chunk)
+        evidence = dedupe_chunks(evidence)
 
         input = {
             "query": state["query"],
             "clarifying_questions": state.get("clarifying_questions", []),
-            # "evidence": deduped_evidence
+            "evidence": evidence
         }
         response = await game_agent.ainvoke(
             input,
@@ -2002,6 +1600,19 @@ def build_question_answer_graph(
         answer_valid_quotes, answer_invalid_quotes = get_quotes(answer_result)
 
         if len(reasoning_invalid_quotes) > 0 or len(answer_invalid_quotes) > 0:
+            if state.get("validation_attempts", 0) < 4:
+                logger.warning(
+                    "Invalid quotes found, will attempt to re-answer the question",
+                    invalid_quotes=reasoning_invalid_quotes + answer_invalid_quotes,
+                    attempt=state.get("validation_attempts", 0) + 1
+                )
+            else:
+                logger.error(
+                    "Invalid quotes found but maximum validation attempts reached, returning error response",
+                    invalid_quotes=reasoning_invalid_quotes + answer_invalid_quotes,
+                    attempt=state.get("validation_attempts", 0),
+                    documents=documents,
+                )
             logger.info(
                 "Invalid quotes found during validation",
                 invalid_quotes=reasoning_invalid_quotes + answer_invalid_quotes,
@@ -2042,6 +1653,9 @@ def build_question_answer_graph(
         documents = sort_chunks(documents, runtime.context.manifest)
         manifest = runtime.context.manifest
 
+        # TODO: The prompt might now be too long to fit into the context window,
+        # this is because we budgeted for retrieval without considering the size
+        # of the answer + reasoning (since it hadn't been generated yet)
         format_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", system_prompt_template),
@@ -2073,6 +1687,7 @@ def build_question_answer_graph(
             for iq in invalid_quotes:
                 logger.warning(
                     "Invalid quote in formatted answer",
+                    answer=result.text,
                     text=iq["text"],
                     rulebook_name=iq["rulebook_name"],
                     page=iq["page"],
@@ -2096,9 +1711,14 @@ def build_question_answer_graph(
         }
 
     async def provide_response(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        evidence = state.get("evidence", [])
+        if not evidence:
+            evidence = get_evidence(state)
+
         return {
             "response": state["response"],
-            "evidence": get_evidence(state),
+            "evidence": evidence,
+            "valid": len(state.get("invalid_quotes", [])) == 0,
         }
 
     async def check_validation_result(state: GameAgentOverallState) -> Literal["format_answer", "answer_question"]:
@@ -2141,8 +1761,9 @@ def build_question_answer_graph(
     graph.add_edge("retrieve_data", "tool_node")
     graph.add_edge("tool_node", "dedupe_chunks")
     graph.add_edge("dedupe_chunks", "answer_question")
-    graph.add_edge("answer_question", "validate_answer")
-    graph.add_conditional_edges("validate_answer", check_validation_result)
+    graph.add_edge("answer_question", "format_answer")
+    # graph.add_edge("answer_question", "validate_answer")
+    # graph.add_conditional_edges("validate_answer", check_validation_result)
     graph.add_conditional_edges("format_answer", check_format_result)
     graph.add_edge("provide_response", END)
 
@@ -2166,15 +1787,23 @@ def build_qa_service(
     qa_prompt: ChatPromptTemplate=qa_prompt,
     tokenizer: Any = None,
 ) -> QAService:
-    # agent_graph = build_game_agent_graph(
-    #     checkpoint_saver,
-    #     chat_model,
-    #     qa_prompt
-    # )
-    agent_graph = build_question_answer_graph(
+
+    analyze_graph = build_analyze_question_graph(
         checkpoint_saver,
         chat_model,
         tokenizer
+    )
+
+    qa_graph = build_question_answer_graph(
+        checkpoint_saver,
+        chat_model,
+        tokenizer
+    )
+
+    coord_graph = build_coordinating_agent_graph(
+        checkpoint_saver,
+        analyze_question_agent=analyze_graph,
+        game_agent=qa_graph,
     )
 
     # Create a custom Runnable that properly handles both streaming and non-streaming
@@ -2188,7 +1817,7 @@ def build_qa_service(
             chunk_search_service=chunk_search_service,
         )
 
-        result = await agent_graph.ainvoke(
+        result = await coord_graph.ainvoke(
             cast(GameAgentInputState, {k: v for k, v in input.items() if k != "manifest"}),
             context=context,
             config=config,

@@ -11,6 +11,7 @@ from meeplemate.ingest.dataimport import ImportDocumentsJob, run_import_document
 from meeplemate.ingest.gamepackage import load_game_package
 from meeplemate.ingest.initgp import InitGamePackageJob
 from meeplemate.ingest.ocr import OcrJob
+from meeplemate.ingest.documentmetadata import DocumentMetadataJobJob
 from meeplemate.ingest.summary import ExtractTerminologyJob, GenerateGameReferenceJob, save_manifest
 
 logger = structlog.get_logger(__name__)
@@ -82,6 +83,32 @@ def ocr(path: Path):
                 {
                     "ocr_client": "ocr_client"
                 }
+            )
+        }
+    )
+    async def _run():
+        async with system.astart() as services:
+            pass
+    
+    asyncio.run(_run())
+
+
+@cli.command()
+@click.argument("path", type=Path)
+def add_metadata(path: Path):
+    settings: Config = Config()
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "page_metadata_job": (
+                afactory(
+                    DocumentMetadataJobJob,
+                    astart=DocumentMetadataJobJob.run,
+                )(
+                    path=path,
+                ),
+                []
             )
         }
     )

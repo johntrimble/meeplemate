@@ -321,7 +321,8 @@ async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retri
                         {
                             "rulebook_name": item["rulebook"],
                             "page": item["page"],
-                            "offset": item.get("offset", -1),
+                            "start_index": item.get("start_index", -1),
+                            "end_index": item.get("end_index", -1),
                             "content": item["quote"],
                         }
                     )

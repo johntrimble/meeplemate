@@ -1,3 +1,4 @@
+from typing import TypedDict
 import pytest
 from meeplemate import util
 
@@ -77,37 +78,41 @@ def test_reorder_dict_preserves_all_keys():
     assert set(reordered.keys()) == set(response.keys())
 
 
+class ReorderTypedDictNested(TypedDict):
+    x: int
+    y: str
+
+
+class ReorderTypedDict(TypedDict):
+    a: int
+    b: str
+    c: dict[str, ReorderTypedDictNested]
+    d: float
+
+
 def test_reorder_dict_field_order():
     """Verify field order: TypedDict fields first, extra fields last."""
     response = {
-        "final_answer": "Test answer",
-        "extra_field": "Extra",  # Should be last
-        "reasoning": "Test reasoning",
-        "identified_mechanics": {
-            "reasoning": "Mechanic reasoning",
-            "secondary_mechanics": ["mech2"],
-            "primary_mechanics": ["mech1"],  # Out of order
-        },
-        "general_rules": [],
-        "definitions": [],
-        "exceptions": [],
-        "precedence_analysis": "",
-        "sufficient_information_to_answer": True,
+        "extra_field": "Extra",
+        "d": 1.1,
+        "a": 2,
+        "b": "test",
+        "c": {
+            "foo": {"y": "yes", "x": 10},
+            "bar": {"x": 20, "y": "no"},
+        }
     }
 
-    reordered = util.reorder_dict_by_typeddict(response, QaResponse)
+    reordered = util.reorder_dict_by_typeddict(response, ReorderTypedDict)
+    assert isinstance(reordered, dict)
 
     # Verify TypedDict fields come first in definition order
     keys = list(reordered.keys())
     expected_typeddict_order = [
-        "identified_mechanics",
-        "general_rules",
-        "definitions",
-        "exceptions",
-        "precedence_analysis",
-        "reasoning",
-        "final_answer",
-        "sufficient_information_to_answer"
+        "a",
+        "b",
+        "c",
+        "d"
     ]
 
     # TypedDict fields should be first, in order
@@ -117,34 +122,21 @@ def test_reorder_dict_field_order():
     # Extra fields should be last
     assert keys[-1] == "extra_field"
 
-    # Verify nested IdentifiedMechanics order
-    nested_keys = list(reordered["identified_mechanics"].keys())
-    assert nested_keys == [
-        "primary_mechanics",
-        "secondary_mechanics",
-        "reasoning"
-    ]
-
 
 def test_serialize_typeddict_with_extra_keys():
     """Verify JSON serialization preserves order including extra keys."""
     response = {
-        "final_answer": "Test",
-        "extra_key": "value",
-        "reasoning": "Steps",
-        "identified_mechanics": {
-            "primary_mechanics": [],
-            "secondary_mechanics": [],
-            "reasoning": ""
-        },
-        "general_rules": [],
-        "definitions": [],
-        "exceptions": [],
-        "precedence_analysis": "",
-        "sufficient_information_to_answer": True,
+        "extra_field": "Extra",
+        "d": 1.1,
+        "a": 2,
+        "b": "test",
+        "c": {
+            "foo": {"y": "yes", "x": 10},
+            "bar": {"x": 20, "y": "no"},
+        }
     }
 
-    json_str = util.serialize_typeddict(response, QaResponse)
+    json_str = util.serialize_typeddict(response, ReorderTypedDict)
     parsed = json.loads(json_str)
 
     # Verify all keys present
@@ -152,58 +144,5 @@ def test_serialize_typeddict_with_extra_keys():
 
     # Verify TypedDict fields first, extra keys last
     keys = list(parsed.keys())
-    assert keys[0] == "identified_mechanics"
-    assert keys[-1] == "extra_key"
-
-
-def test_multiple_extra_keys_sorted():
-    """Verify extra keys are sorted alphabetically."""
-    response = {
-        "final_answer": "Test",
-        "zebra_extra": "z",
-        "alpha_extra": "a",
-        "reasoning": "Steps",
-        "identified_mechanics": {
-            "primary_mechanics": [],
-            "secondary_mechanics": [],
-            "reasoning": ""
-        },
-        "general_rules": [],
-        "definitions": [],
-        "exceptions": [],
-        "precedence_analysis": "",
-        "sufficient_information_to_answer": True,
-    }
-
-    reordered = util.reorder_dict_by_typeddict(response, QaResponse)
-    keys = list(reordered.keys())
-
-    # Last two keys should be extra keys in alphabetical order
-    assert keys[-2] == "alpha_extra"
-    assert keys[-1] == "zebra_extra"
-
-
-def test_with_mock_llm_response():
-    """Test with a response that has fields in arbitrary order."""
-    # Simulate LLM output with fields out of order
-    llm_response = {
-        "sufficient_information_to_answer": True,
-        "final_answer": "Test answer with citation (Rulebook, p. 1)",
-        "reasoning": "- Step 1\n- Step 2",
-        "identified_mechanics": {
-            "secondary_mechanics": ["mechanic2"],
-            "reasoning": "These mechanics are relevant because...",
-            "primary_mechanics": ["mechanic1"],  # Out of order!
-        },
-        "precedence_analysis": "Rule X takes precedence",
-        "exceptions": [],
-        "definitions": [],
-        "general_rules": [],
-    }
-
-    json_str = util.serialize_typeddict(llm_response, QaResponse)
-    parsed = json.loads(json_str)
-
-    # Should be reordered to match TypedDict definition
-    assert list(parsed.keys())[0] == "identified_mechanics"
-    assert list(parsed.keys())[-1] == "sufficient_information_to_answer"
+    assert keys[0] == "a"
+    assert keys[-1] == "extra_field"

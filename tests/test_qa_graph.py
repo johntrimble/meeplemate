@@ -1,6 +1,6 @@
 from langchain.messages import AnyMessage, ToolMessage
 from langchain_core.messages.content import ToolCall
-from meeplemate.qa_graph import Chunk, ChunkSearchResult, QaResponse, dedupe_chunks_in_message_history, fix_quote_citations_in_text, get_chunk_id_tuple, tweak_and_validate_quotes_response
+from meeplemate.qa_graph import Chunk, ChunkSearchResult, QaResponse, dedupe_chunks, dedupe_chunks_in_message_history, fix_quote_citations_in_text, get_chunk_id_tuple, tweak_and_validate_quotes_response
 from langchain_core.messages import AIMessage, BaseMessage
 from typing import List
 import json
@@ -11,7 +11,8 @@ def test_dedupe_chunks_in_message_history():
         chunk=Chunk(
             rulebook_name="Rulebook 1",
             page=1,
-            offset=3,
+            start_index=3,
+            end_index=-1,
             content="This is chunk 1",
         ),
         relevance_reason="Relevant to the query",
@@ -20,7 +21,8 @@ def test_dedupe_chunks_in_message_history():
         chunk=Chunk(
             rulebook_name="Rulebook 1",
             page=2,
-            offset=5,
+            start_index=5,
+            end_index=-1,
             content="This is chunk 2",
         ),
         relevance_reason="Also relevant to the query",
@@ -29,7 +31,8 @@ def test_dedupe_chunks_in_message_history():
         chunk=Chunk(
             rulebook_name="Rulebook 2",
             page=1,
-            offset=0,
+            start_index=0,
+            end_index=-1,
             content="This is chunk 3",
         ),
         relevance_reason="Somewhat relevant to the query",
@@ -112,7 +115,8 @@ def test_validation():
                 'a Hireling an Item to carry while you are in combat, however.\n'
                 '\n'
                 '## COMBAT',
-            'offset': 3678,
+            'start_index': 3678,
+            'end_index': -1,
             'page': 2,
             'rulebook_name': 'Munchkin Rules'
         },
@@ -158,7 +162,8 @@ def test_validation():
                 'partner are in combat - in fact, the best time to trade is when '
                 "it's not your turn. Any Item you receive in a trade must remain "
                 'in play.',
-            'offset': 1729,
+            'start_index': 1729,
+            'end_index': -1,
             'page': 2,
             'rulebook_name': 'Munchkin Rules'
         },
@@ -278,7 +283,8 @@ def test_validation_citation_on_separate_line():
     chunks: List[Chunk] = [
         {
             'content': 'One- shot Items with a Gold Piece value may be sold for levels, just like other Items.',
-            'offset': 0,
+            'start_index': 0,
+            'end_index': -1,
             'page': 5,
             'rulebook_name': 'Game Rules'
         }
@@ -315,7 +321,8 @@ def test_validation_multiline_blockquote_separate_citation():
     chunks: List[Chunk] = [
         {
             'content': 'First line of the rule continues here with more text and even more content on multiple lines.',
-            'offset': 0,
+            'start_index': 0,
+            'end_index': -1,
             'page': 3,
             'rulebook_name': 'Test Book'
         }
@@ -353,7 +360,8 @@ def test_validation_blockquote_citation_already_inline():
     chunks: List[Chunk] = [
         {
             'content': 'Items can be sold for levels.',
-            'offset': 0,
+            'start_index': 0,
+            'end_index': -1,
             'page': 1,
             'rulebook_name': 'Rules'
         }
@@ -389,13 +397,15 @@ def test_validation_mixed_quote_types():
     chunks: List[Chunk] = [
         {
             'content': 'Blockquote text here.',
-            'offset': 0,
+            'start_index': 0,
+            'end_index': -1,
             'page': 1,
             'rulebook_name': 'Book A'
         },
         {
             'content': 'Inline quote text here.',
-            'offset': 100,
+            'start_index': 100,
+            'end_index': -1,
             'page': 2,
             'rulebook_name': 'Book B'
         }
@@ -433,7 +443,8 @@ def test_validation_removes_standalone_citation():
     chunks: List[Chunk] = [
         {
             'content': 'Some rule text.',
-            'offset': 0,
+            'start_index': 0,
+            'end_index': -1,
             'page': 1,
             'rulebook_name': 'Book'
         }
@@ -468,13 +479,15 @@ def test_validation_multiple_blockquotes_separate_citations():
     chunks: List[Chunk] = [
         {
             'content': 'First rule text.',
-            'offset': 0,
+            'start_index': 0,
+            'end_index': -1,
             'page': 1,
             'rulebook_name': 'Book'
         },
         {
             'content': 'Second rule text.',
-            'offset': 100,
+            'start_index': 100,
+            'end_index': -1,
             'page': 2,
             'rulebook_name': 'Book'
         }
@@ -527,13 +540,15 @@ def test_multiline_blockquote_citation_next_line():
             "content": warpstorm_scroll,
             "rulebook_name": "Warhammer Magic",
             "page": 44,
-            "offset": 0,
+            "start_index": 0,
+            "end_index": -1,
         },
         {
             "content": flying_high,
             "rulebook_name": "Warhammer Rulebook",
             "page": 74,
-            "offset": 0
+            "start_index": 0,
+            "end_index": -1
         }
     ]
 
@@ -609,7 +624,8 @@ def test_fix_quote_citations_in_text():
             "content": chunk_content,
             "rulebook_name": "Some Rulebook",
             "page": 44,
-            "offset": 0,
+            "start_index": 0,
+            "end_index": -1,
         },
     ]
 
@@ -667,19 +683,22 @@ def test_fix_quote_citations_in_text_2():
             "content": "The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away This is called a Break test.",
             "rulebook_name": "Warhammer Rulebook",
             "page": 42,
-            "offset": 0,
+            "start_index": 0,
+            "end_index": -1,
         },
         {
             "content": "The unit never needs test for any of the psychology rules, whether panic, fear, terror or whatever. The Knights are unaffected by any psychology.",
             "rulebook_name": "Bretonnia Army Book",
             "page": 49,
-            "offset": 0,
+            "start_index": 0,
+            "end_index": -1,
         },
         {
             "content": "However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.",
             "rulebook_name": "Warhammer Rulebook",
             "page": 47,
-            "offset": 0,
+            "start_index": 0,
+            "end_index": -1,
         },
     ]
 
@@ -756,19 +775,22 @@ def test_fix_quote_citations_in_text_3():
             "content": "The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test.",
             "rulebook_name": "Warhammer Rulebook",
             "page": 42,
-            "offset": 0,
+            "start_index": 0,
+            "end_index": -1,
         },
         {
             "content": "Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.",
             "rulebook_name": "Bretonnia Army Book",
             "page": 44,
-            "offset": 0,
+            "start_index": 0,
+            "end_index": -1,
         },
         {
             "content": "However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.",
             "rulebook_name": "Warhammer Rulebook",
             "page": 47,
-            "offset": 0,
+            "start_index": 0,
+            "end_index": -1,
         },
     ]
 
@@ -787,9 +809,9 @@ def test_fix_quote_citations_duplicate_chunks():
 
     # Multiple chunks for the same (rulebook, page) key
     chunks: list[Chunk] = [
-        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "offset": 0},
-        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "offset": -1},
-        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "offset": -2},
+        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "start_index": 0, "end_index": -1},
+        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "start_index": -1, "end_index": -1},
+        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "start_index": -2, "end_index": -1},
     ]
 
     before = inspect.cleandoc(
@@ -815,3 +837,97 @@ def test_fix_quote_citations_duplicate_chunks():
 
     result = fix_quote_citations_in_text(before, chunks)
     assert result.fixed_text == expected
+
+
+def test_dedupe_chunks_overlapping():
+    """Overlapping indexed chunks are merged with correct content and indices."""
+    chunks: list[Chunk] = [
+        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 20, "content": "AAAAAAAAAABBBBBBBBBB"},
+        {"rulebook_name": "Rules", "page": 1, "start_index": 10, "end_index": 30, "content": "BBBBBBBBBBCCCCCCCCCC"},
+    ]
+    result = dedupe_chunks(chunks)
+    assert len(result) == 1
+    assert result[0]["start_index"] == 0
+    assert result[0]["end_index"] == 30
+    assert result[0]["content"] == "AAAAAAAAAABBBBBBBBBBCCCCCCCCCC"
+
+
+def test_dedupe_chunks_adjacent():
+    """Adjacent indexed chunks are merged."""
+    chunks: list[Chunk] = [
+        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 10, "content": "AAAAAAAAAA"},
+        {"rulebook_name": "Rules", "page": 1, "start_index": 10, "end_index": 20, "content": "BBBBBBBBBB"},
+    ]
+    result = dedupe_chunks(chunks)
+    assert len(result) == 1
+    assert result[0]["start_index"] == 0
+    assert result[0]["end_index"] == 20
+    assert result[0]["content"] == "AAAAAAAAAABBBBBBBBBB"
+
+
+def test_dedupe_chunks_fully_contained():
+    """A chunk fully contained within another is absorbed."""
+    chunks: list[Chunk] = [
+        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 30, "content": "AAAAAAAAAABBBBBBBBBBCCCCCCCCCC"},
+        {"rulebook_name": "Rules", "page": 1, "start_index": 5, "end_index": 15, "content": "AAAAABBBBB"},
+    ]
+    result = dedupe_chunks(chunks)
+    assert len(result) == 1
+    assert result[0]["start_index"] == 0
+    assert result[0]["end_index"] == 30
+    assert result[0]["content"] == "AAAAAAAAAABBBBBBBBBBCCCCCCCCCC"
+
+
+def test_dedupe_chunks_no_overlap():
+    """Non-overlapping indexed chunks are kept separate."""
+    chunks: list[Chunk] = [
+        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 10, "content": "AAAAAAAAAA"},
+        {"rulebook_name": "Rules", "page": 1, "start_index": 20, "end_index": 30, "content": "CCCCCCCCCC"},
+    ]
+    result = dedupe_chunks(chunks)
+    assert len(result) == 2
+    assert result[0]["content"] == "AAAAAAAAAA"
+    assert result[1]["content"] == "CCCCCCCCCC"
+
+
+def test_dedupe_chunks_unindexed():
+    """Unindexed chunks dedup by content as before."""
+    chunks: list[Chunk] = [
+        {"rulebook_name": "Rules", "page": 1, "start_index": -1, "end_index": -1, "content": "same text"},
+        {"rulebook_name": "Rules", "page": 1, "start_index": -1, "end_index": -1, "content": "same text"},
+        {"rulebook_name": "Rules", "page": 1, "start_index": -1, "end_index": -1, "content": "different text"},
+    ]
+    result = dedupe_chunks(chunks)
+    assert len(result) == 2
+    assert result[0]["content"] == "same text"
+    assert result[1]["content"] == "different text"
+
+
+def test_dedupe_chunks_mixed_indexed_and_unindexed():
+    """Indexed and unindexed chunks in the same group are handled separately."""
+    chunks: list[Chunk] = [
+        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 10, "content": "AAAAAAAAAA"},
+        {"rulebook_name": "Rules", "page": 1, "start_index": -1, "end_index": -1, "content": "unindexed chunk"},
+        {"rulebook_name": "Rules", "page": 1, "start_index": 5, "end_index": 15, "content": "AAAAABBBBB"},
+    ]
+    result = dedupe_chunks(chunks)
+    # Indexed chunks merge into one, unindexed kept separately
+    assert len(result) == 2
+    indexed = [c for c in result if c["start_index"] >= 0]
+    unindexed = [c for c in result if c["start_index"] < 0]
+    assert len(indexed) == 1
+    assert indexed[0]["start_index"] == 0
+    assert indexed[0]["end_index"] == 15
+    assert indexed[0]["content"] == "AAAAAAAAAA" + "BBBBB"
+    assert len(unindexed) == 1
+    assert unindexed[0]["content"] == "unindexed chunk"
+
+
+def test_dedupe_chunks_different_pages():
+    """Chunks from different pages are never merged."""
+    chunks: list[Chunk] = [
+        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 10, "content": "page 1 text"},
+        {"rulebook_name": "Rules", "page": 2, "start_index": 0, "end_index": 10, "content": "page 2 text"},
+    ]
+    result = dedupe_chunks(chunks)
+    assert len(result) == 2

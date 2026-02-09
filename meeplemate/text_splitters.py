@@ -42,12 +42,9 @@ class FixedRecursiveCharacterTextSplitter(RecursiveCharacterTextSplitter):
         self, texts: list[str], metadatas: list[dict[Any, Any]] | None = None
     ) -> list[Document]:
         """Create documents from a list of texts with corrected start_index handling."""
-        # If we have a tokenizer, use the precise offset-based approach
-        if self._tokenizer is not None and hasattr(self._tokenizer, "encode_plus"):
-            return self._create_documents_with_tokenizer(texts, metadatas)
-
-        # Otherwise, delegate to parent class (which has the bug, but we only fix tokenizer case)
-        return super().create_documents(texts, metadatas)
+        assert self._tokenizer is not None and hasattr(self._tokenizer, "encode_plus"), \
+            "FixedRecursiveCharacterTextSplitter requires a HuggingFace tokenizer"
+        return self._create_documents_with_tokenizer(texts, metadatas)
 
     def _create_documents_with_tokenizer(
         self, texts: list[str], metadatas: list[dict[Any, Any]] | None = None
@@ -110,6 +107,7 @@ class FixedRecursiveCharacterTextSplitter(RecursiveCharacterTextSplitter):
                             index = text.find(chunk, 0)
 
                     metadata["start_index"] = index
+                    metadata["end_index"] = index + len(chunk) if index != -1 else -1
 
                 new_doc = Document(page_content=chunk, metadata=metadata)
                 documents.append(new_doc)
