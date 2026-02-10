@@ -3,7 +3,17 @@ from collections import Counter
 
 from pytest_unordered import unordered
 
-from meeplemate.quote_util import expand_to_full_paragraphs, find_quote_with_gaps, find_quotes_in_text
+from meeplemate.quote_util import (
+    expand_to_full_paragraphs,
+    find_quote_with_gaps,
+    find_quotes_in_text,
+    split_quote_parts,
+    strip_blockquote_markers_and_quotes,
+    strip_html_tags,
+    strip_html_tags_with_map,
+    strip_latex,
+    strip_latex_with_map,
+)
 
 def test_find_quotes_in_text():
     sample_answer = """
@@ -67,7 +77,7 @@ def test_find_quotes_in_text():
             },
             'end_index': 422,
             'quote': 'Some text here that goes on and on and on. It even spans multiple '
-            'lines!  With empty lines even!',
+            'lines!\n\nWith empty lines even!',
             'quote_type': 'blockquote',
             'start_index': 290,
             'text': '> Some text here that goes on and on and on.\n'
@@ -114,6 +124,24 @@ def test_find_quote_with_gaps():
     result = find_quote_with_gaps(sample_document_text, "Look at all the txt we have here.")
     assert result is not None
     assert result.matched_text == "Look at all the text we have here."
+
+
+def test_find_quote_with_gaps_near_end_of_long_document():
+    """Quote near end of a document longer than window_size must still be found.
+
+    Regression test: the sliding-window loop could leave up to window_step-1
+    trailing characters uncovered, causing quotes at the tail to be missed.
+    """
+    # Build a document just over the default window_size (1200 normalised chars)
+    # with the target quote sitting at the very end.
+    filler = "All work and no play makes Jack a dull boy. " * 30  # ~1350 chars
+    target = "The treasure is buried under the old oak tree by the river."
+    doc = filler + "\n\n" + target
+
+    result = find_quote_with_gaps(doc, target)
+    assert result is not None, "Quote at the tail of a long document should be found"
+    assert target in result.matched_text
+    assert result.score >= 85
 
 
 def test_expand_to_full_paragraphs_with_heading_blank_line():
@@ -248,3 +276,283 @@ def test_expand_to_full_paragraphs_all_exceeds_max_chars():
 
     # Should return just the matched text
     assert result == "the quote we're searching"
+
+
+# ---------------------------------------------------------------------------
+# LaTeX stripping
+# ---------------------------------------------------------------------------
+
+
+def test_strip_latex_with_map_prime():
+    r"""\\prime inside inline math is replaced with apostrophe."""
+    s = r"within \(12^{\prime \prime}\) of the"
+    stripped, idx_map = strip_latex_with_map(s)
+    # Space between \prime commands is preserved (collapsed later by normalize)
+    assert stripped == "within 12' ' of the"
+    assert len(idx_map) == len(stripped)
+    assert all(0 <= i < len(s) for i in idx_map)
+    # Monotonically non-decreasing
+    for i in range(1, len(idx_map)):
+        assert idx_map[i] >= idx_map[i - 1]
+
+
+def test_strip_latex_with_map_circ():
+    r"""\\circ inside inline math is replaced with degree sign."""
+    s = r"within \(12^{\circ}\) of"
+    stripped, idx_map = strip_latex_with_map(s)
+    assert stripped == "within 12\u00b0 of"
+    assert len(idx_map) == len(stripped)
+
+
+def test_strip_latex_with_map_simple_math():
+    """Simple arithmetic in inline math passes through."""
+    s = r"gives him \(3 + 3 = 6\) points"
+    stripped, idx_map = strip_latex_with_map(s)
+    assert stripped == "gives him 3 + 3 = 6 points"
+    assert len(idx_map) == len(stripped)
+
+
+def test_strip_latex_with_map_plus_value():
+    """Signed number in inline math passes through."""
+    s = r"an extra \(+1\) combat bonus"
+    stripped, idx_map = strip_latex_with_map(s)
+    assert stripped == "an extra +1 combat bonus"
+
+
+def test_strip_latex_with_map_no_latex():
+    """Text without LaTeX passes through unchanged with identity map."""
+    s = "plain text with no latex at all"
+    stripped, idx_map = strip_latex_with_map(s)
+    assert stripped == s
+    assert idx_map == list(range(len(s)))
+
+
+def test_strip_latex_with_map_multiple_regions():
+    r"""Multiple inline math regions in one string are all processed."""
+    s = r"within \(12^{\prime \prime}\) and \(8^{\circ}\) away"
+    stripped, idx_map = strip_latex_with_map(s)
+    assert "12' '" in stripped
+    assert "8\u00b0" in stripped
+    assert len(idx_map) == len(stripped)
+
+
+def test_strip_latex_no_map():
+    """strip_latex returns only the stripped string."""
+    assert strip_latex(r"within \(12^{\prime \prime}\) of") == "within 12' ' of"
+
+
+# ---------------------------------------------------------------------------
+# find_quote_with_gaps – LaTeX integration
+# ---------------------------------------------------------------------------
+
+
+def test_find_quote_with_gaps_latex_prime():
+    r"""Quote with plain quotes matches document with \\prime LaTeX notation."""
+    doc = (
+        r"Any unit within \(12^{\prime \prime}\) of the general model "
+        r"may use the general's Leadership value instead of its own "
+        r"when making a Leadership-based test."
+    )
+    quote = "Any unit within 12\u2019\u2019 of the general model may use the general\u2019s Leadership value"
+    result = find_quote_with_gaps(doc, quote)
+    assert result is not None
+    assert result.score >= 85
+    assert "12" in result.matched_text
+    assert "Leadership value" in result.matched_text
+
+
+def test_find_quote_with_gaps_latex_circ():
+    r"""Quote with plain inch marks matches document with \\circ LaTeX notation."""
+    doc = (
+        r"each remaining unit within \(12^{\circ}\) of friendly units "
+        r"which have broken or been wiped out"
+    )
+    quote = 'each remaining unit within 12" of friendly units which have broken'
+    result = find_quote_with_gaps(doc, quote)
+    assert result is not None
+    assert result.score >= 85
+
+
+def test_find_quote_with_gaps_latex_battle_standard_regression():
+    r"""Real regression: battle standard quote was marked unfixable due to \\prime \\prime."""
+    doc = (
+        r"Any unit within \(12^{\prime \prime}\) of the battle standard "
+        r"may retake a failed Break test. The unit is only allowed to "
+        r"retake this test once."
+    )
+    quote = "Any unit within 12\u2019\u2019 of the battle standard may re-take a failed Break test."
+    result = find_quote_with_gaps(doc, quote)
+    assert result is not None, "This quote was previously marked unfixable"
+    assert result.score >= 85
+
+
+def test_find_quote_with_gaps_latex_matched_text_from_original():
+    r"""matched_text should extract from the original LaTeX-containing document."""
+    doc = r"foo bar \(12^{\prime \prime}\) baz qux"
+    quote = "bar 12'' baz"
+    result = find_quote_with_gaps(doc, quote)
+    assert result is not None
+    # matched_text must be a substring of the original doc
+    assert doc[result.start : result.end] == result.matched_text
+    # It should contain the original LaTeX notation
+    assert r"\prime" in result.matched_text
+
+
+# ---------------------------------------------------------------------------
+# HTML tag stripping
+# ---------------------------------------------------------------------------
+
+
+def test_strip_html_tags_with_map_simple():
+    """Simple HTML tags are replaced with spaces."""
+    s = "Hello <b>world</b> test"
+    stripped, idx_map = strip_html_tags_with_map(s)
+    # Tags become spaces; extra spaces collapsed later by normalize
+    assert stripped == "Hello  world  test"
+    assert len(idx_map) == len(stripped)
+    assert all(0 <= i < len(s) for i in idx_map)
+    for i in range(1, len(idx_map)):
+        assert idx_map[i] >= idx_map[i - 1]
+
+
+def test_strip_html_tags_with_map_table():
+    """HTML table markup is replaced with spaces, preserving word boundaries."""
+    s = "<table><tr><td>Grail Knights</td><td>4</td><td>5</td></tr></table>"
+    stripped, idx_map = strip_html_tags_with_map(s)
+    # Tags become spaces (collapsed later by normalize)
+    assert "Grail Knights" in stripped
+    assert " 4 " in stripped
+    assert " 5 " in stripped
+    assert len(idx_map) == len(stripped)
+
+
+def test_strip_html_tags_with_map_no_html():
+    """Text without HTML passes through unchanged with identity map."""
+    s = "plain text with no html"
+    stripped, idx_map = strip_html_tags_with_map(s)
+    assert stripped == s
+    assert idx_map == list(range(len(s)))
+
+
+def test_strip_html_tags_with_map_center():
+    """<center> tags become spaces, content preserved."""
+    s = "<center>Some centered text</center>"
+    stripped, idx_map = strip_html_tags_with_map(s)
+    assert stripped == " Some centered text "
+    assert len(idx_map) == len(stripped)
+
+
+def test_strip_html_tags_no_map():
+    """strip_html_tags returns only the stripped string."""
+    assert strip_html_tags("<td>hello</td>") == " hello "
+
+
+# ---------------------------------------------------------------------------
+# find_quote_with_gaps – HTML table integration
+# ---------------------------------------------------------------------------
+
+
+def test_find_quote_with_gaps_html_table_regression():
+    """Pipe-delimited quote matches document with HTML table markup."""
+    doc = (
+        '<table><tr><td></td><td>M</td><td>WS</td><td>BS</td><td>S</td>'
+        '<td>T</td><td>W</td><td>I</td><td>A</td><td>Ld</td></tr>'
+        '<tr><td>Grail Knights</td><td>4</td><td>5</td><td>3</td>'
+        '<td>4</td><td>3</td><td>1</td><td>4</td><td>1</td><td>9</td></tr></table>'
+    )
+    quote = "| Grail Knights | 4 | 5 | 3 | 4 | 3 | 1 | 4 | 1 | 9 |"
+    result = find_quote_with_gaps(doc, quote)
+    assert result is not None, "HTML table quote was previously marked unfixable"
+    assert result.score >= 85
+
+
+def test_find_quote_with_gaps_html_table_matched_text_from_original():
+    """matched_text from HTML table match should reference original document."""
+    doc = "Some text <table><tr><td>A</td><td>B</td></tr></table> more text"
+    quote = "A B"
+    result = find_quote_with_gaps(doc, quote)
+    assert result is not None
+    assert doc[result.start : result.end] == result.matched_text
+    # Should contain original HTML
+    assert "<td>" in result.matched_text or "A" in result.matched_text
+
+
+# ---------------------------------------------------------------------------
+# strip_blockquote_markers_and_quotes – paragraph breaks
+# ---------------------------------------------------------------------------
+
+
+def test_strip_blockquote_markers_preserves_paragraph_breaks():
+    """Blank > lines become \\n\\n paragraph breaks."""
+    raw = "> First paragraph.\n>\n> Second paragraph."
+    result = strip_blockquote_markers_and_quotes(raw)
+    assert result == "First paragraph.\n\nSecond paragraph."
+
+
+def test_strip_blockquote_markers_joins_continuation_lines():
+    """Consecutive > lines within a paragraph join with a single space."""
+    raw = "> Line one continues\n> on line two."
+    result = strip_blockquote_markers_and_quotes(raw)
+    assert result == "Line one continues on line two."
+
+
+def test_strip_blockquote_markers_mixed():
+    """Mix of continuation lines and paragraph breaks."""
+    raw = "> Para one line one\n> para one line two.\n>\n> Para two."
+    result = strip_blockquote_markers_and_quotes(raw)
+    assert result == "Para one line one para one line two.\n\nPara two."
+
+
+# ---------------------------------------------------------------------------
+# split_quote_parts
+# ---------------------------------------------------------------------------
+
+
+def test_split_quote_parts_ellipsis():
+    """Splits on ... (ellipsis)."""
+    assert split_quote_parts("hello... world") == ["hello", "world"]
+
+
+def test_split_quote_parts_unicode_ellipsis():
+    """Splits on \u2026 (unicode ellipsis)."""
+    assert split_quote_parts("hello\u2026 world") == ["hello", "world"]
+
+
+def test_split_quote_parts_newline():
+    """Splits on newlines (paragraph breaks from blockquotes)."""
+    assert split_quote_parts("para one.\n\npara two.") == ["para one.", "para two."]
+
+
+def test_split_quote_parts_no_split():
+    """No split points returns the whole string."""
+    assert split_quote_parts("just one part") == ["just one part"]
+
+
+# ---------------------------------------------------------------------------
+# find_quote_with_gaps – multi-paragraph blockquote
+# ---------------------------------------------------------------------------
+
+
+def test_find_quote_with_gaps_multi_paragraph_blockquote():
+    """Multi-paragraph quote where each paragraph is in a different part of the document."""
+    doc = (
+        "Knights who have fulfilled their quest and drunk from the grail. "
+        "This makes them special above and beyond ordinary men. "
+        "All Grail Knights present in the army fight together in a single unit. "
+        "Some filler text here that separates the two paragraphs in the document. "
+        "More filler. Even more filler to increase the gap. "
+        "Grail Knights have the Grail Virtue; they have drunk from the sacred "
+        "grail and are immune to psychology."
+    )
+    # Quote with \n\n paragraph break (as produced by strip_blockquote_markers_and_quotes)
+    quote = (
+        "Knights who have fulfilled their quest and drunk from the grail. "
+        "This makes them special above and beyond ordinary men. "
+        "All Grail Knights present in the army fight together in a single unit."
+        "\n\n"
+        "Grail Knights have the Grail Virtue; they have drunk from the sacred "
+        "grail and are immune to psychology."
+    )
+    result = find_quote_with_gaps(doc, quote)
+    assert result is not None, "Multi-paragraph blockquote should match with gap"
+    assert result.score >= 85

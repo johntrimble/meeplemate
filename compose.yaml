@@ -16,6 +16,26 @@ x-base-service: &base-service
   ipc: host
 
 services:
+  ts-meeplemate:
+    ports:
+    - 8000:8000 # Chainlit
+    hostname: ts-meeplemate
+    env_file:
+    - path: .env
+      required: false
+    image: tailscale/tailscale:latest
+    environment:
+    # TS_AUTH_KEY is set in the .env file
+    - TS_EXTRA_ARGS=--advertise-tags=tag:dev-meeplemate
+    - TS_STATE_DIR=/var/lib/tailscale
+    volumes:
+    - tailscale-data-meeplemate:/var/lib/tailscale
+    devices:
+    - /dev/net/tun:/dev/net/tun
+    cap_add:
+    - net_admin
+    - sys_module
+  
   dev:
     # The main development environment container.
     # Inherits common settings from the base service anchor above.
@@ -58,9 +78,7 @@ services:
 
     # Keep the container running (useful for VS Code dev containers, debugging, etc).
     command: tail -f /dev/null
-
-    ports:
-    - 8000:8000 # Chainlit
+    network_mode: service:ts-meeplemate
 
     # # Enable GPU access for PyTorch (NVIDIA only).
     # deploy:
@@ -328,3 +346,4 @@ volumes:
   claude_data:
   cassandra_data:
   dse_data:
+  tailscale-data-meeplemate:

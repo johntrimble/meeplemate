@@ -14,7 +14,7 @@ CITATION_PAGE_TITLE_REGEX = re.compile(
 INLINE_QUOTE_CITATION_REGEX = re.compile(
     r'''(?<!>\s)(["])(?P<quote>[^"]+?)\1\s*\((?P<citation>([^()]+|["][^"]+["])?,?\s*pg?[.]\s*[0-9]+)\)'''
 )
-ELLIPSIS_PAT = re.compile(r"\.\.\.|…")
+QUOTE_SPLIT_PAT = re.compile(r"\.\.\.|…|\n")
 
 
 class ExtractedCitation(TypedDict):
@@ -177,13 +177,30 @@ def strip_quotes(quote: str) -> str:
 
 
 def strip_blockquote_markers_and_quotes(quote: str) -> str:
-    """Strip the blockquote markers (>) from the given blockquote text."""
+    """Strip the blockquote markers (>) from the given blockquote text.
+
+    Consecutive non-empty lines are joined with a single space (continuation
+    lines within the same paragraph).  Blank ``>`` lines are preserved as
+    ``\\n\\n`` paragraph breaks so that downstream matching can treat each
+    paragraph independently.
+    """
     lines = quote.splitlines()
-    stripped_lines = []
-    for line in lines:
-        stripped_line = line.lstrip('> ').rstrip()
-        stripped_lines.append(stripped_line)
-    quote = ' '.join(stripped_lines)
+    stripped_lines = [line.lstrip('> ').rstrip() for line in lines]
+
+    # Group consecutive non-empty lines into paragraphs
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for line in stripped_lines:
+        if line:
+            current.append(line)
+        else:
+            if current:
+                paragraphs.append(' '.join(current))
+                current = []
+    if current:
+        paragraphs.append(' '.join(current))
+
+    quote = '\n\n'.join(paragraphs)
     quote = quote.strip()
     return strip_quotes(quote)
 
@@ -259,6 +276,167 @@ def find_quotes_in_text(text: str) -> List[ExtractedQuote]:
     return extracted_quotes
 
 
+# ---------------------------------------------------------------------------
+# HTML tag stripping
+# ---------------------------------------------------------------------------
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_html_tags_with_map(s: str) -> tuple[str, list[int]]:
+    """Strip HTML tags, keeping a char→original-index map.
+
+    Every ``<…>`` region is removed; all other characters pass through.
+    Returns ``(stripped_text, index_map)`` with the same contract as
+    :func:`normalize_with_map`.
+    """
+    out_chars: list[str] = []
+    out_map: list[int] = []
+
+    tag_regions = [(m.start(), m.end()) for m in _HTML_TAG_RE.finditer(s)]
+
+    cursor = 0
+    region_idx = 0
+
+    while cursor < len(s):
+        if region_idx < len(tag_regions) and cursor == tag_regions[region_idx][0]:
+            # Emit a space so tags act as word boundaries (e.g. between
+            # table cells).  The normalization step collapses runs of
+            # spaces, so this doesn't introduce extra tokens.
+            out_chars.append(" ")
+            out_map.append(tag_regions[region_idx][0])
+            cursor = tag_regions[region_idx][1]
+            region_idx += 1
+        else:
+            out_chars.append(s[cursor])
+            out_map.append(cursor)
+            cursor += 1
+
+    return "".join(out_chars), out_map
+
+
+def strip_html_tags(s: str) -> str:
+    """Strip HTML tags (replaced with spaces), returning only the cleaned text."""
+    return strip_html_tags_with_map(s)[0]
+
+
+# ---------------------------------------------------------------------------
+# LaTeX inline-math stripping
+# ---------------------------------------------------------------------------
+
+_INLINE_MATH_RE = re.compile(r"\\\(.*?\\\)", re.DOTALL)
+
+_LATEX_COMMAND_REPLACEMENTS: dict[str, str] = {
+    r"\prime": "'",
+    r"\circ": "\u00b0",  # degree sign
+}
+
+
+def _emit_latex_inner(
+    inner: str,
+    base_offset: int,
+    out_chars: list[str],
+    out_map: list[int],
+) -> None:
+    """Process content between \\( and \\), emitting chars with original-index mapping."""
+    i = 0
+    while i < len(inner):
+        orig_i = base_offset + i
+
+        # --- backslash commands ---
+        if inner[i] == "\\":
+            # Check known replacements first
+            matched = False
+            for cmd, replacement in _LATEX_COMMAND_REPLACEMENTS.items():
+                if inner[i:].startswith(cmd):
+                    for ch in replacement:
+                        out_chars.append(ch)
+                        out_map.append(orig_i)
+                    i += len(cmd)
+                    matched = True
+                    break
+            if matched:
+                continue
+            # Unknown \command – skip backslash + any alpha chars (command name)
+            j = i + 1
+            while j < len(inner) and inner[j].isalpha():
+                j += 1
+            i = j if j > i + 1 else i + 1
+            continue
+
+        # --- superscript ^{...} – emit contents, strip ^ and braces ---
+        if inner[i] == "^" and i + 1 < len(inner) and inner[i + 1] == "{":
+            brace_start = i + 2
+            depth = 1
+            j = brace_start
+            while j < len(inner) and depth > 0:
+                if inner[j] == "{":
+                    depth += 1
+                elif inner[j] == "}":
+                    depth -= 1
+                j += 1
+            # Recurse into brace contents
+            _emit_latex_inner(
+                inner[brace_start : j - 1],
+                base_offset + brace_start,
+                out_chars,
+                out_map,
+            )
+            i = j
+            continue
+
+        # --- lone braces – skip ---
+        if inner[i] in "{}":
+            i += 1
+            continue
+
+        # --- everything else (digits, spaces, operators) – pass through ---
+        out_chars.append(inner[i])
+        out_map.append(orig_i)
+        i += 1
+
+
+def strip_latex_with_map(s: str) -> tuple[str, list[int]]:
+    """Strip LaTeX inline math notation, keeping a char→original-index map.
+
+    Within ``\\(...\\)`` regions the delimiters are removed and commands like
+    ``\\prime`` and ``\\circ`` are replaced with their Unicode equivalents.
+    Text outside math regions passes through unchanged.
+
+    Returns ``(stripped_text, index_map)`` with the same contract as
+    :func:`normalize_with_map`.
+    """
+    out_chars: list[str] = []
+    out_map: list[int] = []
+
+    # Pre-compute math regions
+    math_regions: list[tuple[int, int]] = [
+        (m.start(), m.end()) for m in _INLINE_MATH_RE.finditer(s)
+    ]
+
+    cursor = 0
+    region_idx = 0
+
+    while cursor < len(s):
+        if region_idx < len(math_regions) and cursor == math_regions[region_idx][0]:
+            region_start, region_end = math_regions[region_idx]
+            inner = s[region_start + 2 : region_end - 2]  # between \( and \)
+            _emit_latex_inner(inner, region_start + 2, out_chars, out_map)
+            cursor = region_end
+            region_idx += 1
+        else:
+            out_chars.append(s[cursor])
+            out_map.append(cursor)
+            cursor += 1
+
+    return "".join(out_chars), out_map
+
+
+def strip_latex(s: str) -> str:
+    """Strip LaTeX inline math notation, returning only the cleaned text."""
+    return strip_latex_with_map(s)[0]
+
+
 def normalize_with_map(s: str) -> tuple[str, list[int]]:
     """
     Normalize while keeping a mapping from each normalized character index
@@ -318,8 +496,9 @@ def normalize_no_map(s: str) -> str:
     return normalize_with_map(s)[0]
 
 
-def split_on_ellipsis(quote: str) -> list[str]:
-    return [p.strip() for p in ELLIPSIS_PAT.split(quote) if p.strip()]
+def split_quote_parts(quote: str) -> list[str]:
+    """Split a quote on ellipsis (``...``/``…``) and newlines."""
+    return [p.strip() for p in QUOTE_SPLIT_PAT.split(quote) if p.strip()]
 
 
 def find_quote_with_gaps(
@@ -333,9 +512,17 @@ def find_quote_with_gaps(
     window_step: int = 200,
     top_k_windows: int = 8,
 ) -> MatchResult | None:
-    norm_doc, norm_to_orig = normalize_with_map(doc)
+    # Strip markup (HTML tags, LaTeX math) before normalizing so that tag
+    # names and LaTeX commands don't introduce spurious alphanumeric tokens
+    # (e.g. "td", "prime") that break fuzzy matching against the LLM's
+    # plain-text quotes.
+    html_stripped, html_map = strip_html_tags_with_map(doc)
+    latex_stripped, latex_map = strip_latex_with_map(html_stripped)
+    norm_doc, norm_to_latex = normalize_with_map(latex_stripped)
+    norm_to_orig = [html_map[latex_map[i]] for i in norm_to_latex]
 
-    parts = split_on_ellipsis(quote)
+    cleaned_quote = strip_html_tags(strip_latex(quote))
+    parts = split_quote_parts(cleaned_quote)
     norm_parts = [normalize_no_map(p) for p in parts if p.strip()]
     if not norm_parts:
         return None

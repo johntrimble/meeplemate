@@ -25,6 +25,9 @@ NOTE: Do not change your original answer, this task is only to reformat it into 
 - Put a blank line before the quote
 - Put a blank line after the quote
 - Put the citation `(Rulebook Name, p. XX)` on its own line after the blank line
+- Use ellipses `...` if you need to omit parts of the quote (prefer omitting nothing if possible)
+- When quoting from a table, just quote the entire table as it appears in the rulebook, including headers and formatting
+- NEVER escape HTML tags in quotes - if the rulebook uses table tags `<table>`, quote them as-is without escaping the angle brackets
 - NEVER use inline quotes like `"text here" (Rulebook, p. XX)` - always use blockquotes
 - NEVER paraphrase rules - use exact text
 
