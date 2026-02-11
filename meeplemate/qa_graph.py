@@ -1,6 +1,7 @@
 import copy
 from dataclasses import dataclass
 import json
+from re import sub
 from typing import Annotated, Any, Literal, NotRequired, Sequence, Tuple, TypedDict, cast
 from langchain.messages import AnyMessage, ToolMessage
 from langchain_core.documents import Document
@@ -1036,7 +1037,8 @@ class QuestionAnalysisOverallState(MessagesState):
     reasoning: str
     query: str
     analysis: str
-    rule_interactions: list[str]
+    subquestions: list[str]
+    classification: Literal["SIMPLE", "COMPLEX"]
     tokens_used: NotRequired[int]
 
 
@@ -1047,7 +1049,8 @@ def create_question_analysis_state(query, **kwargs) -> QuestionAnalysisOverallSt
         reasoning="",
         query=query,
         analysis="",
-        rule_interactions=[],
+        subquestions=[],
+        classification="SIMPLE",
     )
     state.update(**kwargs)
     return state
@@ -1059,13 +1062,14 @@ class QuestionAnalysisContext:
     chunk_search_service: ChunkSearchService
 
 
-analyze_user_query_template = """\
-Examine the user query in light of the provided documents. What is the user asking? Do not answer the question, just explain what the question is.
-"""
+# analyze_user_query_template = """\
+# Examine the user query in light of the provided documents. What is the user asking? Do not answer the question, just explain what the question is.
+# """
 
-analyze_user_query_retrieval_template = """\
-Examine the user query. What is the user asking? Do not answer the question, just explain what the question is. Enumerate the names of all the rules involved in the user's question. You can lookup information for rules questions by using the `search_chunks` tool.
-"""
+# analyze_user_query_retrieval_template = """\
+# Examine the user query. What is the user asking? Do not answer the question, just explain what the question is. Enumerate the names of all the rules involved in the user's question. You can lookup information for rules questions by using the `search_chunks` tool.
+# """
+analyze_user_query_template = load_template("analyze_question.md")
 
 list_essential_rule_interactions_template = """\
 Some rule interactions are transitive (X has Y which interacts with Z) others are direct (Y interacts with Z). We care about the direct rule interactions (X has Y and Y interacts with Z) essential to answering the user's query. Given the user's query and the explanation of what the user is asking, identify the direct rule interactions that are the crux of what the user is asking. Ensure to list interactions that might be exceptions to a general rule. List them in the format "Y interacts with Z" where Y and Z are the names of rules (no citations required here). Provide no more than 5. Do not include parenthetical elements or commentary. Provide the output as a json list of strings.
@@ -1073,6 +1077,18 @@ Some rule interactions are transitive (X has Y which interacts with Z) others ar
 
 short_system_prompt_template = """\
 You are an expert Rules Lawyer specializing in boardgame rules. Being "technically correct" is your highest aspiration. You believe in "the rules as written" above all else, because the rules are not merely words on a page, they are devine truth. You are sensitive to even the slimmest nuances in wording, and you always interpret the rules in the most literal way possible. You never make assumptions or inferences beyond what is explicitly written in the rules, because that would be the greatest of heresies. You have a keen eye for detail, and you always notice even the smallest distinctions in wording that others might overlook.
+
+{{#documents.0}}
+## Documents
+
+<documents>
+{{#documents}}
+<document rulebook_name="{{rulebook_name}}" page="{{page}}" start_index="{{start_index}}">
+{{content}}
+</document>
+{{/documents}}
+</documents>
+{{/documents.0}}
 
 {{#query}}
 ## User query
@@ -1088,6 +1104,17 @@ class EssentialRuleInteractionResponse(TypedDict):
     essential_rule_interactions: Annotated[list[str], ..., "list of essential direct rule interactions needed to answer the query. Format each as 'Y interacts with Z' where Y and Z are the names of rules. No citations required."]
 
 
+class Subquestion(TypedDict):
+    subquestion: Annotated[str, ..., "A self-contained subquestion"]
+    explanation: Annotated[str, ..., "An explanation as to how an answer to this subquestion helps address the user's original query."]
+    
+
+class QuestionAnalysis(TypedDict):
+    explanation: Annotated[str, ..., "Explanation of what the user asking and the key rules and rule interactions involved in the user's query. Free form markdown text."]
+    subquestions: Annotated[list[Subquestion], ..., "List of 1-3 subquestions and explanations of their relevance"]
+    classification: Literal["SIMPLE", "COMPLEX"]
+
+
 def build_analyze_question_graph(
     checkpoint_saver: BaseCheckpointSaver,
     chat_model: BaseChatModel,
@@ -1097,68 +1124,94 @@ def build_analyze_question_graph(
     tool_node = ToolNode(tools)
 
     async def retrieve_data(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
-        manifest = runtime.context.manifest
-
         retrieval_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", query_documents_guidelines_template),
-                ("user", analyze_user_query_retrieval_template),
-                ("placeholder", "{messages}")
+                ("system", short_system_prompt_template),
+                ("user", analyze_user_query_template),
             ],
             template_format="mustache"
         )
 
-        # Check if we've already done retrieval (look for ToolMessage from search_chunks)
-        has_retrieved = any(
-            isinstance(msg, ToolMessage) for msg in state["messages"]
-        )
-
-        if not has_retrieved:
-            # Round 1: Force document retrieval
-            chat_model_with_tools = chat_model.bind_tools([search_chunks], tool_choice="any")
-        else:
-            # Round 2: Force structured analysis submission
-            chat_model_with_tools = chat_model.bind_tools([search_chunks], tool_choice="none")
-
-        chain = retrieval_prompt | chat_model_with_tools
-
         input = {
+            "retrieval": True,
             "game_summary": False,
-            "game_name": manifest["name"],
-            "query": state["query"],
             "documents": [],
-            "clarifying_questions_and_answers": [],
-            "messages": state["messages"],
+            "query": state["query"],
         }
 
-        tokens_used = calculate_tokens_used(tokenizer, retrieval_prompt, input)
-        logger.info("Tokens used by prompt", tokens_used=tokens_used, message_count=len(state["messages"]))
+        chat_model_with_tools = chat_model.bind_tools(tools, tool_choice="any")
+        chain = retrieval_prompt | chat_model_with_tools
 
-        try:
-            message = await chain.ainvoke(input, config=config)
-        except Exception as e:
-            raise
+        message = await chain.ainvoke(input, config=config)
+
+        tokens_used = calculate_tokens_used(tokenizer, retrieval_prompt, input)
 
         return {
             "tokens_used": tokens_used,
             "messages": [message]
         }
-    
+
+    async def analyze_question(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
+        retrieval_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", short_system_prompt_template),
+                ("user", analyze_user_query_template),
+            ],
+            template_format="mustache"
+        )
+
+        # Pull documents from message history
+        chunks = get_all_chunks_from_message_history(state["messages"])
+        chunks = sort_chunks(chunks, runtime.context.manifest)
+
+        input = {
+            "retrieval": False,
+            "game_summary": False,
+            "query": state["query"],
+            "documents": chunks,
+            "clarifying_questions_and_answers": [],
+            "messages": state["messages"],
+        }
+
+        chat_model_with_structured = chat_model.with_structured_output(QuestionAnalysis, include_raw=True)
+        chain = retrieval_prompt | chat_model_with_structured
+
+        result = await chain.ainvoke(input, config=config)
+        assert isinstance(result, dict)
+        question_analysis = result["parsed"]
+        message = result["raw"]
+
+        tokens_used = calculate_tokens_used(tokenizer, retrieval_prompt, input)
+        for sub in question_analysis["subquestions"]:
+            logger.info("Subquestion identified", subquestion=sub["subquestion"], explanation=sub["explanation"])
+
+        return {
+            "analysis": question_analysis["explanation"],
+            "subquestions": [sub["subquestion"] for sub in question_analysis["subquestions"]],
+            "classification": question_analysis["classification"],
+            "tokens_used": tokens_used,
+            # TODO: We should return something that indicates the importance of
+            # each chunk. The caller might want to use these in its context, but
+            # have a different budget for how many chunks to include.
+            "documents": chunks,
+            "messages": [message],
+        }
+
     async def consolidate_search_calls(state: MessagesState) -> dict:
         message = state["messages"][-1]
         tool_calls = getattr(message, "tool_calls", [])
         # Copy the list so that we don't edit the original
         tool_calls = copy.deepcopy(tool_calls)
         # Find indices of search_chunks calls
-        seach_chunks_indices = [i for i, call in enumerate(tool_calls) if call["name"] == "search_chunks"]
+        search_chunks_indices = [i for i, call in enumerate(tool_calls) if call["name"] == "search_chunks"]
 
         # Bail early if we don't have multiple search calls
-        if len(seach_chunks_indices) <= 1:
+        if len(search_chunks_indices) <= 1:
             return {}
         
         # Okay, we have multiple search calls, let's collect the queries
         queries = []
-        for index in seach_chunks_indices:
+        for index in search_chunks_indices:
             tool_call = tool_calls[index]
             query = tool_call["args"]["query"]
             if isinstance(query, str):
@@ -1169,11 +1222,11 @@ def build_analyze_question_graph(
                 logger.warning("Unexpected query format in search_chunks tool call", query=query)
         
         # Remove all but the first search_chunks call
-        for index in reversed(seach_chunks_indices[1:]):
+        for index in reversed(search_chunks_indices[1:]):
             del tool_calls[index]
         
         # Update the first search_chunks call to include all queries
-        first_index = seach_chunks_indices[0]
+        first_index = search_chunks_indices[0]
         tool_calls[first_index]["args"]["query"] = queries
 
         # Update the message with the consolidated tool calls
@@ -1185,78 +1238,6 @@ def build_analyze_question_graph(
             "messages": [message]
         }
 
-
-    async def route_by_tool_type(
-        state: MessagesState,
-        *,
-        runtime: Runtime[QuestionAnalysisContext],
-        config: RunnableConfig | None = None
-    ) -> Literal["tool_node", "extract_analysis"]:
-        """Route based on which tool was called."""
-        last_message: AnyMessage = state["messages"][-1]
-        tool_calls = getattr(last_message, "tool_calls", [])
-
-        if not tool_calls:
-            # Shouldn't happen with tool_choice="any", but handle gracefully
-            logger.warning("No tool calls found, defaulting to extract_analysis")
-            return "extract_analysis"
-
-        tool_name = tool_calls[0]["name"]
-        if tool_name == "search_chunks":
-            return "tool_node"
-        else:
-            return "extract_analysis"
-
-
-    async def extract_analysis(
-        state: QuestionAnalysisOverallState,
-        *,
-        runtime: Runtime[QuestionAnalysisContext],
-        config: RunnableConfig | None = None
-    ) -> dict:
-        manifest = runtime.context.manifest
-        last_message = state["messages"][-1]
-
-        # Get documents from message history
-        documents = get_all_chunks_from_message_history(state["messages"])
-        documents = sort_chunks(documents, manifest)
-
-        return {
-            "analysis": last_message.text,
-            "documents": documents,
-        }
-
-    async def determine_rule_interactions(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
-        rule_interaction_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", query_documents_guidelines_template),
-                ("user", analyze_user_query_template),
-                ("placeholder", "{messages}"),
-                ("user", list_essential_rule_interactions_template),
-            ],
-            template_format="mustache"
-        )
- 
-        input = dict(
-            documents=[],
-            query=state["query"],
-            messages=state["messages"],
-            clarifying_questions_and_answers=[],
-        )
- 
-        chat_model_structured = chat_model.with_structured_output(
-            EssentialRuleInteractionResponse
-        )
-
-        chain = rule_interaction_prompt | chat_model_structured
-        result = cast(EssentialRuleInteractionResponse, await chain.ainvoke(input, config=config))
-        rule_interactions = result["essential_rule_interactions"]
-
-        logger.info("Determined direct rule interactions", interactions=rule_interactions)
-
-        return {
-            "rule_interactions": rule_interactions
-        }
 
     async def produce_response(state: QuestionAnalysisOverallState, *, runtime: Runtime[QuestionAnalysisContext], config: RunnableConfig|None = None) -> dict:
         return {}
@@ -1271,25 +1252,17 @@ def build_analyze_question_graph(
     graph.add_node("tool_node", tool_node)
     graph.add_node("consolidate_search_calls", consolidate_search_calls)
     graph.add_node("retrieve_data", retrieve_data)
-    graph.add_node("extract_analysis", extract_analysis)
-    graph.add_node("determine_rule_interactions", determine_rule_interactions)
+    graph.add_node("analyze_question", analyze_question)
     graph.add_node("produce_response", produce_response)
     graph.add_node("dedupe_chunks", dedupe_chunks_node)
 
     # Edges
     graph.add_edge(START, "retrieve_data")
     graph.add_edge("retrieve_data", "consolidate_search_calls")
-
-    # Route based on which tool was called
-    graph.add_conditional_edges("consolidate_search_calls", route_by_tool_type)
-
-    # After search_chunks execution, loop back to retrieve_data
+    graph.add_edge("consolidate_search_calls", "tool_node")
     graph.add_edge("tool_node", "dedupe_chunks")
-    graph.add_edge("dedupe_chunks", "retrieve_data")
-
-    # After extract_analysis, continue to downstream nodes
-    graph.add_edge("extract_analysis", "determine_rule_interactions")
-    graph.add_edge("determine_rule_interactions", "produce_response")
+    graph.add_edge("dedupe_chunks", "analyze_question")
+    graph.add_edge("analyze_question", "produce_response")
     graph.add_edge("produce_response", END)
 
     agent = graph.compile(checkpointer=checkpoint_saver)
@@ -1309,11 +1282,11 @@ class CoordinationOutputState(TypedDict):
 class CoordinationOverallState(TypedDict):
     query: str
     question_analysis: str
-    rule_interactions: list[str]
+    subquestions: list[str]
     clarifying_questions: list[ClarifyingQA]
     response: str
     evidence: list[Chunk]
-
+    classification: Literal["SIMPLE", "COMPLEX"]
 
 def build_coordinating_agent_graph(
     checkpoint_saver: BaseCheckpointSaver,
@@ -1336,20 +1309,36 @@ def build_coordinating_agent_graph(
 
         return {
             "question_analysis": result["analysis"],
-            "rule_interactions": result["rule_interactions"],
+            "subquestions": result["subquestions"],
             "evidence": result["documents"],
+            "classification": result["classification"],
         }
-    
+
+
     class AskSubquestionsInputState(TypedDict):
         question_analysis: str
-        rule_interactions: list[str]
+        subquestions: list[str]
+
+
+    async def ask_simple_question(state: CoordinationOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        input = {
+            "query": state["query"],
+        }
+
+        response = await game_agent.ainvoke(
+            input,
+            context=runtime.context,
+            config=config
+        )
+
+        return {
+            "response": response["response"],
+            "evidence": response["evidence"],
+        }
+
 
     async def ask_subquestions(state: AskSubquestionsInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        analysis = state["question_analysis"]
-        # Get the subquestions
-        subquestions = [
-            f"How does {rule_interaction}?" for rule_interaction in state["rule_interactions"]
-        ]
+        subquestions = state["subquestions"]
 
         inputs = []
         for question in subquestions:
@@ -1413,6 +1402,12 @@ def build_coordinating_agent_graph(
 
     async def produce_response(state: CoordinationOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
         return {}
+    
+    async def route_by_classification(state: CoordinationOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> Literal["ask_simple_question", "ask_subquestions"]:
+        if state["classification"] == "SIMPLE":
+            return "ask_simple_question"
+        else:
+            return "ask_subquestions"
 
     graph = StateGraph(
         state_schema=CoordinationOverallState,
@@ -1425,11 +1420,13 @@ def build_coordinating_agent_graph(
     graph.add_node("ask_subquestions", ask_subquestions)
     graph.add_node("combine_subanswers", combine_subanswers)
     graph.add_node("produce_response", produce_response)
+    graph.add_node("ask_simple_question", ask_simple_question)
 
     graph.add_edge(START, "analyze_question")
-    graph.add_edge("analyze_question", "ask_subquestions")
+    graph.add_conditional_edges("analyze_question", route_by_classification)
     graph.add_edge("ask_subquestions", "combine_subanswers")
     graph.add_edge("combine_subanswers", "produce_response")
+    graph.add_edge("ask_simple_question", "produce_response")
     graph.add_edge("produce_response", END)
 
     agent = graph.compile(checkpointer=checkpoint_saver)
