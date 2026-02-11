@@ -3,7 +3,8 @@ import operator
 from typing import Annotated, Any, AsyncIterator, Protocol, TypedDict, cast, runtime_checkable
 from backoff import runtime
 from langchain.chat_models import BaseChatModel
-from langchain.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage, trim_messages
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda, chain, patch_config
@@ -48,6 +49,7 @@ REFINE_QUESTION_PROMPT = ChatPromptTemplate.from_messages(
 @dataclass
 class ChatLoopContext:
     manifest: Manifest
+    tokenizer: Any
 
 
 class ChatLoopInputState(MessagesState):
@@ -67,6 +69,41 @@ class RefinedQuery(TypedDict):
 
 
 def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> CompiledStateGraph[ChatLoopState, ChatLoopContext, ChatLoopInputState, ChatLoopOutputState]:
+
+    async def compress_messages(state: ChatLoopState, *, runtime: Runtime[ChatLoopContext]) -> dict:
+        new_messages = trim_messages(
+            state["messages"],
+            strategy="last",
+            allow_partial=False,
+            include_system=True,
+            start_on="human",
+            token_counter=count_tokens_approximately,
+            max_tokens=10_000,
+        )
+
+        # If we didn't make any changes, return an empty dict to avoid
+        # unnecessary state updates and graph executions
+        if len(new_messages) == len(state["messages"]):
+            return {}
+
+        output = {}
+
+        # Delete any old messages not in new_messages
+        old_message_ids = {msg.id for msg in state["messages"]}
+        new_message_ids = {msg.id for msg in new_messages}
+        removed_message_ids = old_message_ids - new_message_ids
+        removed_messages = [RemoveMessage(id=msg_id) for msg_id in removed_message_ids if msg_id]
+        output["messages"] = removed_messages
+
+        # Get rid of old refined queries for removed messages
+        refined_queries = state["refined_queries"]
+        for msg_id in removed_message_ids:
+            if msg_id in refined_queries:
+                refined_queries.pop(msg_id, None)
+                if "refined_queries" not in output:
+                    output["refined_queries"] = refined_queries
+
+        return output
     
     async def refine_query(state: ChatLoopState, *, runtime: Runtime[ChatLoopContext]) -> dict:
         manifest = runtime.context.manifest
@@ -93,6 +130,9 @@ def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Base
         refined_query = state["refined_queries"][last_id]
 
         input: QAServiceInput  = {
+            "messages": [],
+            "recursion_depth": 0,
+            "evidence": [],
             "query": refined_query,
             "manifest": runtime.context.manifest,
         }
@@ -109,7 +149,6 @@ def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Base
             "messages": [response]
         }
 
-
     builder = StateGraph(
         ChatLoopState,
         context_schema=ChatLoopContext,
@@ -120,10 +159,12 @@ def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Base
     # Add nodes
     builder.add_node("refine_query", refine_query)
     builder.add_node("respond_to_query", respond_to_query)
+    builder.add_node("compress_messages", compress_messages)
 
     # Add edges
     builder.add_edge(START, "refine_query")
-    builder.add_edge("refine_query", "respond_to_query")
+    builder.add_edge("refine_query", "compress_messages")
+    builder.add_edge("compress_messages", "respond_to_query")
     builder.add_edge("respond_to_query", END)
 
     graph = builder.compile(checkpointer=checkpoint_saver)
@@ -150,7 +191,7 @@ class ChatLoopService(Protocol):
         ...
 
 
-def build_chatloop_service(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> ChatLoopService:
+def build_chatloop_service(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, tokenizer: Any, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> ChatLoopService:
     agent_graph = build_chatloop_graph(
         checkpoint_saver,
         chat_model,
@@ -165,7 +206,7 @@ def build_chatloop_service(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
         async def astream_response(self, input: ChatLoopServiceInput, config: RunnableConfig | None = None) -> AsyncIterator[AIMessageChunk]:
             thread_config = {"thread_id": input["thread_id"]}
             config = patch_config(config, configurable=thread_config)
-            context = ChatLoopContext(manifest=input["manifest"])
+            context = ChatLoopContext(manifest=input["manifest"], tokenizer=tokenizer)
             graph_input: ChatLoopInputState = {"messages": input["messages"]}
 
             result = await self.graph.ainvoke(

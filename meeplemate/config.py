@@ -551,6 +551,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 {
                     "checkpoint_saver": "checkpointer",
                     "chat_model": "chat_model",
+                    "tokenizer": "tokenizer",
                     "qa_service": "qa_service",
                 }
             ),
