@@ -175,13 +175,13 @@ def get_page_metadata(page: Page) -> dict:
     return metadata
 
 
-def get_page_id(game_id: str, game_version: str, document_key: str, page_num: int) -> str:
+def get_page_id(game_id: str, game_version: str, document_key: str, page_ordinal: int) -> str:
     game_key = get_game_key_for_id_version(game_id, game_version)
-    return f"{game_key}#{document_key}#{page_num}"
+    return f"{game_key}#{document_key}#{page_ordinal}"
 
 
-def get_page_chunk_id(game_id: str, game_version: str, document_key: str, page_num: int, chunk_idx: int) -> str:
-    return f"{get_page_id(game_id, game_version, document_key, page_num)}#{chunk_idx}"
+def get_page_chunk_id(game_id: str, game_version: str, document_key: str, page_ordinal: int, chunk_idx: int) -> str:
+    return f"{get_page_id(game_id, game_version, document_key, page_ordinal)}#{chunk_idx}"
 
 
 async def page_to_document(page: Page) -> Document:

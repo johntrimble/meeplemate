@@ -58,7 +58,7 @@ class Page(TypedDict):
 
 class Chunk(TypedDict):
     rulebook_name: str
-    page: int
+    page: str
     start_index: int
     end_index: int
     content: str
@@ -119,7 +119,7 @@ async def retrieve_page(rulebook_name: str, page: int, runtime: ToolRuntime[Game
     )
 
 
-def get_chunk_id_tuple(chunk: Chunk) -> Tuple[str, int, int]:
+def get_chunk_id_tuple(chunk: Chunk) -> Tuple[str, str, int]:
     return (chunk["rulebook_name"], chunk["page"], chunk["start_index"])
 
 @dataclass
@@ -208,9 +208,9 @@ async def search_chunks(search_queries: list[str], runtime: ToolRuntime[ContextW
             
             metadata = chunk_document.metadata
 
-            page_number: int = -1
-            if "page_num" in metadata and isinstance(metadata["page_num"], int):
-                page_number = metadata["page_num"]
+            page_number: str = ""
+            if "page_num" in metadata:
+                page_number = str(metadata["page_num"])
 
             start_index: int = -1
             if "start_index" in metadata and isinstance(metadata["start_index"], int):
@@ -245,7 +245,7 @@ class QuoteEntry(TypedDict):
     """A quote from a rulebook with its citation information"""
     text: Annotated[str, ..., "Verbatim quote from the rulebook"]
     rulebook_name: Annotated[str, ..., "Name of the rulebook this quote comes from"]
-    page: Annotated[int, ..., "Page number where this quote appears"]
+    page: Annotated[str, ..., "Page number where this quote appears"]
 
 
 class DefinitionEntry(TypedDict):
@@ -391,7 +391,7 @@ def compile_evidence_from_documents(quote_entries: Sequence[QuoteEntry], documen
     quote_entries = copy.deepcopy(quote_entries)
 
     # Organize documents
-    documents_by_rulebook_and_page: dict[tuple[str, int], list[Chunk]] = {}
+    documents_by_rulebook_and_page: dict[tuple[str, str], list[Chunk]] = {}
     for document in documents:
         rulebook_name = document["rulebook_name"]
         page = document["page"]
@@ -460,8 +460,8 @@ class FixQuoteCitationsResult:
     referenced_chunks: list[Chunk]
 
 
-def get_chunks_by_rulebook_and_page(chunks: list[Chunk]) -> dict[tuple[str, int], list[Chunk]]:
-    chunks_by_rulebook_and_page: dict[tuple[str, int], list[Chunk]] = {}
+def get_chunks_by_rulebook_and_page(chunks: list[Chunk]) -> dict[tuple[str, str], list[Chunk]]:
+    chunks_by_rulebook_and_page: dict[tuple[str, str], list[Chunk]] = {}
     for chunk in chunks:
         key = (chunk["rulebook_name"], chunk["page"])
         if key not in chunks_by_rulebook_and_page:
@@ -472,8 +472,8 @@ def get_chunks_by_rulebook_and_page(chunks: list[Chunk]) -> dict[tuple[str, int]
 
 def dedupe_chunks(chunks: list[Chunk]) -> list[Chunk]:
     # Group by (rulebook_name, page), preserving first-seen order
-    groups: dict[tuple[str, int], list[Chunk]] = {}
-    group_order: list[tuple[str, int]] = []
+    groups: dict[tuple[str, str], list[Chunk]] = {}
+    group_order: list[tuple[str, str]] = []
     for chunk in chunks:
         key = (chunk["rulebook_name"], chunk["page"])
         if key not in groups:
@@ -619,7 +619,7 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
         # Maybe the citation is right?
         citation_correct = False
         if citation:
-            citation_key = (citation["ref_name"], int(citation["page"]))
+            citation_key = (citation["ref_name"], citation["page"])
             if citation_key in chunks_by_rulebook_and_page:
                 candidate_chunks = chunks_by_rulebook_and_page[citation_key]
                 for candidate_chunk in candidate_chunks:
@@ -821,7 +821,7 @@ def tweak_and_validate_quotes_response(response: QaResponse, chunks: list[Chunk]
             QuoteEntry(
                 text=_quote["quote"],
                 rulebook_name=_quote["citation"]["ref_name"] if _quote["citation"] else "",
-                page=int(_quote["citation"]["page"]) if _quote["citation"] else -1
+                page=_quote["citation"]["page"] if _quote["citation"] else ""
             )
         )
 
@@ -830,11 +830,11 @@ def tweak_and_validate_quotes_response(response: QaResponse, chunks: list[Chunk]
     for extracted_quote in result.unfixable_quotes:
         citation = extracted_quote["citation"]
         if not citation:
-            citation = {"ref_name": "", "page": -1}
+            citation = {"ref_name": "", "page": ""}
         quote_entry: QuoteEntry = {
             "text": extracted_quote["quote"],
             "rulebook_name": citation["ref_name"],
-            "page": int(citation["page"])
+            "page": citation["page"]
         }
         invalid_final_answer_quotes.append(quote_entry)
     
@@ -1021,14 +1021,14 @@ def get_evidence(state: GameAgentOverallState) -> list[Chunk]:
     return documents
 
 def sort_chunks(chunks: list[Chunk], gp: Manifest) -> list[Chunk]:
-    # Sort chunks by rulebook priority and page number
+    # Sort chunks by rulebook priority and document position (start_index)
     rulebook_order = [rulebook["name"] for rulebook in gp["rulebooks"]]
     rulebook_priority = {name: index for index, name in enumerate(rulebook_order)}
     def chunk_sort_key(chunk: Chunk) -> tuple[int, int]:
         rulebook_name = chunk["rulebook_name"]
-        page = chunk["page"]
+        start_index = chunk["start_index"]
         priority = rulebook_priority.get(rulebook_name, len(rulebook_priority))
-        return (priority, page)
+        return (priority, start_index)
     sorted_chunks = sorted(chunks, key=chunk_sort_key)
     return sorted_chunks
 
@@ -1566,19 +1566,19 @@ def build_question_answer_graph(
                 QuoteEntry(
                     text=vq["quote"],
                     rulebook_name=vq["citation"]["ref_name"] if vq["citation"] else "",
-                    page=int(vq["citation"]["page"]) if vq["citation"] else -1
+                    page=vq["citation"]["page"] if vq["citation"] else ""
                 )
             )
 
         for iq in fix_quote_result.unfixable_quotes:
             citation = iq["citation"]
             if not citation:
-                citation = {"ref_name": "", "page": -1}
+                citation = {"ref_name": "", "page": ""}
             invalid_quotes.append(
                 QuoteEntry(
                     text=iq["quote"],
                     rulebook_name=citation["ref_name"],
-                    page=int(citation["page"])
+                    page=citation["page"]
                 )
             )
 

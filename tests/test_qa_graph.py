@@ -1,6 +1,6 @@
 from langchain.messages import AnyMessage, ToolMessage
 from langchain_core.messages.content import ToolCall
-from meeplemate.qa_graph import Chunk, ChunkSearchResult, QaResponse, dedupe_chunks, dedupe_chunks_in_message_history, fix_quote_citations_in_text, get_chunk_id_tuple, tweak_and_validate_quotes_response
+from meeplemate.qa_graph import Chunk, ChunkSearchResult, QaResponse, dedupe_chunks, dedupe_chunks_in_message_history, fix_quote_citations_in_text, get_chunk_id_tuple, sort_chunks, tweak_and_validate_quotes_response
 from langchain_core.messages import AIMessage, BaseMessage
 from typing import List
 import json
@@ -10,7 +10,7 @@ def test_dedupe_chunks_in_message_history():
     result1 = ChunkSearchResult(
         chunk=Chunk(
             rulebook_name="Rulebook 1",
-            page=1,
+            page="1",
             start_index=3,
             end_index=-1,
             content="This is chunk 1",
@@ -20,7 +20,7 @@ def test_dedupe_chunks_in_message_history():
     result2 = ChunkSearchResult(
         chunk=Chunk(
             rulebook_name="Rulebook 1",
-            page=2,
+            page="2",
             start_index=5,
             end_index=-1,
             content="This is chunk 2",
@@ -30,7 +30,7 @@ def test_dedupe_chunks_in_message_history():
     result3 = ChunkSearchResult(
         chunk=Chunk(
             rulebook_name="Rulebook 2",
-            page=1,
+            page="1",
             start_index=0,
             end_index=-1,
             content="This is chunk 3",
@@ -117,7 +117,7 @@ def test_validation():
                 '## COMBAT',
             'start_index': 3678,
             'end_index': -1,
-            'page': 2,
+            'page': "2",
             'rulebook_name': 'Munchkin Rules'
         },
         {
@@ -164,7 +164,7 @@ def test_validation():
                 'in play.',
             'start_index': 1729,
             'end_index': -1,
-            'page': 2,
+            'page': "2",
             'rulebook_name': 'Munchkin Rules'
         },
     ]
@@ -183,7 +183,7 @@ def test_validation():
                     {
                         'text': 'Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level. ("No Value" cards are the same as zero Gold Pieces.) If you discard (for instance) 1,100 Gold Pieces worth, you don\'t get change. But if you can manage 2,000 worth, you can go up two levels at once, and so on. You may sell Items from your hand as well as those you are carrying. You may not sell Items to go to Level 10.',
                         'rulebook_name': 'Munchkin Rules',
-                        'page': 2
+                        'page': "2"
                     }
                 ],
                 'defines_term': True,
@@ -195,7 +195,7 @@ def test_validation():
                     {
                         'text': 'You cannot discard Item cards "just because." You may sell Items for a level, trade Items with other players, or give an Item to another player who wants it (see below). You may discard Items to power certain Class and Race abilities. And a Curse or a monster\'s Bad Stuff (see p. 5) may force you to get rid of something!',
                         'rulebook_name': 'Munchkin Rules',
-                        'page': 2
+                        'page': "2"
                     }
                 ],
                 'defines_term': True,
@@ -207,7 +207,7 @@ def test_validation():
                     {
                         'text': 'One-shot Items with a Gold Piece value may be sold for levels, just like other Items.',
                         'rulebook_name': 'Munchkin Rules',
-                        'page': 2
+                        'page': "2"
                     }
                 ],
                 'defines_term': True,
@@ -221,7 +221,7 @@ def test_validation():
                     {
                         'text': 'Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level.',
                         'rulebook_name': 'Munchkin Rules',
-                        'page': 2
+                        'page': "2"
                     }
                 ],
                 'summary': 'Items worth 1000+ GP can be sold for levels'
@@ -243,7 +243,7 @@ def test_validation():
                         {
                             'text': 'You cannot discard Item cards "just because." You may sell Items for a level, trade Items with other players, or give an Item to another player who wants it (see below). You may discard Items to power certain Class and Race abilities. And a Curse or a monster\'s Bad Stuff (see p. 5) may force you to get rid of something!',
                             'rulebook_name': 'Munchkin Rules',
-                            'page': 2
+                            'page': "2"
                         }
                     ],
                     'explanation': 'Selling items for levels is explicitly listed as an allowed way to discard items'
@@ -285,7 +285,7 @@ def test_validation_citation_on_separate_line():
             'content': 'One- shot Items with a Gold Piece value may be sold for levels, just like other Items.',
             'start_index': 0,
             'end_index': -1,
-            'page': 5,
+            'page': "5",
             'rulebook_name': 'Game Rules'
         }
     ]
@@ -323,7 +323,7 @@ def test_validation_multiline_blockquote_separate_citation():
             'content': 'First line of the rule continues here with more text and even more content on multiple lines.',
             'start_index': 0,
             'end_index': -1,
-            'page': 3,
+            'page': "3",
             'rulebook_name': 'Test Book'
         }
     ]
@@ -362,7 +362,7 @@ def test_validation_blockquote_citation_already_inline():
             'content': 'Items can be sold for levels.',
             'start_index': 0,
             'end_index': -1,
-            'page': 1,
+            'page': "1",
             'rulebook_name': 'Rules'
         }
     ]
@@ -399,14 +399,14 @@ def test_validation_mixed_quote_types():
             'content': 'Blockquote text here.',
             'start_index': 0,
             'end_index': -1,
-            'page': 1,
+            'page': "1",
             'rulebook_name': 'Book A'
         },
         {
             'content': 'Inline quote text here.',
             'start_index': 100,
             'end_index': -1,
-            'page': 2,
+            'page': "2",
             'rulebook_name': 'Book B'
         }
     ]
@@ -445,7 +445,7 @@ def test_validation_removes_standalone_citation():
             'content': 'Some rule text.',
             'start_index': 0,
             'end_index': -1,
-            'page': 1,
+            'page': "1",
             'rulebook_name': 'Book'
         }
     ]
@@ -481,14 +481,14 @@ def test_validation_multiple_blockquotes_separate_citations():
             'content': 'First rule text.',
             'start_index': 0,
             'end_index': -1,
-            'page': 1,
+            'page': "1",
             'rulebook_name': 'Book'
         },
         {
             'content': 'Second rule text.',
             'start_index': 100,
             'end_index': -1,
-            'page': 2,
+            'page': "2",
             'rulebook_name': 'Book'
         }
     ]
@@ -539,14 +539,14 @@ def test_multiline_blockquote_citation_next_line():
         {
             "content": warpstorm_scroll,
             "rulebook_name": "Warhammer Magic",
-            "page": 44,
+            "page": "44",
             "start_index": 0,
             "end_index": -1,
         },
         {
             "content": flying_high,
             "rulebook_name": "Warhammer Rulebook",
-            "page": 74,
+            "page": "74",
             "start_index": 0,
             "end_index": -1
         }
@@ -623,7 +623,7 @@ def test_fix_quote_citations_in_text():
         {
             "content": chunk_content,
             "rulebook_name": "Some Rulebook",
-            "page": 44,
+            "page": "44",
             "start_index": 0,
             "end_index": -1,
         },
@@ -682,21 +682,21 @@ def test_fix_quote_citations_in_text_2():
         {
             "content": "The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away This is called a Break test.",
             "rulebook_name": "Warhammer Rulebook",
-            "page": 42,
+            "page": "42",
             "start_index": 0,
             "end_index": -1,
         },
         {
             "content": "The unit never needs test for any of the psychology rules, whether panic, fear, terror or whatever. The Knights are unaffected by any psychology.",
             "rulebook_name": "Bretonnia Army Book",
-            "page": 49,
+            "page": "49",
             "start_index": 0,
             "end_index": -1,
         },
         {
             "content": "However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.",
             "rulebook_name": "Warhammer Rulebook",
-            "page": 47,
+            "page": "47",
             "start_index": 0,
             "end_index": -1,
         },
@@ -774,21 +774,21 @@ def test_fix_quote_citations_in_text_3():
         {
             "content": "The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test.",
             "rulebook_name": "Warhammer Rulebook",
-            "page": 42,
+            "page": "42",
             "start_index": 0,
             "end_index": -1,
         },
         {
             "content": "Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.",
             "rulebook_name": "Bretonnia Army Book",
-            "page": 44,
+            "page": "44",
             "start_index": 0,
             "end_index": -1,
         },
         {
             "content": "However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.",
             "rulebook_name": "Warhammer Rulebook",
-            "page": 47,
+            "page": "47",
             "start_index": 0,
             "end_index": -1,
         },
@@ -809,9 +809,9 @@ def test_fix_quote_citations_duplicate_chunks():
 
     # Multiple chunks for the same (rulebook, page) key
     chunks: list[Chunk] = [
-        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "start_index": 0, "end_index": -1},
-        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "start_index": -1, "end_index": -1},
-        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": 42, "start_index": -2, "end_index": -1},
+        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": "42", "start_index": 0, "end_index": -1},
+        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": "42", "start_index": -1, "end_index": -1},
+        {"content": chunk_content, "rulebook_name": "Some Rulebook", "page": "42", "start_index": -2, "end_index": -1},
     ]
 
     before = inspect.cleandoc(
@@ -842,8 +842,8 @@ def test_fix_quote_citations_duplicate_chunks():
 def test_dedupe_chunks_overlapping():
     """Overlapping indexed chunks are merged with correct content and indices."""
     chunks: list[Chunk] = [
-        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 20, "content": "AAAAAAAAAABBBBBBBBBB"},
-        {"rulebook_name": "Rules", "page": 1, "start_index": 10, "end_index": 30, "content": "BBBBBBBBBBCCCCCCCCCC"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 0, "end_index": 20, "content": "AAAAAAAAAABBBBBBBBBB"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 10, "end_index": 30, "content": "BBBBBBBBBBCCCCCCCCCC"},
     ]
     result = dedupe_chunks(chunks)
     assert len(result) == 1
@@ -855,8 +855,8 @@ def test_dedupe_chunks_overlapping():
 def test_dedupe_chunks_adjacent():
     """Adjacent indexed chunks are merged."""
     chunks: list[Chunk] = [
-        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 10, "content": "AAAAAAAAAA"},
-        {"rulebook_name": "Rules", "page": 1, "start_index": 10, "end_index": 20, "content": "BBBBBBBBBB"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 0, "end_index": 10, "content": "AAAAAAAAAA"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 10, "end_index": 20, "content": "BBBBBBBBBB"},
     ]
     result = dedupe_chunks(chunks)
     assert len(result) == 1
@@ -868,8 +868,8 @@ def test_dedupe_chunks_adjacent():
 def test_dedupe_chunks_fully_contained():
     """A chunk fully contained within another is absorbed."""
     chunks: list[Chunk] = [
-        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 30, "content": "AAAAAAAAAABBBBBBBBBBCCCCCCCCCC"},
-        {"rulebook_name": "Rules", "page": 1, "start_index": 5, "end_index": 15, "content": "AAAAABBBBB"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 0, "end_index": 30, "content": "AAAAAAAAAABBBBBBBBBBCCCCCCCCCC"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 5, "end_index": 15, "content": "AAAAABBBBB"},
     ]
     result = dedupe_chunks(chunks)
     assert len(result) == 1
@@ -881,8 +881,8 @@ def test_dedupe_chunks_fully_contained():
 def test_dedupe_chunks_no_overlap():
     """Non-overlapping indexed chunks are kept separate."""
     chunks: list[Chunk] = [
-        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 10, "content": "AAAAAAAAAA"},
-        {"rulebook_name": "Rules", "page": 1, "start_index": 20, "end_index": 30, "content": "CCCCCCCCCC"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 0, "end_index": 10, "content": "AAAAAAAAAA"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 20, "end_index": 30, "content": "CCCCCCCCCC"},
     ]
     result = dedupe_chunks(chunks)
     assert len(result) == 2
@@ -893,9 +893,9 @@ def test_dedupe_chunks_no_overlap():
 def test_dedupe_chunks_unindexed():
     """Unindexed chunks dedup by content as before."""
     chunks: list[Chunk] = [
-        {"rulebook_name": "Rules", "page": 1, "start_index": -1, "end_index": -1, "content": "same text"},
-        {"rulebook_name": "Rules", "page": 1, "start_index": -1, "end_index": -1, "content": "same text"},
-        {"rulebook_name": "Rules", "page": 1, "start_index": -1, "end_index": -1, "content": "different text"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": -1, "end_index": -1, "content": "same text"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": -1, "end_index": -1, "content": "same text"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": -1, "end_index": -1, "content": "different text"},
     ]
     result = dedupe_chunks(chunks)
     assert len(result) == 2
@@ -906,9 +906,9 @@ def test_dedupe_chunks_unindexed():
 def test_dedupe_chunks_mixed_indexed_and_unindexed():
     """Indexed and unindexed chunks in the same group are handled separately."""
     chunks: list[Chunk] = [
-        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 10, "content": "AAAAAAAAAA"},
-        {"rulebook_name": "Rules", "page": 1, "start_index": -1, "end_index": -1, "content": "unindexed chunk"},
-        {"rulebook_name": "Rules", "page": 1, "start_index": 5, "end_index": 15, "content": "AAAAABBBBB"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 0, "end_index": 10, "content": "AAAAAAAAAA"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": -1, "end_index": -1, "content": "unindexed chunk"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 5, "end_index": 15, "content": "AAAAABBBBB"},
     ]
     result = dedupe_chunks(chunks)
     # Indexed chunks merge into one, unindexed kept separately
@@ -926,8 +926,56 @@ def test_dedupe_chunks_mixed_indexed_and_unindexed():
 def test_dedupe_chunks_different_pages():
     """Chunks from different pages are never merged."""
     chunks: list[Chunk] = [
-        {"rulebook_name": "Rules", "page": 1, "start_index": 0, "end_index": 10, "content": "page 1 text"},
-        {"rulebook_name": "Rules", "page": 2, "start_index": 0, "end_index": 10, "content": "page 2 text"},
+        {"rulebook_name": "Rules", "page": "1", "start_index": 0, "end_index": 10, "content": "page 1 text"},
+        {"rulebook_name": "Rules", "page": "2", "start_index": 0, "end_index": 10, "content": "page 2 text"},
     ]
     result = dedupe_chunks(chunks)
     assert len(result) == 2
+
+
+def test_dedupe_chunks_non_numeric_page():
+    """Verify dedupe works with non-numeric page values like roman numerals."""
+    chunks: list[Chunk] = [
+        {"rulebook_name": "Rules", "page": "iii", "start_index": 0, "end_index": 20, "content": "AAAAAAAAAABBBBBBBBBB"},
+        {"rulebook_name": "Rules", "page": "iii", "start_index": 10, "end_index": 30, "content": "BBBBBBBBBBCCCCCCCCCC"},
+    ]
+    result = dedupe_chunks(chunks)
+    assert len(result) == 1
+    assert result[0]["start_index"] == 0
+    assert result[0]["end_index"] == 30
+    assert result[0]["content"] == "AAAAAAAAAABBBBBBBBBBCCCCCCCCCC"
+
+
+def test_fix_quote_citations_string_page():
+    """Verify quote citation matching works when chunk page is a string."""
+    chunks: list[Chunk] = [
+        {
+            "content": "Some important rule text for testing.",
+            "rulebook_name": "Game Rules",
+            "page": "42",
+            "start_index": 0,
+            "end_index": -1,
+        },
+    ]
+
+    text = '> "Some important rule text for testing."\n\n(Game Rules, p. 42)'
+    result = fix_quote_citations_in_text(text, chunks)
+    assert len(result.unfixable_quotes) == 0
+    assert len(result.valid_quotes) == 1
+
+
+def test_sort_chunks_by_start_index():
+    """Verify chunks sort by document position (start_index), not by page string."""
+    manifest = {
+        "game_id": "test",
+        "game_version": "1.0",
+        "rulebooks": [{"name": "Rules", "document_key": "rules"}],
+    }
+    chunks: list[Chunk] = [
+        {"rulebook_name": "Rules", "page": "10", "start_index": 500, "end_index": 600, "content": "later in doc"},
+        {"rulebook_name": "Rules", "page": "2", "start_index": 100, "end_index": 200, "content": "earlier in doc"},
+    ]
+    sorted_result = sort_chunks(chunks, manifest)
+    # start_index=100 should come before start_index=500 regardless of page strings
+    assert sorted_result[0]["start_index"] == 100
+    assert sorted_result[1]["start_index"] == 500

@@ -44,8 +44,8 @@ def get_child_chunk_path(chunk: ChildChunkDescriptor) -> Path:
     return get_chunks_directory_path(chunk.gp, chunk.document_key) / f"{chunk.page_num:04d}_chunk_{chunk.chunk_idx:04d}_child_{chunk.child_idx:04d}.json"
 
 
-def get_child_chunk_id(game_id: str, game_version:str, document_key: str, page_num: int, chunk_idx: int, child_idx: int) -> str:
-    chunk_key = get_page_chunk_id(game_id, game_version, document_key, page_num, chunk_idx)
+def get_child_chunk_id(game_id: str, game_version:str, document_key: str, page_ordinal: int, chunk_idx: int, child_idx: int) -> str:
+    chunk_key = get_page_chunk_id(game_id, game_version, document_key, page_ordinal, chunk_idx)
     return f"{chunk_key}#{child_idx}"
 
 

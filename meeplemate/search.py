@@ -193,7 +193,7 @@ def get_chunk_id(doc: Document | dict) -> str:
     else:
         metadata = doc.get("metadata", {})
     rulebook_name = metadata.get("rulebook_name", "unknown_rulebook")
-    page_number = metadata.get("page_num", "unknown_page")
+    page_number = metadata.get("page_ordinal", "unknown_page")
     start_index = metadata.get("start_index", "unknown_start_index")
     chunk_id = f"{slugify(rulebook_name)}::{page_number}::{start_index}"
     return chunk_id
@@ -599,7 +599,7 @@ def build_chunk_search_service_2(
         docs_in_budget.sort(
             key=lambda doc: (
                 rulebook_priority.get(doc.metadata.get("rulebook_name", ""), float("inf")),
-                doc.metadata.get("page_num", float("inf")),
+                doc.metadata.get("page_ordinal", float("inf")),
                 doc.metadata.get("start_index", float("inf"))
             )
         )
