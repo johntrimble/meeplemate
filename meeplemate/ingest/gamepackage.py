@@ -106,6 +106,18 @@ def page_structured_fixed_path(page: Page) -> Path:
     return structured_path
 
 
+def page_number_raw_path(page: Page) -> Path:
+    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
+    page_number_path = page_base.with_suffix(".page_number.raw.txt")
+    return page_number_path
+
+
+def page_number_path(page: Page) -> Path:
+    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
+    page_number_path = page_base.with_suffix(".page_number.txt")
+    return page_number_path
+
+
 async def page_md(page: Page) -> str:
     markdown_path = page_md_path(page)
     markdown = await aslurp(markdown_path)
@@ -158,7 +170,7 @@ def get_page_metadata(page: Page) -> dict:
         "game_version": page.gp.get("game_version", ""),
         "rulebook_name": rulebook["name"],
         "document_key": page.document_key,
-        "page_num": page.page_num,
+        "page_ordinal": page.page_num,
     }
     return metadata
 

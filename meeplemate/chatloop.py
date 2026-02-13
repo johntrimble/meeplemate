@@ -2,8 +2,8 @@ from dataclasses import dataclass
 import operator
 from typing import Annotated, Any, AsyncIterator, Protocol, TypedDict, cast, runtime_checkable
 from backoff import runtime
-from langchain.chat_models import BaseChatModel
-from langchain.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage, trim_messages
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage, trim_messages
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.retrievers import BaseRetriever

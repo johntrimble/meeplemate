@@ -3,9 +3,10 @@ from dataclasses import dataclass
 import json
 from re import sub
 from typing import Annotated, Any, Literal, NotRequired, Sequence, Tuple, TypedDict, cast
-from langchain.messages import AnyMessage, ToolMessage
+from langchain_core.messages import AnyMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
+from langchain_core.tools import Tool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.load import Serializable
 from langchain_core.prompts import ChatPromptTemplate

@@ -164,9 +164,10 @@ services:
               device_ids: ['0']
               capabilities: [gpu]
   
-  vllm-ocr:
-    image: vllm/vllm-openai:v0.11.2
+  vllm-deepseek-ocr:
+    image: vllm/vllm-openai:nightly
     ipc: host
+    profiles: ["deepseek-ocr"]
 
     environment:
       # HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN}"
@@ -175,13 +176,54 @@ services:
     # DeepSeek OCR
     # vllm serve deepseek-ai/DeepSeek-OCR --logits_processors vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor --no-enable-prefix-caching --mm-processor-cache-gb 0
     command:
-      - deepseek-ai/DeepSeek-OCR
+      - deepseek-ai/DeepSeek-OCR-2
       - --logits_processors
       - vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor
       - --no-enable-prefix-caching
       - --mm-processor-cache-gb
       - "0"
+      - --gpu-memory-utilization
+      - "0.9"
 
+    volumes:
+      # vLLM uses HF cache under /root/.cache/huggingface in the official image
+      - ./data/vllm_ocr_data:/root/.cache/huggingface:cached
+      - ./services/tgi/tokenizer_configs:/tokenizer_configs:ro
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # device_ids: ['0', '1']   # to expose multiple GPUs
+              device_ids: ['1']
+              capabilities: [gpu]
+
+  vllm-glm-ocr:
+    image: vllm/vllm-openai:nightly
+    ipc: host
+    # profiles: ["glm-ocr"]
+
+    environment:
+      # HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN}"
+      VLLM_LOG_LEVEL: "INFO"
+
+    command:
+      - zai-org/GLM-OCR
+      - --allowed-local-media-path
+      - /
+      - --port
+      - "8080"
+      - --speculative-config
+      - '{"method": "mtp", "num_speculative_tokens": 1}'
+      - --served-model-name
+      - glm-ocr
+      - --gpu-memory-utilization
+      - "0.9"
+      - --no-enable-prefix-caching
+      - --mm-processor-cache-gb
+      - "0"
+ 
     volumes:
       # vLLM uses HF cache under /root/.cache/huggingface in the official image
       - ./data/vllm_ocr_data:/root/.cache/huggingface:cached

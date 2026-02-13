@@ -12,13 +12,12 @@ dependencies = [
     "tqdm",
     "numpy",
     "gradio",
-    "langchain",
+    "langchain>=1.0,<2.0",
     "langchain-community",
-    "langchain-huggingface",
     "langchain-openai",
+    "langchain-classic",
     "blingfire",
     "sentence-transformers",
-    "text-generation",
     "transformers",
     "accelerate",
     "peft",
@@ -29,7 +28,6 @@ dependencies = [
     "sentencepiece",
     "faiss-cpu",
     "opencv-python-headless",
-    "unstructured[pdf]",
     "langchain-astradb",
     "langgraph>=1.0,<2.0",
     "cassandra-driver>=3.29.0,<4.0",
@@ -40,7 +38,8 @@ dependencies = [
     "pydantic-settings>=2.0,<3.0",
     "pyyaml",
     "clingo",
-    "rapidfuzz"
+    "rapidfuzz",
+#    "glmocr @ git+https://github.com/zai-org/GLM-OCR.git@main"
 ]
 
 [project.urls]

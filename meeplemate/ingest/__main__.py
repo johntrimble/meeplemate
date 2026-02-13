@@ -10,7 +10,7 @@ from meeplemate.ingest.chunkbuild import BuildChunksJob
 from meeplemate.ingest.dataimport import ImportDocumentsJob, run_import_documents
 from meeplemate.ingest.gamepackage import load_game_package
 from meeplemate.ingest.initgp import InitGamePackageJob
-from meeplemate.ingest.ocr import OcrJob
+from meeplemate.ingest.ocr import OcrJob, PageNumberFixUpJob, PageNumberOcrJob
 from meeplemate.ingest.documentmetadata import DocumentMetadataJobJob
 from meeplemate.ingest.summary import ExtractTerminologyJob, GenerateGameReferenceJob, save_manifest
 
@@ -63,7 +63,7 @@ def ocr(path: Path):
             "ocr_client": (
                 factory(AsyncOpenAI)(
                     api_key="EMPTY",
-                    base_url="http://vllm-ocr:8000/v1",
+                    base_url="http://vllm-deepseek-ocr:8000/v1",
                     timeout=3600
                 ),
                 []
@@ -83,6 +83,68 @@ def ocr(path: Path):
                 {
                     "ocr_client": "ocr_client"
                 }
+            )
+        }
+    )
+    async def _run():
+        async with system.astart() as services:
+            pass
+    
+    asyncio.run(_run())
+
+
+@cli.command()
+@click.argument("path", type=Path)
+def page_number_ocr(path: Path):
+    settings: Config = Config()
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "ocr_client": (
+                factory(AsyncOpenAI)(
+                    api_key="EMPTY",
+                    base_url="http://vllm-glm-ocr:8080/v1",
+                    timeout=3600
+                ),
+                []
+            ),
+            "ocr_job": (
+                afactory(
+                    PageNumberOcrJob,
+                    astart=PageNumberOcrJob.run
+                )(
+                    path=path,
+                ),
+                {
+                    "ocr_client": "ocr_client"
+                }
+            )
+        }
+    )
+    async def _run():
+        async with system.astart() as services:
+            pass
+    
+    asyncio.run(_run())
+
+
+@cli.command()
+@click.argument("path", type=Path)
+def page_number_fixup(path: Path):
+    settings: Config = Config()
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "page_number_fixup_job": (
+                afactory(
+                    PageNumberFixUpJob,
+                    astart=PageNumberFixUpJob.run
+                )(
+                    path=path,
+                ),
+                []
             )
         }
     )

@@ -2,6 +2,7 @@
 import asyncio
 import base64
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 from typing import AsyncIterator, Sequence, Tuple
@@ -10,8 +11,32 @@ from PIL import Image
 from openai import AsyncOpenAI
 import yaml
 
-from meeplemate.ingest.gamepackage import GamePackage, Page, document_keys, get_page, get_pages_iter, load_game_package, page_md_path, page_structured, page_structured_fixed_path, page_structured_path
-from meeplemate.util import achain, amap, aspit, aspit_json, aspit_yaml, pipeline, sink_into_queue, to_async_iter, xf_amap
+from meeplemate.ingest.gamepackage import (
+    GamePackage,
+    Page,
+    document_keys,
+    get_page,
+    get_pages_iter,
+    load_game_package,
+    page_md_path,
+    page_structured,
+    page_structured_fixed_path,
+    page_structured_path,
+    page_number_raw_path,
+    page_number_path,
+)
+from meeplemate.util import (
+    achain,
+    amap,
+    aslurp,
+    aspit,
+    aspit_json,
+    aspit_yaml,
+    pipeline,
+    sink_into_queue,
+    to_async_iter,
+    xf_amap
+)
 
 from structlog import get_logger
 
@@ -348,6 +373,301 @@ async def write_fixed_structure_and_page_markdown(gp: GamePackage, document_key:
     merged_markdown = "\n\n".join(page_markdown_strings).strip()
     write_tasks.append(aspit(merged_markdown, output_path))
     await asyncio.gather(*write_tasks)
+
+
+async def image_to_page_number(ocr_client: AsyncOpenAI, image_path: Path) -> str | None:
+    encoded_image = encode_image(image_path)
+    image_url = f"data:image/png;base64,{encoded_image}"
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_url
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": '''请按下列JSON格式输出图中信息:
+{
+    "page_number": ""
+}'''
+                }
+            ]
+        }
+    ]
+
+    response = await ocr_client.chat.completions.create(
+        model="glm-ocr",
+        messages=messages,
+        max_tokens=2048,
+        temperature=0.0,
+    )
+    text = response.choices[0].message.content
+
+    # Clean the text, sometimes it puts fences around it
+    if text is None:
+        text = ""
+    text = text.strip().strip("```json").strip("```").strip()
+
+    if not text:
+        logger.warning("OCR response had no text", image_path=image_path)
+        return None
+
+    try:
+        data = json.loads(text)
+    except:
+        logger.exception("Failed to parse OCR response as JSON", text=text)
+        return None
+    return data.get("page_number") or None
+
+
+_ROMAN_VALUES = [
+    ("xl", 40), ("xxxix", 39), ("xxxviii", 38), ("xxxvii", 37), ("xxxvi", 36),
+    ("xxxv", 35), ("xxxiv", 34), ("xxxiii", 33), ("xxxii", 32), ("xxxi", 31),
+    ("xxx", 30), ("xxix", 29), ("xxviii", 28), ("xxvii", 27), ("xxvi", 26),
+    ("xxv", 25), ("xxiv", 24), ("xxiii", 23), ("xxii", 22), ("xxi", 21),
+    ("xx", 20), ("xix", 19), ("xviii", 18), ("xvii", 17), ("xvi", 16),
+    ("xv", 15), ("xiv", 14), ("xiii", 13), ("xii", 12), ("xi", 11),
+    ("x", 10), ("ix", 9), ("viii", 8), ("vii", 7), ("vi", 6),
+    ("v", 5), ("iv", 4), ("iii", 3), ("ii", 2), ("i", 1),
+]
+
+_INT_TO_ROMAN = {v: r for r, v in _ROMAN_VALUES}
+
+
+def _roman_to_int(s: str) -> int | None:
+    """Convert a lowercase roman numeral string to an integer, or None if invalid."""
+    s = s.strip().lower()
+    if not s or not re.fullmatch(r"[ivxlcdm]+", s):
+        return None
+    for roman, val in _ROMAN_VALUES:
+        if s == roman:
+            return val
+    return None
+
+
+def _int_to_roman(n: int) -> str | None:
+    """Convert a positive integer to a lowercase roman numeral, or None if out of range."""
+    return _INT_TO_ROMAN.get(n)
+
+
+def _parse_page_number(s: str) -> tuple[int | None, str | None]:
+    """
+    Parse a page number string into (int_value, format_type).
+    format_type is "arabic", "roman", or None if unparseable/empty.
+    """
+    s = s.strip()
+    if not s:
+        return None, None
+    # Try arabic integer
+    try:
+        return int(s), "arabic"
+    except ValueError:
+        pass
+    # Try roman numeral
+    val = _roman_to_int(s)
+    if val is not None:
+        return val, "roman"
+    return None, None
+
+
+def _format_page_number(n: int, fmt: str) -> str:
+    """Convert an integer to a page number string in the given format."""
+    if fmt == "roman":
+        roman = _int_to_roman(n)
+        if roman is not None:
+            return roman
+    # Fall back to arabic (also used for negative numbers even in roman sections)
+    return str(n)
+
+
+def _remove_outliers(anchors: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+    """
+    Remove anchors whose values are inconsistent with the majority.
+    Two anchors "agree" if their value difference equals their index difference.
+    Anchors that agree with no others are outliers.
+    """
+    if len(anchors) <= 1:
+        return list(anchors)
+
+    agreement_counts = [0] * len(anchors)
+    for i in range(len(anchors)):
+        for j in range(i + 1, len(anchors)):
+            idx_diff = anchors[j][0] - anchors[i][0]
+            val_diff = anchors[j][1] - anchors[i][1]
+            if idx_diff == val_diff:
+                agreement_counts[i] += 1
+                agreement_counts[j] += 1
+
+    if max(agreement_counts) == 0:
+        return list(anchors)
+
+    reliable = [a for a, count in zip(anchors, agreement_counts) if count > 0]
+    return reliable if reliable else list(anchors)
+
+
+def fixup_page_number_sequence(page_numbers: list[str]) -> list[str]:
+    """
+    This function takes a sequence of page numbers (as strings) and fills in any
+    missing page numbers by looking for patterns in the existing page numbers.
+    For example, if it sees ["1", "2", "", "4"], it can infer that the missing
+    page number is "3". It should be able to handle simple cases of missing page
+    numbers, but does not need to be perfect.
+
+    This function will also fix any single page numbers that are clearly wrong
+    based on the surrounding page numbers. For example, if it sees ["1", "2",
+    "100", "4"], it can infer that "100" is likely a misread "3" and fix it.
+
+    Numbering formats may vary, for example "i", "ii", "iii", or "1", "2", "3".
+    Multiple formats may appear in sequence (e.g. roman front matter then arabic
+    content). Each format segment is processed independently.
+
+    Will add negative page numbers if needed for initial unnumbered pages.
+
+    The list length is never changed - each element corresponds to a physical page.
+    """
+    n = len(page_numbers)
+    if n <= 1:
+        return list(page_numbers)
+
+    # Step 1: Parse all entries into anchors
+    anchors = []  # list of (index, int_value, format)
+    for i, pn in enumerate(page_numbers):
+        val, fmt = _parse_page_number(pn)
+        if val is not None:
+            anchors.append((i, val, fmt))
+
+    if not anchors:
+        # No parseable page numbers - assume pages start at 1
+        return [str(i + 1) for i in range(n)]
+
+    # Step 2: Detect format segments (contiguous runs of the same format)
+    segments = []  # list of (format, [anchors...])
+    cur_fmt = anchors[0][2]
+    cur_anchors = [anchors[0]]
+    for anchor in anchors[1:]:
+        if anchor[2] == cur_fmt:
+            cur_anchors.append(anchor)
+        else:
+            segments.append((cur_fmt, cur_anchors))
+            cur_fmt = anchor[2]
+            cur_anchors = [anchor]
+    segments.append((cur_fmt, cur_anchors))
+
+    # Step 3: Determine index ranges for each segment
+    # Blanks between segments are assigned to the preceding segment.
+    segment_ranges = []  # list of (start, end, format, anchors)
+    for seg_idx, (fmt, seg_anchors) in enumerate(segments):
+        start = 0 if seg_idx == 0 else seg_anchors[0][0]
+        if seg_idx == len(segments) - 1:
+            end = n - 1
+        else:
+            end = segments[seg_idx + 1][1][0][0] - 1
+        segment_ranges.append((start, end, fmt, seg_anchors))
+
+    # Step 4: Within each segment, remove outliers and interpolate blanks
+    result = list(page_numbers)
+    for start, end, fmt, seg_anchors in segment_ranges:
+        reliable = _remove_outliers(seg_anchors)
+        if not reliable:
+            continue
+
+        reliable_positions = {idx for idx, _, _ in reliable}
+
+        for i in range(start, end + 1):
+            if i in reliable_positions:
+                continue
+            nearest_idx, nearest_val, _ = min(reliable, key=lambda a: abs(a[0] - i))
+            expected_val = nearest_val + (i - nearest_idx)
+            result[i] = _format_page_number(expected_val, fmt)
+
+    return result
+
+
+@dataclass
+class PageNumberFixUpJob:
+    path: Path
+    _gp: GamePackage | None = None
+
+    @property
+    def gp(self) -> GamePackage:
+        # We lazy load this as it may not exist until init_game_package
+        # is called
+        if self._gp is None:
+            self._gp = load_game_package(self.path)
+        return self._gp
+
+    async def run(self):
+
+        async def fixup_page_numbers_for_document(document_key: str):
+            page_number_paths = []
+            fixed_page_number_paths = []
+            async for page in get_pages_iter(self.gp, document_key):
+                page_number_paths.append(page_number_raw_path(page))
+                fixed_page_number_paths.append(page_number_path(page))
+
+            page_numbers = []
+            for path in page_number_paths:
+                if not path.exists():
+                    logger.warning("Page number file does not exist", path=path)
+                    page_numbers.append("")
+                    continue
+                text = await aslurp(path)
+                page_numbers.append(text.strip())
+
+            fixed_page_numbers = fixup_page_number_sequence(page_numbers)
+
+            write_tasks = []
+            for path, fixed in zip(fixed_page_number_paths, fixed_page_numbers):
+                write_tasks.append(aspit(fixed, path))
+            await asyncio.gather(*write_tasks)
+
+        tasks = []
+        for document_key in document_keys(self.gp):
+            tasks.append(fixup_page_numbers_for_document(document_key))
+        await asyncio.gather(*tasks)
+
+
+@dataclass
+class PageNumberOcrJob:
+    path: Path
+    ocr_client: AsyncOpenAI
+    max_ocr_workers: int = 2
+    _gp: GamePackage | None = None
+
+    @property
+    def gp(self) -> GamePackage:
+        # We lazy load this as it may not exist until init_game_package
+        # is called
+        if self._gp is None:
+            self._gp = load_game_package(self.path)
+        return self._gp
+
+    async def run(self):
+        tasks = []
+        sem = asyncio.Semaphore(self.max_ocr_workers)
+        async def ocr_and_write_page_number(page: Page):
+            async with sem:
+                page_number_text = await image_to_page_number(
+                    self.ocr_client, 
+                    page_image_path(page)
+                )
+
+                if page_number_text is None:
+                    page_number_text = ""
+                await aspit(page_number_text, page_number_raw_path(page))
+
+        for document_key in document_keys(self.gp):
+            async for page in get_pages_iter(self.gp, document_key):
+                tasks.append(
+                    asyncio.create_task(ocr_and_write_page_number(page))
+                )
+
+        await asyncio.gather(*tasks)
 
 
 @dataclass

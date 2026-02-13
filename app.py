@@ -243,7 +243,7 @@ async def main(message: cl.Message):
         None.
     """
     # Limit message size to prevent overly large requests
-    MAX_MESSAGE_LENGTH = 4000
+    MAX_MESSAGE_LENGTH = 5_000
     if len(message.content) > MAX_MESSAGE_LENGTH:
         await cl.Message(
             content=f"⚠️ Message too long! Please keep your message under {MAX_MESSAGE_LENGTH} characters. (Current: {len(message.content)} characters)"

@@ -18,13 +18,13 @@ from transformers import (
     PreTrainedTokenizerBase,
     AutoTokenizer,
 )
-import langchain_huggingface.chat_models as hfcm
+# import langchain_huggingface.chat_models as hfcm
 from sentence_transformers import SentenceTransformer
 from langchain_core.embeddings import Embeddings
 from pydantic import Field
 from typing import Dict, Any
 from sentence_transformers import SentenceTransformer
-from text_generation.types import Details
+# from text_generation.types import Details
 
 import requests
 from urllib.parse import urljoin
@@ -78,7 +78,7 @@ class HuggingFaceChatModelLocal(ChatHuggingFace):
         return chat_result
 
 
-def tgi_details_to_generation_details(tgi_details:Details) -> Dict[str, Any]:
+def tgi_details_to_generation_details(tgi_details) -> Dict[str, Any]:
     _tokens = tgi_details.tokens or []
     tokens = [dict(id=token.id, text=token.text, logprob=token.logprob, special=token.special) for token in _tokens]
     return {"tokens": tokens}
@@ -346,7 +346,7 @@ def _does_tokenizer_support_system_prompt(tokenizer:Any) -> bool:
         return False
 
 
-def monkey_patch_huggingface_chat_model_no_system_prompt(chat_model:hfcm.ChatHuggingFace) -> hfcm.ChatHuggingFace:
+def monkey_patch_huggingface_chat_model_no_system_prompt(chat_model):
     original_create_message_dicts = chat_model._create_message_dicts
     def _patched_create_message_dicts(
         self, messages: list[BaseMessage], stop: Optional[list[str]]
