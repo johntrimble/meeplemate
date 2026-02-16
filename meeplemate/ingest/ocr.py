@@ -303,7 +303,7 @@ async def image_to_deepseek_ocr(ocr_client, image_path: Path) -> str:
     ]
 
     response = await ocr_client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-OCR",
+        model="deepseek-ai/DeepSeek-OCR-2",
         messages=messages,
         max_tokens=2048,
         temperature=0.0,

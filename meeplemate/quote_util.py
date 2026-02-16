@@ -27,7 +27,9 @@ class ExtractedCitation(TypedDict):
 
 class ExtractedQuote(TypedDict):
     text: str
+    """The original quote text, including citation if present and any blockquote markers and additional formatting."""
     quote: str
+    """The cleaned quote text. No blockquote markers. No citation. No quotation marks."""
     quote_type: Literal["blockquote", "inline"]
     start_index: int
     end_index: int
@@ -679,3 +681,16 @@ def expand_to_full_paragraphs(doc_markdown: str, quote: str, *, max_additional_c
 
     expanded_quote = doc_markdown[final_start:para_end].strip()
     return expanded_quote
+
+
+def are_blockquotes_adjacent(quote1: ExtractedQuote, quote2: ExtractedQuote, text: str) -> bool:
+    # Two blockquotes are adjacent if there is no content inbetween them except
+    # for whitespace characters
+
+    # Make it so that quote1 represents the earlier quote in the text
+    if quote1["start_index"] > quote2["start_index"]:
+        quote1, quote2 = quote2, quote1
+    
+    # Now lets get the content between the two quotes
+    between_text = text[quote1['end_index']:quote2['start_index']]
+    return between_text.strip() == ''

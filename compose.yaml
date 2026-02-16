@@ -343,7 +343,7 @@ services:
     platform: linux/amd64
     mem_limit: 16G
     environment:
-      - MAX_HEAP_SIZE=512M
+      - MAX_HEAP_SIZE=8G
       - HEAP_NEWSIZE=100M
       - CLUSTER_NAME=dse-cluster
       - DC=datacenter1

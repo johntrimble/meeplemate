@@ -1,10 +1,14 @@
 from langchain.messages import AnyMessage, ToolMessage
 from langchain_core.messages.content import ToolCall
-from meeplemate.qa_graph import Chunk, ChunkSearchResult, QaResponse, dedupe_chunks, dedupe_chunks_in_message_history, fix_quote_citations_in_text, get_chunk_id_tuple, sort_chunks, tweak_and_validate_quotes_response
+from langchain_core.runnables import chain
+import pytest
+from meeplemate.qa_graph import Chunk, ChunkSearchResult, FixQuoteInput, FixQuotesResult, QaResponse, QuoteEntry, ValidateAndFixResponseOutput, dedupe_chunks, dedupe_chunks_in_message_history, extracted_quote_to_quote_entry, fix_quote_citations_in_text, get_chunk_id_tuple, sort_chunks, tweak_and_validate_quotes_response, ValidateAndFixResponseInput, validate_and_fix_response, validate_and_fix_response
 from langchain_core.messages import AIMessage, BaseMessage
 from typing import List
 import json
 import inspect
+
+from meeplemate.quote_util import find_quotes_in_text
 
 def test_dedupe_chunks_in_message_history():
     result1 = ChunkSearchResult(
@@ -979,3 +983,154 @@ def test_sort_chunks_by_start_index():
     # start_index=100 should come before start_index=500 regardless of page strings
     assert sorted_result[0]["start_index"] == 100
     assert sorted_result[1]["start_index"] == 500
+
+
+@pytest.mark.asyncio
+async def test_validate_and_fix_response_fix_via_llm():
+    response = """
+    Some summary of the response.
+
+    > Some quoted text that is okay. (Rulebook, p. 5)
+
+    > Wrong bit of some quoted text. (Rulebook, p. 6)
+
+    > Another bit of not so right text. (Rulebook, p. 6)
+
+    Some other text about stuff and such.
+
+    > Another quote that is good. (Rulebook, p. 4)
+    
+    > A multi-line bit of text.
+    >
+    > Another paragraph. (Rulebook, p. 4)
+    """
+
+    response = inspect.cleandoc(response)
+
+    page_4_content = """
+    Another quote that is good. A multi-line bit of text.
+
+    Another paragraph.
+    """
+
+    page_4_content = inspect.cleandoc(page_4_content)
+
+    page_5_content = """
+    Some amount of text here. There is some amount of it. Yes there is. Some quoted text that is okay.
+    """
+
+    page_5_content = inspect.cleandoc(page_5_content)
+
+    page_6_content = """
+    This quoted text is a bit wrong.  Another bit of maybe not right text.
+    """
+
+    page_6_content = inspect.cleandoc(page_6_content)
+
+    chunks: list[Chunk] = [
+        Chunk(
+            rulebook_name="Rulebook",
+            page="4",
+            start_index=50,
+            end_index=50 + len(page_4_content),
+            content=page_4_content
+        ),
+        Chunk(
+            rulebook_name="Rulebook",
+            page="5",
+            start_index=60,
+            end_index=60+len(page_5_content),
+            content=page_5_content
+        ),
+        Chunk(
+            rulebook_name="Rulebook",
+            page="6",
+            start_index=0,
+            end_index=0 + len(page_6_content),
+            content=page_6_content
+        )
+    ]
+
+    input = ValidateAndFixResponseInput(
+        response=response,
+        evidence=chunks,
+        messages=[],
+        validation_attempts=0
+    )
+
+    fix_quote_response_idx = 0
+    fix_quote_responses = [
+        FixQuotesResult(
+            reasoning="Some fancy pants reasoning",
+            fixable=True,
+            fixed_quote=QuoteEntry(
+                text="This quoted text is a bit wrong.",
+                rulebook_name="Rulebook",
+                page="6"
+            )
+        ),
+        FixQuotesResult(
+            reasoning="Some fancy pants reasoning",
+            fixable=True,
+            fixed_quote=QuoteEntry(
+                text="This quoted text is a bit wrong.",
+                rulebook_name="Rulebook",
+                page="6"
+            )
+        )        
+    ]
+
+    @chain
+    def fix_quote_stub(input: FixQuoteInput) -> FixQuotesResult:
+        nonlocal fix_quote_response_idx
+        return_value = fix_quote_responses[fix_quote_response_idx]
+        fix_quote_response_idx += 1
+        return return_value
+
+    # Mock out meeplemate.qa_graph.build_fix_quote_chain to return our stub chain
+    from unittest.mock import patch, MagicMock
+
+    runtime = MagicMock()
+    runtime.context.manifest = {
+        "game_id": "test_game",
+        "game_version": "1.0",
+        "rulebooks": [
+            {"name": "Rulebook", "document_key": "rulebook"}
+        ]
+    }
+
+    with patch("meeplemate.qa_graph.build_fix_quote_chain", return_value=fix_quote_stub):
+        result: ValidateAndFixResponseOutput = await validate_and_fix_response(input, runtime=runtime, config=None)
+
+    quotes = find_quotes_in_text(result['response'])
+    quote_entries: List[QuoteEntry] = [extracted_quote_to_quote_entry(q) for q in quotes]
+    expected_quote_entries = [
+        QuoteEntry(
+            text="Some quoted text that is okay.",
+            rulebook_name="Rulebook",
+            page="5"
+        ),
+        QuoteEntry(
+            text="This quoted text is a bit wrong.",
+            rulebook_name="Rulebook",
+            page="6"
+        ),
+        QuoteEntry(
+            text="Another quote that is good.",
+            rulebook_name="Rulebook",
+            page="4"
+        ),
+        QuoteEntry(
+            text="A multi-line bit of text.\n\nAnother paragraph.",
+            rulebook_name="Rulebook",
+            page="4"
+        )
+    ]
+
+    assert result["invalid_quotes"] == [], "All quotes should be fixable in this test case, so no invalid quotes should remain."
+
+    # Lets check the expected quote entries are correct ignoring the order they
+    # appear in
+    for expected_entry in expected_quote_entries:
+        assert expected_entry in quote_entries, f"Expected quote entry not found in result: {expected_entry}"
+    assert len(quote_entries) == len(expected_quote_entries), f"Expected {len(expected_quote_entries)} quote entries, but found {len(quote_entries)}. Quote entries found: {quote_entries}"

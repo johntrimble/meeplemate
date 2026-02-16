@@ -536,6 +536,7 @@ def build_chunk_search_service_2(
         game_version = manifest["game_version"]
 
         filter = {"game_id": game_id, "game_version": game_version}
+        logger.info("Vectorstore search", game_id=game_id, game_version=game_version, filter=filter, query_count=len(query))
 
         retrieved_results = []
 
@@ -547,6 +548,7 @@ def build_chunk_search_service_2(
                 filter=filter,
                 k=50
             )
+            logger.info("Vectorstore returned", query=q, result_count=len(docs_and_scores))
 
             # Step 2: Use the adaptive k algorithm to find the cutoff point in
             # the retrieved results
@@ -554,6 +556,7 @@ def build_chunk_search_service_2(
             docs = [doc for doc, _ in docs_and_scores]
             adaptive_k = find_cutoff_adaptive_k(scores)
             selected_docs = docs[:adaptive_k]
+            logger.info("Adaptive k selection", query=q, raw_count=len(docs), adaptive_k=adaptive_k, selected_count=len(selected_docs))
 
             # Step 3: Add the selected chunks to the overall results
             retrieved_results.extend(selected_docs)

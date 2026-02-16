@@ -7,6 +7,7 @@ import structlog
 from meeplemate.component_system import System, afactory, factory, subsystem
 from meeplemate.config import Config, create_app_system
 from meeplemate.ingest.chunkbuild import BuildChunksJob
+from meeplemate.ingest.cleardata import ClearOldDataJob
 from meeplemate.ingest.dataimport import ImportDocumentsJob, run_import_documents
 from meeplemate.ingest.gamepackage import load_game_package
 from meeplemate.ingest.initgp import InitGamePackageJob
@@ -256,6 +257,35 @@ def update_version(path: Path):
     new_version = str(uuid7())
     manifest["game_version"] = new_version
     save_manifest(manifest)
+
+
+@cli.command()
+def clear_old_data():
+    settings: Config = Config()
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "clear_data_job": (
+                afactory(
+                    ClearOldDataJob,
+                    astart=ClearOldDataJob.run,
+                )(),
+                {
+                    "game_version_store": "game_version_store",
+                    "game_data_store": "game_data_store",
+                    "docstore": "docstore",
+                    "full_page_store": "full_page_store",
+                    "vector_store": "vector_store",
+                }
+            )
+        }
+    )
+    async def _run():
+        async with system.astart() as services:
+            pass
+    
+    asyncio.run(_run())
 
 
 # uv run python -m meeplemate.ingest generate-reference ./data/ingested/munchkin_rules/

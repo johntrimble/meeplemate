@@ -2,7 +2,8 @@ import copy
 from dataclasses import dataclass
 import json
 from re import sub
-from typing import Annotated, Any, Literal, NotRequired, Sequence, Tuple, TypedDict, cast
+import re
+from typing import Annotated, Any, List, Literal, NotRequired, Protocol, Sequence, Tuple, TypedDict, cast
 from langchain_core.messages import AnyMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
@@ -16,13 +17,14 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 from langgraph.prebuilt import ToolNode
+from numpy import block
 
 from meeplemate import quote_util
 from meeplemate.ingest.gamepackage import Manifest, get_page_id
 from meeplemate.search import ChunkSearchService, ChunkSearchServiceInput, CompiledStateGraph
 from structlog import get_logger
 
-from meeplemate.util import load_template, serialize_typeddict
+from meeplemate.util import load_template
 logger = get_logger()
 
 REFINEMENT_PARTITION_NUMBER = 4
@@ -74,6 +76,7 @@ class GameAgentContext:
     manifest: Manifest
     full_page_store: BaseStore[str, Serializable]
     chunk_search_service: ChunkSearchService
+    chat_model: BaseChatModel
 
 
 @tool(description="Returns a list of rulebooks for the game along with brief summary of each. This information can be used to subsequently retrieve pages using the `retrieve_page` function.")
@@ -238,6 +241,7 @@ async def search_chunks(search_queries: list[str], runtime: ToolRuntime[ContextW
                         )
                     }
                 )
+    logger.info("search_chunks returning", result_count=len(results))
     return results
 
 
@@ -246,6 +250,11 @@ class QuoteEntry(TypedDict):
     text: Annotated[str, ..., "Verbatim quote from the rulebook"]
     rulebook_name: Annotated[str, ..., "Name of the rulebook this quote comes from"]
     page: Annotated[str, ..., "Page number where this quote appears"]
+
+
+class QuoteEntryWithID(QuoteEntry):
+    """A quote from a rulebook with its citation information"""
+    id: Annotated[str, ..., "Unique identifier for this quote, used for tracking and referencing"]
 
 
 class DefinitionEntry(TypedDict):
@@ -328,16 +337,31 @@ class QaResponse(TypedDict):
 
 
 def get_all_chunks_from_message_history(messages: list[AnyMessage]) -> list[Chunk]:
+    # Find the tool call ids for search_chunks
+    tool_call_ids = set()
+    for message in messages:
+        tool_calls = getattr(message, "tool_calls", [])
+        for tool_call in tool_calls:
+            if tool_call["name"] == search_chunks.name:
+                tool_call_ids.add(tool_call["id"])
+
     chunks: list[Chunk] = []
     for message in messages:
-        if isinstance(message, ToolMessage) and message.status == "success":
+        if isinstance(message, ToolMessage) and message.tool_call_id in tool_call_ids and message.status == "success":
+            # Skip empty messages - they cannot contain valid search results
+            # This can happen when search_chunks returns 0 results due to serialization issues
+            if not message.text or not message.text.strip():
+                logger.warning("Skipping ToolMessage with empty content", tool_call_id=message.tool_call_id)
+                continue
             try:
                 results: list[ChunkSearchResult] = json.loads(message.text)
                 for result in results:
                     chunk: Chunk = result["chunk"]
                     chunks.append(chunk)
-            except Exception as e:
-                logger.error(f"Error extracting chunks from tool message content: {e}")
+            except Exception:
+                logger.exception(f"Error extracting chunks from tool message")
+                logger.info("Offending message content", content=message.text)
+
     return chunks
 
 
@@ -356,6 +380,11 @@ def dedupe_chunks_in_message_history(messages):
 
     for message in reversed(messages):
         if isinstance(message, ToolMessage) and message.tool_call_id in tool_call_ids and message.status == "success":
+            # Skip empty messages - they cannot contain valid search results
+            # This can happen when search_chunks returns 0 results due to serialization issues
+            if not message.text or not message.text.strip():
+                logger.warning("Skipping ToolMessage with empty content during deduplication", tool_call_id=message.tool_call_id)
+                continue
             try:
                 results: list[ChunkSearchResult] = json.loads(message.text)
                 deduped_results = []
@@ -385,6 +414,45 @@ class QuoteValidationException(ValueError):
         self.result = result
         message = f"Quote validation failed: {len(result.invalid_quotes)} invalid quotes"
         super().__init__(message)
+
+
+def create_chunks_for_quotes(quote_entries: Sequence[QuoteEntry], documents: Sequence[Chunk]) -> Sequence[Chunk|None]:
+    # Organize documents
+    documents_by_rulebook_and_page: dict[tuple[str, str], list[Chunk]] = {}
+    for document in documents:
+        rulebook_name = document["rulebook_name"]
+        page = document["page"]
+        key = (rulebook_name, page)
+        if not key in documents_by_rulebook_and_page:
+            documents_by_rulebook_and_page[key] = []
+        documents_by_rulebook_and_page[key].append(document)
+
+    result_chunks: list[Chunk|None] = []
+    for i, quote in enumerate(quote_entries):
+        key = (quote["rulebook_name"], quote["page"])
+        candidate_documents = documents_by_rulebook_and_page.get(key, [])
+        chunk = None
+        for document in candidate_documents:
+            page_content = document["content"]
+            match = quote_util.find_quote_with_gaps(page_content, quote["text"])
+            if match:
+                # start and end relative to the chunk
+                start_index, end_index = match.start, match.end
+
+                # start and end relative to the document
+                start_index += document["start_index"]
+                end_index += document["start_index"]
+
+                chunk = Chunk(
+                    rulebook_name=document["rulebook_name"],
+                    page=document["page"],
+                    start_index=start_index,
+                    end_index=end_index,
+                    content=match.matched_text
+                )
+                break
+        result_chunks.append(chunk)
+    return result_chunks
 
 
 def compile_evidence_from_documents(quote_entries: Sequence[QuoteEntry], documents: Sequence[Chunk]) -> Sequence["Chunk"]:
@@ -511,6 +579,19 @@ def dedupe_chunks(chunks: list[Chunk]) -> list[Chunk]:
                 seen.add(chunk["content"])
 
     return result
+
+
+def quote_entry_to_blockquote(quote_entry: QuoteEntry) -> str:
+    blockquote = ""
+
+    # Prefix each line with `>`
+    for line in quote_entry["text"].splitlines():
+        blockquote += f"> {line}\n"
+    
+    # Put citation at the end of the blockquote
+    blockquote += f"> \n> ({quote_entry['rulebook_name']}, p. {quote_entry['page']})"
+
+    return blockquote
 
 
 def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) -> str:
@@ -1003,7 +1084,12 @@ class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
     tokens_used: NotRequired[int]
 
 
-def get_evidence(state: GameAgentOverallState) -> list[Chunk]:
+class GetEvidenceInput(TypedDict):
+    messages: list[AnyMessage]
+    evidence: list[Chunk]
+
+
+def get_evidence(state: GetEvidenceInput) -> list[Chunk]:
     # Gather the context we've collected so far
     documents = []
     # If we've already acquired evidence, use that.
@@ -1460,6 +1546,323 @@ def calculate_tokens_used(tokenizer: Any,prompt: ChatPromptTemplate, input: dict
     return prompt_tokens
 
 
+def are_chunks_overlapping(chunk1: Chunk|None, chunk2: Chunk|None) -> bool:
+    if chunk1 is None or chunk2 is None:
+        return False
+
+    if chunk1["rulebook_name"] != chunk2["rulebook_name"]:
+        return False
+    if chunk1["page"] != chunk2["page"]:
+        return False
+
+    if chunk1["start_index"] > chunk2["start_index"]:
+        chunk1, chunk2 = chunk2, chunk1
+
+    # Now chunk1 starts before chunk2, so we just need to check if chunk1 ends after chunk2 starts
+    return chunk1["end_index"] > chunk2["start_index"]
+
+
+def extracted_quote_to_quote_entry(extracted_quote: quote_util.ExtractedQuote) -> QuoteEntry:
+    return QuoteEntry(
+        text=extracted_quote["quote"],
+        rulebook_name=extracted_quote["citation"]["ref_name"] if extracted_quote["citation"] else "",
+        page=extracted_quote["citation"]["page"] if extracted_quote["citation"] else ""
+    )
+
+class FixQuotesResult(TypedDict):
+    reasoning: str
+    fixable: bool
+    fixed_quote: QuoteEntry
+
+class FixQuoteInput(TypedDict):
+    invalid_quote: QuoteEntry
+    documents: list[Chunk]
+
+def build_fix_quote_chain(chat_model: BaseChatModel) -> Runnable[FixQuoteInput,FixQuotesResult]:
+    system_prompt_with_documents = load_template('system_prompt_with_documents.md')
+    fix_quotes = load_template('fix_invalid_quotes.md')
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt_with_documents),
+            ("human", fix_quotes)
+        ],
+        template_format="mustache"
+    )
+
+    chain = prompt | chat_model.with_structured_output(FixQuotesResult)
+
+    chain = chain.with_config(
+        run_name="fix_quote_chain",
+    )
+
+    return cast(Runnable[FixQuoteInput, FixQuotesResult], chain)
+
+
+class ValidateAndFixResponseInput(TypedDict):
+    response: str
+    evidence: list[Chunk]
+    messages: list[AnyMessage]
+    validation_attempts: int
+
+
+@dataclass
+class ValidateAndFixResponseContext:
+    chat_model: BaseChatModel
+    manifest: Manifest
+
+
+class ValidateAndFixResponseOutput(TypedDict):
+    response: str
+    evidence: NotRequired[list[Chunk]]
+    invalid_quotes: list[QuoteEntry]
+    validation_attempts: int
+
+
+async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runtime: Runtime[Any], config: RunnableConfig|None = None) -> ValidateAndFixResponseOutput:
+    # Get required services
+    chat_model = runtime.context.chat_model
+
+    # Get the current answer and related documents
+    response = state["response"]
+    documents = get_evidence(state)
+    documents = sort_chunks(documents, runtime.context.manifest)
+
+    # Do simple citation fixes and validate the response
+    fix_result = fix_quote_citations_in_text(response, documents)
+    fixed_response = fix_result.fixed_text
+
+    # Get the quotes from the fixed response
+    valid_extracted, invalid_extracted = fix_result.valid_quotes, fix_result.unfixable_quotes
+
+    # If nothing is invalid, we are good to return
+    if len(invalid_extracted) == 0:
+        # All quotes valid — build evidence from the quotes in the response
+        valid_quote_entries = [extracted_quote_to_quote_entry(vq) for vq in valid_extracted]
+        evidence = compile_evidence_from_documents(valid_quote_entries, documents)
+        return {
+            "response": fixed_response,
+            "evidence": list(evidence),
+            "invalid_quotes": [],
+            "validation_attempts": 0,
+        }
+    
+    # Okay, something is still busted with the response
+    invalid_quote_entries = [
+        extracted_quote_to_quote_entry(iq) 
+        for iq in invalid_extracted
+    ]
+
+    # Formatting inline quotes correctly can be tricky, so we'll only
+    # attempt to repair blockquotes for now
+    if any(q["quote_type"] not in ["blockquote"] for q in invalid_extracted):
+        return {
+            "response": fixed_response,
+            "invalid_quotes": invalid_quote_entries,
+            "validation_attempts": state.get("validation_attempts", 0) + 1,
+        }
+
+    # Okay, we have bad quotes, but they are all blockquotes, there is hope!
+
+    # Order the extracted blockquotes. This allows us to index the
+    # blockquotes by order of appearance.
+    fixed_response = fixed_response
+    all_extracted_ordered = quote_util.find_quotes_in_text(fixed_response)
+    all_extracted_ordered = [eq for eq in all_extracted_ordered if eq["quote_type"] == "blockquote"]
+    all_extracted_ordered.sort(key=lambda eq: eq["start_index"])
+    total_blockquotes = len(all_extracted_ordered)
+
+    invalid_indices = []
+    invalid_index_to_fixed = {}
+    for idx, eq in enumerate(all_extracted_ordered):
+        for invalid_eq in invalid_extracted:
+            if eq["quote"] == invalid_eq["quote"]:
+                invalid_indices.append(idx)
+
+
+    # Use LLM to attempt to fix each invalid quote by looking at our
+    # documents
+    chain = build_fix_quote_chain(chat_model)
+
+    inputs: list[FixQuoteInput] = []
+    inputs_to_indices: list[int] = []
+    for idx in invalid_indices:
+        iq = extracted_quote_to_quote_entry(all_extracted_ordered[idx])
+        inputs.append(
+            FixQuoteInput(
+                invalid_quote=iq,
+                documents=documents
+            )
+        )
+        inputs_to_indices.append(idx)
+    
+    fix_quote_results: list[FixQuotesResult] = await chain.abatch(
+        inputs,
+        config=config
+    )
+
+    for idx, result in zip(invalid_indices, fix_quote_results):
+        invalid_index_to_fixed[idx] = result
+
+    # Bail if we were unable to fix all the quotes
+    all_fixed = all(result["fixable"] for result in fix_quote_results)
+    if not all_fixed:
+        return {
+            "response": fixed_response,
+            "invalid_quotes": invalid_quote_entries,
+            "validation_attempts": state.get("validation_attempts", 0) + 1,
+        }
+
+    # Okay, let's apply the fixes to the response
+    
+    # Iterate invalid quotes in reverse order of appearance. This is so that
+    # as we replace text we don't mess up the start_index of the remaining
+    # invalid quotes that we need to fix.
+    for idx in sorted(invalid_indices, reverse=True):
+        invalid_quote = all_extracted_ordered[idx]
+        fix_result = invalid_index_to_fixed[idx]
+        assert fix_result["fixable"], "We should have bailed if any quote was unfixable"
+        fixed_quote = fix_result["fixed_quote"]
+        # Format the fixed quote as a blockquote with the correct citation
+        fixed_blockquote = quote_entry_to_blockquote(fixed_quote)
+        # Replace the invalid quote in the response with the fixed blockquote
+        start_index = invalid_quote["start_index"]
+        end_index = invalid_quote["end_index"]
+        fixed_response = (
+            fixed_response[:start_index]
+            + fixed_blockquote
+            + fixed_response[end_index:]
+        )
+
+    # Okay, we have applied the fixes, now let's see if the response has
+    # valid quotes now
+    fix_result = fix_quote_citations_in_text(fixed_response, documents)
+    fixed_response = fix_result.fixed_text
+
+    if len(fix_result.unfixable_quotes) > 0:
+        # Okay, it is still busted, time to bail
+        logger.info("Response still invalid after attempting fixes")
+        for iq in fix_result.unfixable_quotes:
+            logger.info("Unfixable quote", quote=iq["quote"])
+        return {
+            "response": fixed_response,
+            "invalid_quotes": [
+                extracted_quote_to_quote_entry(iq) for iq in fix_result.unfixable_quotes
+            ],
+            "validation_attempts": state.get("validation_attempts", 0) + 1
+        }
+    
+    # Get the extracted quotes from the new fixed response
+    all_extracted_ordered = quote_util.find_quotes_in_text(
+        fix_result.fixed_text
+    )
+    all_extracted_ordered = [
+        eq for eq in all_extracted_ordered 
+        if eq["quote_type"] == "blockquote"
+    ]
+    all_extracted_ordered.sort(key=lambda eq: eq["start_index"])
+    all_quote_entries_ordered = [extracted_quote_to_quote_entry(eq) for eq in all_extracted_ordered]
+    chunks_for_blockquotes = create_chunks_for_quotes(
+        all_quote_entries_ordered,
+        documents
+    )
+
+    assert len(all_extracted_ordered) == total_blockquotes, "We should not have changed the number of blockquotes in the response, only fixed their formatting and citations. If this assertion fails, we need to add logic to handle the case where the number of blockquotes changes, since that can affect the indices of the quotes in the response and how we apply fixes."
+
+    # The LLM will often output multiple consecutive blockquotes that point
+    # out essentially the same rule in multiple places in the documents.
+    # Sometimes when fixing the quotes, we end up with duplicates of the
+    # same quote adjacent to eachother in the response. We can drop any
+    # fixed quotes that introduce such duplication.
+
+    # Get the consecutive groups of blockquotes in the fixed response
+    consecutive_blockquote_groups: List[List[int]] = []
+    current_group: List[int] = []
+    for index, quote in enumerate(all_extracted_ordered):
+        if not current_group:
+            current_group.append(index)
+        else:
+            previous_quote = all_extracted_ordered[current_group[-1]]
+            if quote_util.are_blockquotes_adjacent(
+                previous_quote,
+                quote,
+                fixed_response
+            ):
+
+                current_group.append(index)
+            else:
+                consecutive_blockquote_groups.append(current_group)
+                current_group = [index]
+    if current_group:
+        consecutive_blockquote_groups.append(current_group)
+    
+    blockquote_indices_to_remove = set()
+    for group in consecutive_blockquote_groups:
+        overlapping_pairs: List[tuple[int, int]] = []
+        for i in group:
+            if i in blockquote_indices_to_remove:
+                continue
+            for j in group:
+                if j in blockquote_indices_to_remove:
+                    continue
+                if i == j:
+                    continue
+                # We only care about pairs where one our fixed quotes is
+                # implicated
+                if i not in invalid_indices and j not in invalid_indices:
+                    continue
+
+                chunk_i = chunks_for_blockquotes[i]
+                chunk_j = chunks_for_blockquotes[j]
+                if are_chunks_overlapping(chunk_i, chunk_j):
+                    overlapping_pairs.append((i, j))
+
+        for i, j in overlapping_pairs:
+            # If we've already decided to remove one of these, we can just
+            # skip this pair
+            if i in blockquote_indices_to_remove or j in blockquote_indices_to_remove:
+                continue
+
+            # We have two blockquotes that are adjacent and point to overlapping
+            # chunks in the documents. This likely means they are quoting the
+            # same rule, so we can probably get away with removing one of them.
+            # If only one of them was fixed, we should remove that one since it
+            # introduced the duplication.
+            if i in invalid_indices and j in invalid_indices:
+                # Lets keep the one that starts earlier in the document
+                if all_extracted_ordered[i]["start_index"] < all_extracted_ordered[j]["start_index"]:
+                    blockquote_indices_to_remove.add(j)
+                else:
+                    blockquote_indices_to_remove.add(i)
+            elif j in invalid_indices:
+                blockquote_indices_to_remove.add(j)
+            elif i in invalid_indices:
+                blockquote_indices_to_remove.add(i)
+
+    # Now we remove duplicate blockquotes
+    for index in sorted(blockquote_indices_to_remove, reverse=True):
+        quote_to_remove = all_extracted_ordered[index]
+        start_index = quote_to_remove["start_index"]
+        end_index = quote_to_remove["end_index"]
+        fixed_response = fixed_response[:start_index] + fixed_response[end_index:]
+    
+    # In the process of fixing the quotes, we may have introduced extra
+    # blank lines, so lets collapse those
+    fixed_response = re.sub(r'\n\s*\n', '\n\n', fixed_response)
+
+    # We should have a fixed response now. Yay! Let's compile the evidence.
+    quote_entries = [
+        extracted_quote_to_quote_entry(eq) for eq in fix_result.valid_quotes
+    ]
+    evidence = compile_evidence_from_documents(quote_entries, documents)
+    return {
+        "response": fixed_response,
+        "evidence": list(evidence),
+        "invalid_quotes": [],
+        "validation_attempts": 0,
+    }
+
+
 def build_question_answer_graph(
     checkpoint_saver: BaseCheckpointSaver,
     chat_model: BaseChatModel,
@@ -1583,56 +1986,7 @@ def build_question_answer_graph(
             )
 
         return valid_quotes, invalid_quotes
-
-    async def validate_answer(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        documents = get_evidence(state)
-        reasoning = state["reasoning"]
-        answer = state["answer"]
-
-        # validate all citations in reasoning and fix if possible
-        reasoning_result = fix_quote_citations_in_text(reasoning, documents)
-        reasoning_valid_quotes, reasoning_invalid_quotes = get_quotes(reasoning_result)
-
-        # validate all citations in answer and fix if possible
-        answer_result = fix_quote_citations_in_text(answer, documents)
-        answer_valid_quotes, answer_invalid_quotes = get_quotes(answer_result)
-
-        if len(reasoning_invalid_quotes) > 0 or len(answer_invalid_quotes) > 0:
-            if state.get("validation_attempts", 0) < 4:
-                logger.warning(
-                    "Invalid quotes found, will attempt to re-answer the question",
-                    invalid_quotes=reasoning_invalid_quotes + answer_invalid_quotes,
-                    attempt=state.get("validation_attempts", 0) + 1
-                )
-            else:
-                logger.error(
-                    "Invalid quotes found but maximum validation attempts reached, returning error response",
-                    invalid_quotes=reasoning_invalid_quotes + answer_invalid_quotes,
-                    attempt=state.get("validation_attempts", 0),
-                    documents=documents,
-                )
-            logger.info(
-                "Invalid quotes found during validation",
-                invalid_quotes=reasoning_invalid_quotes + answer_invalid_quotes,
-                attempt=state.get("validation_attempts", 0)
-            )
-            return {
-                "validation_attempts": state.get("validation_attempts", 0) + 1,
-                "invalid_quotes": reasoning_invalid_quotes + answer_invalid_quotes,
-            }
         
-        evidence = compile_evidence_from_documents(
-            reasoning_valid_quotes + answer_valid_quotes,
-            documents
-        )
-
-        return {
-            "validation_attempts": 0,
-            "invalid_quotes": [],
-            "answer": answer_result.fixed_text,
-            "reasoning": reasoning_result.fixed_text,
-            # "evidence": evidence,
-        }
 
     async def format_answer(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
         format_attempts = state.get("format_attempts", 0)
@@ -1677,36 +2031,10 @@ def build_question_answer_graph(
         chain = chain.with_config(run_name="format_answer_chain")
         result = await chain.ainvoke(input, config=config)
 
-        # Validate quotes in the formatted response
-        fix_result = fix_quote_citations_in_text(result.text, documents)
-        valid_quotes, invalid_quotes = get_quotes(fix_result)
-
-        if invalid_quotes:
-            for iq in invalid_quotes:
-                logger.warning(
-                    "Invalid quote in formatted answer",
-                    answer=result.text,
-                    text=iq["text"],
-                    rulebook_name=iq["rulebook_name"],
-                    page=iq["page"],
-                    attempt=format_attempts + 1,
-                    documents=documents,
-                )
-            return {
-                "response": fix_result.fixed_text,
-                "invalid_quotes": invalid_quotes,
-                "format_attempts": format_attempts + 1,
-            }
-
-        # All quotes valid — build evidence from the quotes in the response
-        evidence = compile_evidence_from_documents(valid_quotes, documents)
-
         return {
-            "response": fix_result.fixed_text,
-            "evidence": list(evidence),
-            "invalid_quotes": [],
-            "format_attempts": 0,
+            "response": result.text,
         }
+
 
     async def provide_response(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
         evidence = state.get("evidence", [])
@@ -1719,15 +2047,13 @@ def build_question_answer_graph(
             "valid": len(state.get("invalid_quotes", [])) == 0,
         }
 
-    async def check_validation_result(state: GameAgentOverallState) -> Literal["format_answer", "answer_question"]:
-        if state.get("invalid_quotes", []) and state.get("validation_attempts", 0) < 5:
-            return "answer_question"
-        return "format_answer"
-
-    def check_format_result(state: GameAgentOverallState) -> Literal["format_answer", "provide_response"]:
+    def check_validation_result(state: GameAgentOverallState) -> Literal["format_answer", "provide_response"]:
         invalid_quotes = state.get("invalid_quotes", [])
-        format_attempts = state.get("format_attempts", 0)
-        if invalid_quotes and 0 < format_attempts < 5:
+        validation_attempts = state.get("validation_attempts", 0)
+        if invalid_quotes:
+            documents = get_evidence(state)
+            logger.info("Response contains invalid quotes", invalid_quotes=invalid_quotes, validation_attempts=validation_attempts, query=state["query"], documents=documents, response=state["response"])
+        if invalid_quotes and validation_attempts < 5:
             return "format_answer"
         return "provide_response"
     
@@ -1750,8 +2076,9 @@ def build_question_answer_graph(
     graph.add_node("retrieve_data", retrieve_data)
     graph.add_node("dedupe_chunks", dedupe_chunks_node)
     graph.add_node("answer_question", answer_question)
-    graph.add_node("validate_answer", validate_answer)
+    # graph.add_node("validate_answer", validate_answer)
     graph.add_node("format_answer", format_answer)
+    graph.add_node("validate_and_fix_response", validate_and_fix_response)
     graph.add_node("provide_response", provide_response)
     graph.add_node("tool_node", tool_node)
 
@@ -1760,9 +2087,10 @@ def build_question_answer_graph(
     graph.add_edge("tool_node", "dedupe_chunks")
     graph.add_edge("dedupe_chunks", "answer_question")
     graph.add_edge("answer_question", "format_answer")
+    graph.add_edge("format_answer", "validate_and_fix_response")
+    
     # graph.add_edge("answer_question", "validate_answer")
-    # graph.add_conditional_edges("validate_answer", check_validation_result)
-    graph.add_conditional_edges("format_answer", check_format_result)
+    graph.add_conditional_edges("validate_and_fix_response", check_validation_result)
     graph.add_edge("provide_response", END)
 
     # Compile the agent
@@ -1813,6 +2141,7 @@ def build_qa_service(
             manifest=input["manifest"],
             full_page_store=full_page_store,
             chunk_search_service=chunk_search_service,
+            chat_model=chat_model,
         )
 
         result = await coord_graph.ainvoke(

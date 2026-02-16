@@ -635,7 +635,7 @@ wheels = [
 [[package]]
 name = "chainlit-cassandra-data-layer"
 version = "0.1.0"
-source = { git = "https://github.com/johntrimble/chainlit-cassandra-data-layer?rev=main#a4905242844806254e5fb5a77cd4f34a3acd7999" }
+source = { git = "https://github.com/johntrimble/chainlit-cassandra-data-layer?rev=main#e17eeaf8281a3b3d7f0bb9976872204fb8d407a4" }
 dependencies = [
     { name = "cassandra-asyncio-driver" },
     { name = "chainlit" },

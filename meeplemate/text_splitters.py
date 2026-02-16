@@ -42,8 +42,8 @@ class FixedRecursiveCharacterTextSplitter(RecursiveCharacterTextSplitter):
         self, texts: list[str], metadatas: list[dict[Any, Any]] | None = None
     ) -> list[Document]:
         """Create documents from a list of texts with corrected start_index handling."""
-        assert self._tokenizer is not None and hasattr(self._tokenizer, "encode_plus"), \
-            "FixedRecursiveCharacterTextSplitter requires a HuggingFace tokenizer"
+        assert self._tokenizer is not None
+        assert hasattr(self._tokenizer, "encode_plus") or hasattr(self._tokenizer, "_encode_plus"), "Tokenizer must have encode_plus method for offset mapping"
         return self._create_documents_with_tokenizer(texts, metadatas)
 
     def _create_documents_with_tokenizer(
@@ -52,6 +52,9 @@ class FixedRecursiveCharacterTextSplitter(RecursiveCharacterTextSplitter):
         """Create documents using tokenizer offset mapping for precise positioning."""
         metadatas_ = metadatas or [{}] * len(texts)
         documents = []
+
+        encode_plus = getattr(self._tokenizer, "encode_plus", None) or getattr(self._tokenizer, "_encode_plus", None)
+        assert encode_plus is not None, "Tokenizer must have an encode_plus method for offset mapping"
 
         for i, text in enumerate(texts):
             chunks = self.split_text(text)
@@ -70,12 +73,12 @@ class FixedRecursiveCharacterTextSplitter(RecursiveCharacterTextSplitter):
 
                         # Get offset mappings for both chunks
                         try:
-                            prev_encoding = self._tokenizer.encode_plus(
+                            prev_encoding = encode_plus(
                                 prev_chunk,
                                 return_offsets_mapping=True,
                                 add_special_tokens=False
                             )
-                            curr_encoding = self._tokenizer.encode_plus(
+                            curr_encoding = encode_plus(
                                 chunk,
                                 return_offsets_mapping=True,
                                 add_special_tokens=False
