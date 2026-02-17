@@ -266,6 +266,8 @@ services:
 
     # TEI is configured via CLI args, like TGI/vLLM
     command:
+      - --max-concurrent-requests
+      - "2"
       - "--model-id"
       - "jinaai/jina-embeddings-v2-base-en"
       - "--pooling"

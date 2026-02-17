@@ -488,3 +488,167 @@
       page: 2
       quote: |
         Selling Items for Levels: At any point during your turn except during combat or Running Away, you may discard Items worth a total of at least 1,000 Gold Pieces and immediately go up one level. ("No Value" cards are the same as zero Gold Pieces.) If you discard (for instance) 1,100 Gold Pieces worth, you don't get change. But if you can manage 2,000 worth, you can go up two levels at once, and so on. You may sell Items from your hand as well as those you are carrying. You may not sell Items to go to Level 10.
+- name: Oathsworn
+  params:
+    game_id: oathsworn
+  test_cases:
+  - name: knocked_back_off_edge
+    query: |
+      If knocked back off the edge of the map, do you take damage?
+    reference_answer: |
+      **No, a character does not take damage if they are knocked back past the edge of the board.**
+
+      > If a character is knocked back past the edge of the board, they instead stop at the board edge. This does not count as the character colliding with an obstacle.
+      >
+      > (Encounter Rule Book, p. 30)
+
+      This rule explicitly states that when a character is knocked back beyond the edge of the board, they stop at the edge and the event is specifically excluded from being treated as a collision with an obstacle.
+
+      > If a character would be knocked back into a hex containing an obstacle, the character loses 1 HP from the HP die closest to the obstacle.
+      >
+      > (Encounter Rule Book, p. 30)
+
+      This rule defines the only scenario in which damage is incurred during knockback—when a character collides with an obstacle. However, the prior rule clearly distinguishes that stopping at the edge of the board does **not** constitute such a collision.
+
+      Since the act of being knocked past the edge is explicitly excluded from counting as a collision with an obstacle, it follows that no damage is applied. The rulebook’s phrasing confirms this: “This does not count as the character colliding with an obstacle” (Encounter Rule Book, p. 29), meaning no HP loss occurs.
+    evidence:
+    - rulebook: Encounter Rule Book
+      page: 30
+      quote: |
+        If a character is knocked back past the edge of the board, they instead stop at the board edge. This does not count as the character colliding with an obstacle.
+    - rulebook: Encounter Rule Book
+      page: 30
+      quote: |
+        If a character would be knocked back into a hex containing an obstacle, the character loses 1 HP from the HP die closest to the obstacle.
+  - name: miss_get_a_token
+    query: |
+      What happens when a player misses? Do you get a token?
+    reference_answer: |
+      **Yes, when a player misses with an attack—defined as drawing two or more blanks after redrawing—they gain any one Combat Token of their choice.**
+
+      The Determination Rule explicitly states the consequence of a missed attack:
+
+      > If, after redraws, one of your attacks misses (draws 2 or more blanks), you gain any one Combat Token of your choice (see Appendix I on page 28) to represent you becoming more determined to succeed next time. In addition, you regain all Redraw, Empowered x3 and Lethality Tokens you spent during the attack (if any).
+      > 
+      > (Encounter Rule Book, p. 13)
+
+      This rule clearly establishes that the act of missing—specifically, having two or more blanks remaining after redrawing—is sufficient to trigger the reward of gaining a Combat Token.
+
+      Combat Tokens are general-purpose resources used throughout the game:
+
+      > Combat Tokens may be gained at various points in the Story and the Encounter. When gained, they are placed on your Player Board (or Companion Card) and can be used, either during the Story or the Encounter. Once used, they are returned back to the supply. All unused Combat Tokens are discarded at the end of a chapter, after the epilogue. They do not carry over into the next chapter.
+      > 
+      > (Story Rule Book, p. 13)
+
+      Thus, the token gained is not restricted by type or prior state—any one Combat Token of the player’s choosing may be selected. There are no prerequisites such as needing to have previously held a token, nor are there limitations based on token count or availability.
+
+      The Determination Rule functions as a self-contained mechanism: if the condition (missing after redrawing) is met, the effect (gaining a Combat Token) automatically applies. No other rules contradict or restrict this outcome.
+
+      Therefore, **a player gains one Combat Token of their choice whenever an attack misses after redrawing**, regardless of their current token count or the presence of other effects.
+    evidence:
+    - rulebook: Encounter Rule Book
+      page: 13
+      quote: |
+        If, after redraws, one of your attacks misses (draws 2 or more blanks), you gain any one Combat Token of your choice (see Appendix I on page 28) to represent you becoming more determined to succeed next time. In addition, you regain all Redraw, Empowered x3 and Lethality Tokens you spent during the attack (if any).
+  - name: monster_react_cannot_reach
+    query: |
+      When monster reacts, but cannot reach the player that it targets, what happens?
+    reference_answer: |
+      **The monster will still react and target a valid player, even if it cannot reach the original targeted player.**
+
+      The rulebook explicitly states how Reaction targeting works when the initial target is unreachable:
+
+      > If the Stage Card was drawn as a reaction to a location being broken, the damaged enemy will target the character who broke the location unless they are out of range (after considering movement and the range of the attack) or not in line of sight (LoS), in which case, proceed to step 2.
+      > 
+      > (Encounter Rule Book, p. 19)
+
+      > If there is no target listed or the specified/reaction target is not in range and line of sight (LoS), the closest Oathsworn in LoS that the enemy can reach is the target. 'Closest' here means the Oathsworn that requires the lowest amount of movement to reach.
+      > 
+      > (Encounter Rule Book, p. 19)
+
+      This means that if the monster cannot reach the player who broke the location—due to obstruction, lack of movement space, or blocked line of sight—the reaction does not fail. Instead, the monster proceeds to select a new target based on the next rule: the closest Oathsworn in line of sight that it can actually reach, with "closest" defined by minimal movement cost.
+
+      The key point is that the monster *always attempts* to react, and only fails to target if no such valid alternative exists. The system is designed to adapt, not cancel, the reaction when the original target is unreachable.
+
+      Therefore, the monster will always react by targeting either:
+      - The player who broke the location (if reachable), or
+      - The closest Oathsworn in line of sight that it can reach via minimal movement.
+
+      This adaptation is part of the intended game flow and is explicitly covered under the Reaction rules.
+    evidence:
+    - rulebook: Encounter Rule Book
+      page: 19
+      quote: |
+        If the Stage Card was drawn as a reaction to a location being broken, the damaged enemy will target the character who broke the location unless they are out of range (after considering movement and the range of the attack) or not in line of sight (LoS), in which case, proceed to step 2.
+    - rulebook: Encounter Rule Book
+      page: 19
+      quote: |
+        If there is no target listed or the specified/reaction target is not in range and line of sight (LoS), the closest Oathsworn in LoS that the enemy can reach is the target. 'Closest' here means the Oathsworn that requires the lowest amount of movement to reach.
+  - name: double_hp_die_removal_monster
+    query: |
+      If a player attack removes two of a monsters hp dice simultaneously, does the monster get two reactions or just one?
+    reference_answer: |
+      **Yes, removing two HP dice from a monster triggers two separate reactions.**
+
+      Each time an HP die is removed from a boss (except the final HP die on the Encounter Board), that location is considered "broken," which triggers a reaction:
+
+      > If any HP die is removed from a boss for any reason (except the final HP die on the Encounter Board), that location is said to be broken. When this happens, perform the following steps in order.  
+      > 1. Check the Encounter Special Rules Board to see if the Encounter stage changes.  
+      > 2. If the stage changes, discard all the cards from the previous stage from the stage deck.  
+      > 3. If the stage deck is empty, reshuffle the Stage 3 cards from the discard pile to form a new stage deck.  
+      > 4. Important: Whether or not the stage changes, draw and resolve all steps of the top card of the stage deck with the character who broke the location as the target of the 'broken' enemy (See page 19 for more details). This is known as a Reaction. This targeting overrides any targeting on the Special Rules Board or Stage Card. Minions do not trigger reactions unless it is stated on the Encounter Special Rules Board.
+      > 
+      > (Encounter Rule Book, p. 15)
+
+      This rule clearly states that each removal of a non-final HP die triggers one reaction, regardless of how many are removed at once.
+
+      Furthermore, the rulebook explicitly confirms that multiple breaks can occur simultaneously:
+
+      > In rare situations, it is possible for two or more locations to be broken simultaneously, causing multiple reactions to be drawn. In this case, remove all the dice first and then check if the stage has changed. Afterwards, all reaction cards are drawn and resolved in the order they were drawn. This means all broken location icons made visible by the removal of the die will be usable during every reaction card drawn.
+      > 
+      > (Encounter Rule Book, p. 15)
+
+      This confirms that each broken location (i.e., each removed HP die) generates its own reaction. Therefore, removing two HP dice triggers two distinct reactions.
+
+      **Conclusion:** Since both dice are removed and neither is the final die (as per the user's query), each removal triggers a reaction independently. The fact that they are removed simultaneously does not reduce the number of reactions—each die counts as a separate "broken" event.
+    evidence:
+    - rulebook: Encounter Rule Book
+      page: 15
+      quote: |
+        If any HP die is removed from a boss for any reason (except the final HP die on the Encounter Board), that location is said to be broken. When this happens, perform the following steps in order.  
+        1. Check the Encounter Special Rules Board to see if the Encounter stage changes.  
+        2. If the stage changes, discard all the cards from the previous stage from the stage deck.  
+        3. If the stage deck is empty, reshuffle the Stage 3 cards from the discard pile to form a new stage deck.  
+        4. Important: Whether or not the stage changes, draw and resolve all steps of the top card of the stage deck with the character who broke the location as the target of the 'broken' enemy (See page 19 for more details). This is known as a Reaction. This targeting overrides any targeting on the Special Rules Board or Stage Card. Minions do not trigger reactions unless it is stated on the Encounter Special Rules Board.
+    - rulebook: Encounter Rule Book
+      page: 15
+      quote: |
+        In rare situations, it is possible for two or more locations to be broken simultaneously, causing multiple reactions to be drawn. In this case, remove all the dice first and then check if the stage has changed. Afterwards, all reaction cards are drawn and resolved in the order they were drawn. This means all broken location icons made visible by the removal of the die will be usable during every reaction card drawn.
+  - name: combat_during_story_mode
+    query: |
+      When doing a round of combat during story mode, does each oathsworn roll?
+    reference_answer: |
+      **Yes, each Oathsworn player rolls dice individually during a round of combat in Story mode.**
+
+      The rules explicitly state that every Oathsworn character performs their own attack:
+
+      > Each Oathsworn must draw a single attack against the enemy. Combat Tokens may be used (see Appendix I), but Special Abilities or Item Abilities may not. To perform this attack, the player draws any number of their character's Might Cards as depicted on their Might Track and up to 10 white cards. If 2 or more blanks are drawn, the attack misses and causes no damage. Otherwise, the attack hits and the sum of all the numbers on the cards drawn is the damage dealt. If the damage dealt is equal to or more than the enemy's defense, the Oathsworn succeeds. If the damage is lower, the Oathsworn fails. Oathsworn always defeat their enemies during a round of combat that takes place during the Story part of a chapter. However, each Oathsworn that fails loses 1 HP. (Story Rule Book, p. 15)
+
+      This rule clearly uses the term "each Oathsworn," indicating individual action rather than a collective one. The phrasing "Each Oathsworn must draw a single attack" confirms that every Oathsworn acts independently, with their own dice roll and attack resolution.
+
+      Additionally, the definition of "Oathsworn" reinforces this interpretation:
+
+      > The term 'Oathsworn' refers to all full characters or companions. Allies, other non-player controlled characters, the Grove Maiden's Sentinels and Ancient Guardian are not Oathsworn. These are considered to be friendly characters only. (Encounter Rule Book, p. 8)
+
+      Since Oathsworn are defined as individual characters (and their companions), and since the combat mechanics treat them as separate entities performing their own attacks, there is no mechanism for a shared or unified roll.
+
+      Therefore, because the rules unambiguously describe each Oathsworn acting independently—drawing their own cards, calculating their own damage, and resolving their own success or failure—the Free Company does not have a single roll. Instead, each Oathsworn rolls dice individually.
+    evidence:
+    - rulebook: Story Rule Book
+      page: 15
+      quote: |
+        Each Oathsworn must draw a single attack against the enemy. Combat Tokens may be used (see Appendix I), but Special Abilities or Item Abilities may not. To perform this attack, the player draws any number of their character's Might Cards as depicted on their Might Track and up to 10 white cards. If 2 or more blanks are drawn, the attack misses and causes no damage. Otherwise, the attack hits and the sum of all the numbers on the cards drawn is the damage dealt. If the damage dealt is equal to or more than the enemy's defense, the Oathsworn succeeds. If the damage is lower, the Oathsworn fails. Oathsworn always defeat their enemies during a round of combat that takes place during the Story part of a chapter. However, each Oathsworn that fails loses 1 HP.
+    - rulebook: Encounter Rule Book
+      page: 8
+      quote: |
+        The term 'Oathsworn' refers to all full characters or companions. Allies, other non-player controlled characters, the Grove Maiden's Sentinels and Ancient Guardian are not Oathsworn. These are considered to be friendly characters only.

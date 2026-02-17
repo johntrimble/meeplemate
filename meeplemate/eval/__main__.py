@@ -236,7 +236,7 @@ async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_ru
                 _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=run_number)
             )
         )
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _run_qa_gen(filter: str, group_run_id: str, skip_retrieval: bool = False):
@@ -253,6 +253,9 @@ async def _run_qa_gen(filter: str, group_run_id: str, skip_retrieval: bool = Fal
         extra_components=extra_components
     )
     await _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=None)
+
+
+concurrency_semaphore = asyncio.Semaphore(5)  # Limit concurrency to 5 simultaneous runs
 
 
 async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retrieval: bool = False, run_number: int | None = None):
@@ -329,16 +332,21 @@ async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retri
                 input["evidence"] = chunks
                 logger.info(f"Starting generation with evidence", number_of_chunks=len(chunks), test_case=test_case['name'])
             logger.info(f"Starting QA generation", test_case=test_case['name'])
-            tasks.append(
-                asyncio.create_task(
-                    qa_service.ainvoke(
+
+            async def run_ainvoke(input, config):
+                async with concurrency_semaphore:
+                    return await qa_service.ainvoke(
                         input,
                         config=config
                     )
+
+            tasks.append(
+                asyncio.create_task(
+                    run_ainvoke(input, config)
                 )
             )
 
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def get_correctness_metric(model) -> BaseMetric:
@@ -360,9 +368,9 @@ async def _run_qa_eval(filter: str, base_group_run_id: str):
     from meeplemate.eval.analysis import find_run_groups
 
     llm = StructuredLocalModel(
-        model="NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4",
+        model="Qwen/Qwen3-30B-A3B-Instruct-2507",
         api_key="dummy",
-        base_url="http://192.168.0.44:8000/v1"
+        base_url="http://vllm:8000/v1"
     )
 
     # Find all runs for this group

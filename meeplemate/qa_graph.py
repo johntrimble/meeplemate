@@ -1300,7 +1300,7 @@ def build_analyze_question_graph(
         queries = []
         for index in search_chunks_indices:
             tool_call = tool_calls[index]
-            query = tool_call["args"]["query"]
+            query = tool_call["args"]["search_queries"]
             if isinstance(query, str):
                 queries.append(query)
             elif isinstance(query, list):
@@ -1314,7 +1314,7 @@ def build_analyze_question_graph(
         
         # Update the first search_chunks call to include all queries
         first_index = search_chunks_indices[0]
-        tool_calls[first_index]["args"]["query"] = queries
+        tool_calls[first_index]["args"]["search_queries"] = queries
 
         # Update the message with the consolidated tool calls
         setattr(message, "tool_calls", tool_calls)

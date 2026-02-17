@@ -267,21 +267,24 @@ def transform_run_tree(
     Returns:
         Transformed run, or None if the root should be skipped
     """
-    # First, recursively transform all children
-    transformed_children = []
-    for child in run.child_runs:
-        transformed_child = transform_run_tree(child, transform_fn)
-        if transformed_child is not None:
-            transformed_children.append(transformed_child)
+    def _inner(run: Run) -> list[Run]:
+        # Recursively transform children, collecting promoted ones
+        transformed_children = []
+        for child in run.child_runs:
+            transformed_children.extend(_inner(child))
 
-    # Apply transformation to this node
-    transformed_run, final_children = transform_fn(run, transformed_children)
+        # Apply transformation to this node
+        transformed_run, final_children = transform_fn(run, transformed_children)
 
-    # Update children if we're keeping this run
-    if transformed_run is not None:
-        transformed_run.child_runs = final_children
+        if transformed_run is not None:
+            transformed_run.child_runs = final_children
+            return [transformed_run]
+        else:
+            # Node was skipped — promote its children to the parent
+            return final_children
 
-    return transformed_run
+    results = _inner(run)
+    return results[0] if results else None
 
 
 def skip_run_types(skip_types: set[str]) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
@@ -423,6 +426,18 @@ def compose_transformers(
     return composed
 
 
+def _run_to_dict(run: Run) -> dict:
+    """Serialize a Run to dict, including child_runs.
+
+    langsmith >= 0.7 marks child_runs with exclude=True in the Pydantic model,
+    so model_dump() silently drops them. We re-add them manually.
+    """
+    d = run.model_dump()
+    if run.child_runs:
+        d["child_runs"] = [_run_to_dict(c) for c in run.child_runs]
+    return d
+
+
 class TestRunTracer(AsyncBaseTracer):
     def __init__(
         self,
@@ -485,9 +500,25 @@ class TestRunTracer(AsyncBaseTracer):
         )
         run_file.parent.mkdir(parents=True, exist_ok=True)
 
+        if run_file.exists():
+            logger.error(
+                "Attempted to overwrite existing run file!",
+                run_file=str(run_file),
+                existing_size=run_file.stat().st_size,
+                metadata=metadata,
+            )
+            raise FileExistsError(
+                f"Run file already exists: {run_file}. "
+                f"This suggests a duplicate persist for the same test case/run number. "
+                f"Metadata: test_suite={metadata['test_suite']}, "
+                f"test_case={metadata['test_case']}, "
+                f"run_number={metadata.get('run_number')}, "
+                f"group_run_id={metadata['test_group_run_id']}"
+            )
+
         with run_file.open("w") as f:
             # Convert Run to dict and serialize with custom encoder that handles
             # UUIDs, datetimes, and LangChain objects (AIMessage, etc.)
-            run_dict = run.dict()
+            run_dict = _run_to_dict(run)
             f.write(json.dumps(run_dict, cls=RunEncoder, indent=2))
             f.flush()
