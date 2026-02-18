@@ -8,10 +8,11 @@ from typing import Any, Iterator, Sequence, Tuple
 from langchain_core.documents import Document
 from langchain_core.load import dumps, loads
 from langchain_text_splitters import TextSplitter
+from posthog import page
 
 from meeplemate.ingest.gamepackage import GamePackage, Page, get_pages_iter, load_game_package, load_page_metadata, page_md, page_to_document, get_page_chunk_id
 from meeplemate.text_splitters import FixedRecursiveCharacterTextSplitter
-from meeplemate.util import amap, aspit
+from meeplemate.util import amap, aslurp, aspit
 
 
 @dataclass
@@ -166,6 +167,9 @@ class BuildChunksJob:
             chunks_path = get_chunks_directory_path(self.gp, document_key)
             chunks_path.mkdir(exist_ok=True)
 
+            # Read full document.md
+            full_document_markdown = await aslurp(self.gp["path"] / document_key / "document.md")
+
             # Phase 1: split all pages to determine document-level chunk count
             page_splits: list[Tuple[Page, int, Sequence[Tuple[Document, Sequence[Document]]]]] = []
             async for page in get_pages_iter(self.gp, document_key):
@@ -177,7 +181,7 @@ class BuildChunksJob:
 
             document_chunk_count = sum(len(splits) for _, _, splits in page_splits)
 
-            # Phase 2: assign document-level indices and write
+            # Phase 2: assign document-level indices
             document_chunk_idx = 0
             for page, page_document_offset, splits in page_splits:
                 for parent_idx, (parent_doc, child_docs) in enumerate(splits):
@@ -191,11 +195,32 @@ class BuildChunksJob:
                         child_doc.metadata["end_index"] += page_document_offset
                         child_doc.metadata["chunk_index"] = document_chunk_idx
                         child_doc.metadata["chunk_count"] = document_chunk_count
+
+                    document_chunk_idx += 1
+
+            # Phase 3: Validate document-level indices
+            #
+            # This is a sanity check to ensure that we can map our chunks have
+            # the correct offsets back to the original markdown. This is
+            # important because we use these offsets for merging and rearranging
+            # chunks at runtime.
+            for page, page_document_offset, splits in page_splits:
+                for parent_idx, (parent_doc, child_docs) in enumerate(splits):
+                    start_index = parent_doc.metadata["start_index"]
+                    end_index = parent_doc.metadata["end_index"]
+                    assert full_document_markdown[start_index:end_index] == parent_doc.page_content, f"Parent chunk index mismatch for {page.document_key} page {page.page_num} chunk {parent_idx}"
+                    for child_idx, child_doc in enumerate(child_docs):
+                        child_start = child_doc.metadata["start_index"]
+                        child_end = child_doc.metadata["end_index"]
+                        assert full_document_markdown[child_start:child_end] == child_doc.page_content, f"Child chunk index mismatch for {page.document_key} page {page.page_num} chunk {parent_idx} child {child_idx}"
+
+            # Phase 4: Write chunks
+            for page, page_document_offset, splits in page_splits:
+                for parent_idx, (parent_doc, child_docs) in enumerate(splits):
+                    for child_idx, child_doc in enumerate(child_docs):
                         child_chunk_path = get_child_chunk_path_for_index(page, parent_idx, child_idx)
                         write_tasks.append(aspit(dumps(child_doc), child_chunk_path))
-
                     parent_chunk_path = get_chunk_path_for_index(page, parent_idx)
                     write_tasks.append(aspit(dumps(parent_doc), parent_chunk_path))
-                    document_chunk_idx += 1
 
         await asyncio.gather(*write_tasks)

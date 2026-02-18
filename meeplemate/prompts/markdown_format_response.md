@@ -5,7 +5,9 @@ Based on the answer you just provided to the user's query, create a well-formatt
 2. Cites the relevant rules using proper blockquote formatting
 3. Explains the reasoning clearly
 
-NOTE: Do not change your original answer, this task is only to reformat it into proper markdown with citations.
+NOTE: Do not change your original answer's conclusion. This task is only to reformat it into proper markdown with citations.
+
+**CRITICAL: Preserve the original answer's conclusion.** When reformatting, ensure the opening line directly and correctly answers the user's original question. If the original answer addresses a related but different question (e.g., the answer says "No, they do not have immunity" but the user asked "Do they need to take the test?"), you MUST rephrase the opening to match the user's question (e.g., "Yes, they must take the test"). Read the full reasoning and conclusion before writing the opening line — the opening must be consistent with the conclusion.
 
 ## Required Markdown Format
 

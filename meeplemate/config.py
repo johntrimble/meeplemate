@@ -384,7 +384,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
             chat_model = ChatOpenAI(
                 model=config.model_name,
                 max_tokens=config.max_new_tokens,
-                presence_penalty=1.5,
+                presence_penalty=0.6,
                 temperature=0.7,
                 top_p=0.8,
                 timeout=config.timeout,
@@ -394,6 +394,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 extra_body={
                     "top_k": 20,
                     "min_p": 0.0,
+                    "repetition_penalty": 1.1,
                     **({
                         "chat_template_kwargs": {
                             "enable_thinking": False,
@@ -726,6 +727,7 @@ class Services:
                 extra_body={
                     "top_k": 20,
                     "min_p": 0.0,
+                    "repetition_penalty": 1.1,
                     **({
                         "chat_template_kwargs": {
                             "enable_thinking": False,

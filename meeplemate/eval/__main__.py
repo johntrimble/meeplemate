@@ -144,6 +144,26 @@ def get_eval_generation_runs_dir():
     return project_dir / "data" / "evals" / "generation_runs"
 
 
+def next_group_run_id() -> str:
+    """Generate the next available group_run_id based on today's date.
+
+    Scans existing generation_runs directories and auto-increments:
+    2026-02-17, 2026-02-17-2, 2026-02-17-3, etc.
+    """
+    from datetime import datetime
+    base = datetime.now().strftime("%Y-%m-%d")
+    gen_dir = get_eval_generation_runs_dir()
+
+    if not gen_dir.exists() or not (gen_dir / base).exists():
+        return base
+
+    # Find the next available suffix
+    n = 2
+    while (gen_dir / f"{base}-{n}").exists():
+        n += 1
+    return f"{base}-{n}"
+
+
 def get_most_recent_group_run_id(eval_runs_dir: Path) -> str | None:
     import os
     from datetime import datetime
@@ -211,7 +231,10 @@ async def _print_summary_of_run(filter: str = "*", group_run_id: str | None = No
                 click.echo(f"{json.dumps(parsed, indent=2)}")
 
 
-async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_runs: int, skip_retrieval: bool = False):
+async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_runs: int, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
+    run_numbers = [i + 1 for i in range(number_of_runs)]
+    skip_cases = handle_existing_files(filter, group_run_id, run_numbers, overwrite, skip_existing)
+
     # TODO: Move this component setup elsewhere... maybe make these functions
     # part of the component system?
     extra_components = {
@@ -233,13 +256,15 @@ async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_ru
         run_number = i + 1
         tasks.append(
             asyncio.create_task(
-                _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=run_number)
+                _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=run_number, skip_cases=skip_cases)
             )
         )
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _run_qa_gen(filter: str, group_run_id: str, skip_retrieval: bool = False):
+async def _run_qa_gen(filter: str, group_run_id: str, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
+    skip_cases = handle_existing_files(filter, group_run_id, [None], overwrite, skip_existing)
+
     extra_components = {
         # Lets not persist the graph state during evals
         "checkpointer": (
@@ -252,13 +277,76 @@ async def _run_qa_gen(filter: str, group_run_id: str, skip_retrieval: bool = Fal
         ["game_service", "qa_service", "checkpointer"],
         extra_components=extra_components
     )
-    await _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=None)
+    await _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=None, skip_cases=skip_cases)
+
+
+def check_existing_run_files(
+    filter: str,
+    group_run_id: str,
+    run_numbers: list[int | None],
+) -> list[tuple[str, str, int | None, Path]]:
+    """Check which test run output files already exist.
+
+    Returns a list of (test_suite, test_case, run_number, path) for existing files.
+    """
+    eval_runs_dir = get_eval_generation_runs_dir()
+    existing = []
+    for test_suite in test_suites:
+        for test_case in test_suite["test_cases"]:
+            if not fnmatch.fnmatch(test_case["name"], filter):
+                continue
+            for run_number in run_numbers:
+                run_file = get_test_run_file_path(
+                    eval_runs_dir, group_run_id, test_suite["name"], test_case["name"], run_number=run_number
+                )
+                if run_file.exists():
+                    existing.append((test_suite["name"], test_case["name"], run_number, run_file))
+    return existing
+
+
+def handle_existing_files(
+    filter: str,
+    group_run_id: str,
+    run_numbers: list[int | None],
+    overwrite: bool,
+    skip_existing: bool,
+) -> set[tuple[str, str, int | None]]:
+    """Pre-flight check for existing run files.
+
+    Returns:
+        Set of (test_suite, test_case, run_number) tuples to skip.
+        Empty set if overwrite=True or no files exist.
+
+    Raises:
+        click.ClickException if files exist and neither --overwrite nor --skip-existing is set.
+    """
+    existing = check_existing_run_files(filter, group_run_id, run_numbers)
+    if not existing:
+        return set()
+
+    if overwrite:
+        for _, _, _, path in existing:
+            path.unlink()
+            logger.info("Deleted existing run file", path=str(path))
+        return set()
+
+    if skip_existing:
+        skip_set = {(suite, case, rn) for suite, case, rn, _ in existing}
+        for suite, case, rn, path in existing:
+            logger.info("Skipping existing run", test_suite=suite, test_case=case, run_number=rn)
+        return skip_set
+
+    file_list = "\n".join(f"  {path}" for _, _, _, path in existing)
+    raise click.ClickException(
+        f"The following run files already exist:\n{file_list}\n"
+        f"Use --overwrite to replace them or --skip-existing to skip them."
+    )
 
 
 concurrency_semaphore = asyncio.Semaphore(5)  # Limit concurrency to 5 simultaneous runs
 
 
-async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retrieval: bool = False, run_number: int | None = None):
+async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retrieval: bool = False, run_number: int | None = None, skip_cases: set[tuple[str, str, int | None]] | None = None):
     game_service: GameService = get_service("game_service")
     qa_service: QAService = get_service("qa_service")
 
@@ -284,6 +372,10 @@ async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retri
             # Compare test_case name to filter (contains wildcard *)
             import fnmatch
             if not fnmatch.fnmatch(test_case["name"], filter):
+                continue
+
+            if skip_cases and (test_suite["name"], test_case["name"], run_number) in skip_cases:
+                click.echo(f"Skipping existing: {test_case['name']} (run {run_number})")
                 continue
 
             query = test_case["query"]
@@ -353,7 +445,7 @@ def get_correctness_metric(model) -> BaseMetric:
     correctness_metric = GEval(
         model=model,
         name="Correctness",
-        criteria="Determine whether the actual output reaches the same general conclusion as the expected output. Do not penalize if one explores exceptions or edge cases not mentioned in the other. Focus on whether both outputs agree on the main point.",
+        criteria="Determine whether the actual output reaches the same general conclusion as the expected output. Do not penalize if one explores exceptions or edge cases not mentioned in the other. Focus on whether both outputs agree on the main point. IMPORTANT: Do not rely on the opening Yes/No word alone — read the full reasoning and conclusion to determine the actual position. A response may start with 'No' while its conclusion agrees with the expected output (e.g., 'No, they are not exempt' means the same as 'Yes, they must take the test'). Judge based on the substantive conclusion, not surface-level phrasing.",
         evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT, LLMTestCaseParams.EXPECTED_OUTPUT],
     )
     return correctness_metric
@@ -370,7 +462,18 @@ async def _run_qa_eval(filter: str, base_group_run_id: str):
     llm = StructuredLocalModel(
         model="Qwen/Qwen3-30B-A3B-Instruct-2507",
         api_key="dummy",
-        base_url="http://vllm:8000/v1"
+        # base_url="http://vllm:8000/v1"
+        base_url="http://192.168.0.44:8000/v1",
+        temperature=0.7,
+        generation_kwargs={
+            "presence_penalty": 0.6,
+            "top_p": 0.8,
+            "extra_body": {
+                "top_k": 20,
+                "min_p": 0.0,
+                "repetition_penalty": 1.1,
+            },
+        },
     )
 
     # Find all runs for this group
@@ -415,8 +518,11 @@ async def _run_qa_eval(filter: str, base_group_run_id: str):
                 run = load_persisted_run(run_file)
 
                 # Get the actual output from the run
-                assert run.outputs is not None, "No outputs in run"
-                actual_output = run.outputs["response"]
+                if run.outputs is None or "response" not in run.outputs:
+                    click.echo(f"  WARNING: Run {run_number} has no response (failed run), treating as failed")
+                    actual_output = "[Run failed to produce a response]"
+                else:
+                    actual_output = run.outputs["response"]
 
                 # Create unique test name including run ID
                 test_name = f"{snake_case(test_suite['name'])}__{snake_case(test_case['name'])}"
@@ -452,17 +558,19 @@ def cli():
 @click.option("--group-run-id", default=None)
 @click.option("--number-of-runs", default=None, type=int)
 @click.option("--skip-retrieval", is_flag=True, default=False)
-def run_qa_gen(filter: str, group_run_id: str | None = None, number_of_runs: int|None = None, skip_retrieval: bool = False):
+@click.option("--overwrite", is_flag=True, default=False, help="Overwrite existing run files")
+@click.option("--skip-existing", is_flag=True, default=False, help="Skip test cases with existing output files")
+def run_qa_gen(filter: str, group_run_id: str | None = None, number_of_runs: int|None = None, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
     import asyncio
-    # Default group_run_id is today's date in YYYY-MM-DD format
     if group_run_id is None:
-        from datetime import datetime
-        group_run_id = datetime.now().strftime("%Y-%m-%d")
+        group_run_id = next_group_run_id()
+
+    click.echo(f"Group run ID: {group_run_id}")
 
     if number_of_runs is None:
-        asyncio.run(_run_qa_gen(filter, group_run_id, skip_retrieval=skip_retrieval))
+        asyncio.run(_run_qa_gen(filter, group_run_id, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing))
     else:
-        asyncio.run(_run_qa_gen_multiple_runs(filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval))
+        asyncio.run(_run_qa_gen_multiple_runs(filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing))
 
 @cli.command()
 @click.argument("filter", required=False, default="*")
@@ -471,12 +579,50 @@ def run_qa_eval(filter: str, group_run_id: str | None = None):
     import os
     import asyncio
 
-    # Default group_run_id is today's date in YYYY-MM-DD format
     if group_run_id is None:
-        from datetime import datetime
-        group_run_id = datetime.now().strftime("%Y-%m-%d")
+        # For eval, default to most recent generation run (not a new one)
+        eval_runs_dir = get_eval_generation_runs_dir()
+        group_run_id = get_most_recent_group_run_id(eval_runs_dir)
+        if group_run_id is None:
+            raise click.ClickException("No generation runs found. Run 'run-qa-gen' first.")
+
+    click.echo(f"Group run ID: {group_run_id}")
 
     # Set environment variable DEEPEVAL_RESULTS_FOLDER to data/evals/qa_evals/{group_run_id}
+    eval_runs_dir = get_eval_generation_runs_dir().parent / "qa_evals"
+    eval_dir = eval_runs_dir / group_run_id
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["DEEPEVAL_RESULTS_FOLDER"] = str(eval_dir)
+
+    asyncio.run(_run_qa_eval(filter, group_run_id))
+
+
+@cli.command()
+@click.argument("filter", required=False, default="*")
+@click.option("--group-run-id", default=None)
+@click.option("--number-of-runs", default=None, type=int)
+@click.option("--skip-retrieval", is_flag=True, default=False)
+@click.option("--overwrite", is_flag=True, default=False, help="Overwrite existing run files")
+@click.option("--skip-existing", is_flag=True, default=False, help="Skip test cases with existing output files")
+def run_qa(filter: str, group_run_id: str | None = None, number_of_runs: int | None = None, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
+    """Generate and evaluate in one step."""
+    import os
+    import asyncio
+
+    if group_run_id is None:
+        group_run_id = next_group_run_id()
+
+    click.echo(f"Group run ID: {group_run_id}")
+
+    # --- Generation ---
+    click.echo("\n--- Generation ---")
+    if number_of_runs is None:
+        asyncio.run(_run_qa_gen(filter, group_run_id, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing))
+    else:
+        asyncio.run(_run_qa_gen_multiple_runs(filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing))
+
+    # --- Evaluation ---
+    click.echo("\n--- Evaluation ---")
     eval_runs_dir = get_eval_generation_runs_dir().parent / "qa_evals"
     eval_dir = eval_runs_dir / group_run_id
     eval_dir.mkdir(parents=True, exist_ok=True)
@@ -603,6 +749,53 @@ def analyze(group_run_id: str, top_n: int):
     click.echo("\nFor detailed visualizations, use the Jupyter notebook:")
     click.echo("  jupyter notebook notebooks/eval_analysis.ipynb")
     click.echo()
+
+
+@cli.command()
+@click.argument("group-a", required=True)
+@click.argument("group-b", required=True)
+def compare_qa(group_a: str, group_b: str):
+    """Compare evaluation results between two runs.
+
+    Example:
+        python -m meeplemate.eval compare-qa 2026-02-17 2026-02-17-2
+    """
+    from meeplemate.eval.analysis import compare_runs
+
+    click.echo(f"Comparing: {group_a} -> {group_b}")
+    click.echo()
+
+    comparison = compare_runs(group_a, group_b)
+
+    # Overall metrics
+    click.echo("Overall Metrics:")
+    click.echo("-" * 70)
+    for m in comparison.overall:
+        arrow = "+" if m.delta >= 0 else ""
+        direction = "^" if m.delta > 0.01 else ("v" if m.delta < -0.01 else "=")
+        click.echo(f"  {m.metric_name:25s} {m.mean_a:.3f} -> {m.mean_b:.3f}  ({arrow}{m.delta:.3f})  {direction}")
+        click.echo(f"  {'':25s} pass: {m.pass_rate_a:.1%} -> {m.pass_rate_b:.1%}")
+    click.echo()
+
+    # Improvements
+    if comparison.improvements:
+        click.echo(f"Improvements ({len(comparison.improvements)}):")
+        click.echo("-" * 70)
+        for tc in comparison.improvements:
+            click.echo(f"  {tc.test_case[:45]:45s} {tc.metric_name:20s} {tc.mean_a:.3f} -> {tc.mean_b:.3f}  (+{tc.delta:.3f})")
+        click.echo()
+
+    # Regressions
+    if comparison.regressions:
+        click.echo(f"Regressions ({len(comparison.regressions)}):")
+        click.echo("-" * 70)
+        for tc in comparison.regressions:
+            click.echo(f"  {tc.test_case[:45]:45s} {tc.metric_name:20s} {tc.mean_a:.3f} -> {tc.mean_b:.3f}  ({tc.delta:.3f})")
+        click.echo()
+
+    if not comparison.improvements and not comparison.regressions:
+        click.echo("No significant changes detected.")
+        click.echo()
 
 
 if __name__ == "__main__":

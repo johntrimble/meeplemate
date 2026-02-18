@@ -143,7 +143,7 @@ def _build_answer_prompt():
     return ChatPromptTemplate.from_messages(
         [
             ("system", query_documents_guidelines_template),
-            ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query inside <reasoning> </reasoning> tags. Then answer the user's query."),
+            ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query inside <reasoning> </reasoning> tags. Then answer the user's query. Your answer MUST directly address the user's exact question as phrased. If the user asks 'Do X need to do Y?', your answer must start with 'Yes, X must do Y' or 'No, X do not need to do Y' — not a reframing like 'No, X do not have immunity from Y'."),
         ],
         template_format="mustache"
     )
@@ -1192,14 +1192,14 @@ class EssentialRuleInteractionResponse(TypedDict):
 
 
 class Subquestion(TypedDict):
-    subquestion: Annotated[str, ..., "A self-contained subquestion"]
+    subquestion: Annotated[str, ..., "An independently answerable subquestion targeting a distinct rule or rule interaction"]
     explanation: Annotated[str, ..., "An explanation as to how an answer to this subquestion helps address the user's original query."]
-    
+
 
 class QuestionAnalysis(TypedDict):
-    explanation: Annotated[str, ..., "Explanation of what the user asking and the key rules and rule interactions involved in the user's query. Free form markdown text."]
-    subquestions: Annotated[list[Subquestion], ..., "List of 1-3 subquestions and explanations of their relevance"]
     classification: Literal["SIMPLE", "COMPLEX"]
+    explanation: Annotated[str, ..., "Explanation of what the user is asking and the key rules and rule interactions involved in the user's query. Free form markdown text."]
+    subquestions: Annotated[list[Subquestion], ..., "List of 2-5 independently answerable subquestions for COMPLEX queries. Empty list for SIMPLE queries."]
 
 
 def build_analyze_question_graph(
@@ -1272,10 +1272,18 @@ def build_analyze_question_graph(
         for sub in question_analysis["subquestions"]:
             logger.info("Subquestion identified", subquestion=sub["subquestion"], explanation=sub["explanation"])
 
+        subquestions = [sub["subquestion"] for sub in question_analysis["subquestions"]]
+        classification = question_analysis["classification"]
+
+        # Fall back to SIMPLE if classified COMPLEX but no subquestions were produced
+        if classification == "COMPLEX" and not subquestions:
+            logger.warning("Classified as COMPLEX but no subquestions generated, falling back to SIMPLE", query=state["query"])
+            classification = "SIMPLE"
+
         return {
             "analysis": question_analysis["explanation"],
-            "subquestions": [sub["subquestion"] for sub in question_analysis["subquestions"]],
-            "classification": question_analysis["classification"],
+            "subquestions": subquestions,
+            "classification": classification,
             "tokens_used": tokens_used,
             # TODO: We should return something that indicates the importance of
             # each chunk. The caller might want to use these in its context, but
@@ -1590,7 +1598,7 @@ def build_fix_quote_chain(chat_model: BaseChatModel) -> Runnable[FixQuoteInput,F
         template_format="mustache"
     )
 
-    chain = prompt | chat_model.with_structured_output(FixQuotesResult)
+    chain = prompt | chat_model.bind(max_tokens=1024).with_structured_output(FixQuotesResult)
 
     chain = chain.with_config(
         run_name="fix_quote_chain",

@@ -572,7 +572,12 @@ def build_chunk_search_service_2(
             if doc_id not in seen:
                 unique_parent_doc_ids.append(doc_id)
                 seen.add(doc_id)
-        parent_docs = docstore.mget(unique_parent_doc_ids)
+        # AstraDB $in operator has a hard limit of 100 values — batch to stay under it
+        ASTRADB_IN_LIMIT = 100
+        parent_docs = []
+        for i in range(0, len(unique_parent_doc_ids), ASTRADB_IN_LIMIT):
+            batch = unique_parent_doc_ids[i:i + ASTRADB_IN_LIMIT]
+            parent_docs.extend(docstore.mget(batch))
         # Log warning for missing docs
         for doc_id, doc in zip(unique_parent_doc_ids, parent_docs):
             if doc is None:

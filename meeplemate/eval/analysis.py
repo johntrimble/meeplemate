@@ -414,6 +414,111 @@ def get_summary(base_group_run_id: str) -> EvalRunSummary:
 
 
 @dataclass
+class MetricComparison:
+    """Comparison of a single metric between two runs."""
+    metric_name: str
+    mean_a: float
+    mean_b: float
+    delta: float
+    pass_rate_a: float
+    pass_rate_b: float
+
+
+@dataclass
+class TestCaseComparison:
+    """Comparison of a single test case between two runs."""
+    test_case: str
+    metric_name: str
+    mean_a: float
+    mean_b: float
+    delta: float
+
+
+@dataclass
+class RunComparison:
+    """Full comparison between two evaluation runs."""
+    group_a: str
+    group_b: str
+    overall: list[MetricComparison]
+    improvements: list[TestCaseComparison]
+    regressions: list[TestCaseComparison]
+
+
+def compare_runs(group_a: str, group_b: str) -> RunComparison:
+    """Compare evaluation results between two group_run_ids.
+
+    Args:
+        group_a: First (baseline) group_run_id
+        group_b: Second (new) group_run_id
+
+    Returns:
+        RunComparison with overall metric deltas and per-test-case changes
+    """
+    summary_a = get_summary(group_a)
+    summary_b = get_summary(group_b)
+
+    # Overall metric comparison
+    all_metrics = set(summary_a.metrics_summary.keys()) | set(summary_b.metrics_summary.keys())
+    overall = []
+    for metric_name in sorted(all_metrics):
+        stats_a = summary_a.metrics_summary.get(metric_name, {})
+        stats_b = summary_b.metrics_summary.get(metric_name, {})
+        mean_a = stats_a.get('mean', 0.0)
+        mean_b = stats_b.get('mean', 0.0)
+        overall.append(MetricComparison(
+            metric_name=metric_name,
+            mean_a=mean_a,
+            mean_b=mean_b,
+            delta=mean_b - mean_a,
+            pass_rate_a=stats_a.get('pass_rate', 0.0),
+            pass_rate_b=stats_b.get('pass_rate', 0.0),
+        ))
+
+    # Per-test-case comparison
+    results_a = load_all_runs(group_a)
+    results_b = load_all_runs(group_b)
+    agg_a = aggregate_by_test_case(results_a)
+    agg_b = aggregate_by_test_case(results_b)
+
+    improvements = []
+    regressions = []
+
+    if not agg_a.empty and not agg_b.empty:
+        merged = pd.merge(
+            agg_a[['test_case', 'metric_name', 'mean']],
+            agg_b[['test_case', 'metric_name', 'mean']],
+            on=['test_case', 'metric_name'],
+            suffixes=('_a', '_b'),
+            how='inner',
+        )
+        merged['delta'] = merged['mean_b'] - merged['mean_a']
+
+        for _, row in merged.iterrows():
+            tc = TestCaseComparison(
+                test_case=row['test_case'],
+                metric_name=row['metric_name'],
+                mean_a=row['mean_a'],
+                mean_b=row['mean_b'],
+                delta=row['delta'],
+            )
+            if row['delta'] > 0.01:
+                improvements.append(tc)
+            elif row['delta'] < -0.01:
+                regressions.append(tc)
+
+        improvements.sort(key=lambda x: x.delta, reverse=True)
+        regressions.sort(key=lambda x: x.delta)
+
+    return RunComparison(
+        group_a=group_a,
+        group_b=group_b,
+        overall=overall,
+        improvements=improvements,
+        regressions=regressions,
+    )
+
+
+@dataclass
 class TestCaseAnalysis:
     """Detailed analysis of a single test case across multiple runs."""
     test_case_name: str

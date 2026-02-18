@@ -40,6 +40,18 @@
   - name: grail_knights_break_tests
     query: |
       Do Grail Knights need to take break tests?
+    reference_answer: |
+      Yes, Grail Knights do need to take a break tests as normal.
+      
+      Grail Knights have the Grail Virtue, which makes them immune to psychology:
+
+      > Knightly Virtues: Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology. (Bretonnia Army Book, p. 62)
+
+      However, the rules for break tests are separate from psychology tests:
+
+      > Players will immediately realise that a psychology test is taken in the same way as a Break test in hand-to-hand combat and uses the same characteristic, namely Leadership. However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests. (Warhammer Rulebook, p. 46)
+
+      Therefore, even though Grail Knights are immune to psychology tests, they must still take break tests when they lose combat.
     evidence:
     - rulebook: Warhammer Rulebook
       page: 42
@@ -431,9 +443,15 @@
   - name: curse_in_combat
     query: |
       Can I play a Curse while in combat?
+    reference_answer: |
+      Yes, you can play a Curse while in combat. The rules explicitly allow this action:
+      
+      > "You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hireling. Play a Curse."
+      >
+      > (Munchkin Rules, p. 2)
     evidence:
     - rulebook: Munchkin Rules
-      page: 1
+      page: 2
       quote: |
         You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hriling. Play a Curse.
     - rulebook: Munchkin Rules
@@ -468,12 +486,12 @@
     reference_answer: |
       You can discard your Race card at any time during the game. The following rule explicitly allows this action:
 
-      > You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hriling. Play a Curse. (Munchkin Rules, p. 1)
+      > You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hriling. Play a Curse. (Munchkin Rules, p. 2)
 
       This means that if you wish to get rid of your Race card, you may simply choose to discard it during your turn or at any other moment when you are not restricted by combat or other turn-specific phases.
     evidence:
     - rulebook: Munchkin Rules
-      page: 1
+      page: 2
       quote: |
         You may perform these actions at any time: Discard a Class or Race. Play a Go Up a Level or Hriling. Play a Curse.
   - name: sell_items_level_nine
