@@ -89,6 +89,17 @@ Examples of good relationship subquestions:
 - "Does the rulebook define retreat checks as a type of morale effect?"
 - "What is the relationship between exhaustion and status effects according to the rules?"
 
+### Always include a rule precedence subquestion when a restriction is involved
+
+For COMPLEX queries where the question involves a **restriction or prohibition** (e.g., "can X be targeted?", "can X do Y?", "is X allowed during Y?") — you MUST include a subquestion that asks whether any **specific card, item, or ability explicitly addresses** the restricted situation. Specific rules take precedence over general rules, and such exceptions are often found in a different rulebook or section from the general restriction.
+
+Examples of good precedence subquestions:
+- "Are there any specific spells, scrolls, or magic items that explicitly target models that are flying high?"
+- "Does any card or ability explicitly allow shooting after moving, as an exception to the general movement-shooting restriction?"
+- "Is there a specific rule for [item/ability name] that directly addresses this situation?"
+
+**Important:** When asking this subquestion, frame it concretely — ask what the specific card/item/ability *does* and what it *names as its target*, not whether it contains abstract "override" language. The card text naming the restricted situation IS the override; no keyword like "overrides" or "exception" is required.
+
 ### How many subquestions?
 
 - **0**: The query is SIMPLE — return an empty list.

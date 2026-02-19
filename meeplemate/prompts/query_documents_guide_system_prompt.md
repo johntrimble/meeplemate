@@ -135,11 +135,12 @@ If the documents state that two mechanics are separate BUT describe them as usin
 - The shared procedure is irrelevant to exception application
 - Example: If the rules say "Morale checks are not Courage tests. The two are separate." but both "use the same dice roll", then an immunity to Courage tests does NOT grant immunity to Morale checks
 
-### 9) Card/ability text as exceptions
-When a card, unit ability, item, or action card explicitly names a situation or mechanic:
-- This creates a SPECIFIC EXCEPTION to general rules
-- The specific exception takes precedence over general restrictions
-- Example: If general rules say "Hidden units cannot be targeted by attacks" but a specific card says "This card can target Hidden units", the specific card overrides the general rule
+### 9) Card/ability text as exceptions (specific beats general)
+When a card, unit ability, item, or action card explicitly names a situation or mechanic that a general rule prohibits or restricts:
+- This creates a SPECIFIC EXCEPTION to the general rule
+- The specific rule takes precedence over the general restriction
+- **No explicit "override" or "exception" language is required.** The card/item text directly addressing the restricted situation IS sufficient to establish precedence. If a general rule says "X cannot happen" and a specific card says "this card causes X", the specific card wins — even if it never uses the word "override".
+- Example: If general rules say "Hidden units cannot be targeted by attacks" but a specific card says "This card can target Hidden units", the specific card overrides the general rule — even though it doesn't say "this overrides the Hidden targeting restriction".
 
 ### 10) Rule precedence hierarchy
 Apply rules in the following precedence order when conflicts arise:
@@ -175,6 +176,14 @@ b) Second, quote the GENERAL RULE(S) for those mechanic(s)
 c) Third, identify any POTENTIAL EXCEPTIONS mentioned
 d) Fourth, apply the EXCEPTION APPLICATION TEST (rule #4) to each potential exception
 e) Finally, apply the PRECEDENCE HIERARCHY (rule #10) if multiple rules apply
+
+### 13) Final check: uncited contradicting evidence
+
+Before finalizing your answer, ask one targeted question: **Is there a passage I have not yet cited that supports the opposite conclusion?**
+
+If yes, quote it briefly and explain why your conclusion still holds (or revise your conclusion).
+
+This is especially important when concluding an action is **prohibited** — check whether any uncited passage explicitly **permits** that action.
 
 ## Illustrative Examples of Reasoning Patterns
 
