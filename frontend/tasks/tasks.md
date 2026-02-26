@@ -4,7 +4,7 @@ Boardbarian is the external name for meeplemate. It is an AI assistant for answe
 
 The intent is for the frontend to be largely static in terms of its assets (no server-side rendering) and to only leverage the backend in for logged in users to provide lists of games, start new chats, access chat histories, etc. This will allow us to scale the backend to zero when not in use and to have a frontend that can be easily deployed on a CDN.
 
-This document outlines the tasks for the frontend project. Each task includes a checklist of steps to complete and a test plan to verify that the task is done correctly. As items on the checklist are completed, they should be checked off. Once all the items are checked off for a task, and the test plan is executed successfully, the task can be considered complete and the changes committed using git.
+This document outlines the tasks for the frontend project. Each task includes a checklist of steps to complete and a test plan to verify that the task is done correctly. As items on the checklist are completed, they should be checked off. Once all the items are checked off for a task, and the test plan is executed successfully, the task can be considered complete. Commit only the files created or modified as part of that task using git — do not include unrelated files. Each task should result in one git commit.
 
 Mobile is expected to be the primary platform for this application, so we should optimize the frontend for mobile devices, but it should also be responsive and work well on desktop devices as well. We can use a mobile-first design approach to ensure that the application looks and works great on mobile devices, while still providing a good experience on desktop.
 
@@ -17,6 +17,10 @@ Mobile is expected to be the primary platform for this application, so we should
 - shadcn/ui + Elements AI components (for pre-built UI components and AI-specific UI elements)
 - React Router (for navigation between screens)
 
+## Style
+
+Dark theme by default. The `dark` class is set on the `<html>` element in `index.html`, activating shadcn/ui's dark mode CSS variables globally. All components and screens should use semantic Tailwind color classes (`bg-background`, `text-foreground`, `text-muted-foreground`, `bg-card`, `border-border`, etc.) rather than hardcoded colors, so they automatically respect the theme.
+
 
 ## Tasks
 
@@ -24,21 +28,31 @@ Mobile is expected to be the primary platform for this application, so we should
 
 We need to make a new frontend project. Eventually, we will implement the Vercel AI stream protocol (https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol#data-stream-protocol) on the backend to be used by the frontend, but for now we will focus on just getting the frontend project set up and creating the main home screen page. The frontend should not depend on server-side rendering.
 
-- [ ] Create frontend project in `frontend` directory
-- [ ] Add README.md (in the frontend directory) with instructions on how to run the frontend project locally
-- [ ] Use React and TypeScript
-- [ ] Set up basic project structure
-- [ ] Create the main home screen page (consult the frontend/tasks/boardbarian_screens.png)
-- [ ] Add Elements AI (https://elements.ai-sdk.dev/)
-- [ ] Ensure we have no dependency on a backend for now
-- [ ] Create a test plan for ensuring the frontend build and the home screen page works correctly
+- [x] Create frontend project in `frontend` directory
+- [x] Add README.md (in the frontend directory) with instructions on how to run the frontend project locally
+- [x] Use React and TypeScript
+- [x] Set up basic project structure
+- [x] Create the main home screen page (consult the frontend/tasks/boardbarian_screens.png)
+- [x] Add Elements AI (https://elements.ai-sdk.dev/)
+- [x] Ensure we have no dependency on a backend for now
+- [x] Create a test plan for ensuring the frontend build and the home screen page works correctly
     * This could be a test you run manually
     * Fill out the test plan below
-- [ ] Execute the test plan to verify this task is done
+- [x] Execute the test plan to verify this task is done
 
 #### Test Plan for Task
 
-TBD
+1. **Production build passes** — run `npm run build` from `frontend/`. Expected: exits 0, creates `dist/` with hashed assets, no TypeScript errors. ✅ Verified.
+2. **Dev server starts** — run `npm run dev`. Expected: Vite starts at `http://localhost:5173` with no errors.
+3. **Home screen renders correctly** — open `http://localhost:5173`. Verify:
+   - Page loads with no console errors
+   - White background, clean layout
+   - "Sign In" button visible in the top-right corner
+   - Rounded logo card (🎲 Boardbarian) visible on the left
+   - Marketing copy ("Rules questions, answered instantly.") visible to the right of the logo
+   - Layout looks correct at mobile viewport (390px wide in DevTools)
+   - Layout looks correct at desktop viewport (full-width)
+4. **Preview build works** — run `npm run build && npm run preview`. Repeat step 3 at `http://localhost:4173`.
 
 
 ### Task: Create Select Game Screen
