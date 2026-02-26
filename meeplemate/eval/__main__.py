@@ -36,6 +36,13 @@ from meeplemate.config import GameService
 
 logger = structlog.get_logger(__name__)
 
+LLM_COST_PER_1M_TOKENS_TABLE = {
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": {
+        "input": 0.1,
+        "output": 0.3
+    }
+}
+
 # Custom LocalModel that properly supports structured outputs with vllm
 class StructuredLocalModel(LocalModel):
     """LocalModel subclass that properly uses vllm's structured output features.
@@ -796,6 +803,72 @@ def compare_qa(group_a: str, group_b: str):
     if not comparison.improvements and not comparison.regressions:
         click.echo("No significant changes detected.")
         click.echo()
+
+
+@cli.command()
+@click.argument("group-run-id")
+def token_usage(group_run_id: str):
+    """Show average token usage per model per run for a generation group.
+
+    Loads all run files under the group directory, sums tokens per LLM call
+    (deduplicated by run ID to avoid double-counting), and prints averages.
+
+    Example:
+        python -m meeplemate.eval token-usage 2026-02-24-2
+    """
+    from collections import defaultdict
+    from meeplemate.eval import extract_token_usage_from_run
+
+    base_group_run_id, _ = parse_group_run_id(group_run_id)
+    group_dir = get_eval_generation_runs_dir() / base_group_run_id
+
+    if not group_dir.exists():
+        raise click.ClickException(f"No runs found for: {group_run_id}")
+
+    run_files = sorted(group_dir.glob("*.json"))
+    if not run_files:
+        raise click.ClickException(f"No .json files in {group_dir}")
+
+    # model_name -> list of (input_tokens, output_tokens) per run file
+    model_samples: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    skipped = 0
+
+    for run_file in run_files:
+        try:
+            run = load_persisted_run(run_file)
+            usage = extract_token_usage_from_run(run)
+            if not usage:
+                skipped += 1
+                continue
+            for model_name, counts in usage.items():
+                model_samples[model_name].append(
+                    (counts["input_tokens"], counts["output_tokens"])
+                )
+        except Exception as e:
+            click.echo(f"  Warning: skipping {run_file.name}: {e}", err=True)
+            skipped += 1
+
+    if not model_samples:
+        click.echo("No token usage data found (run files may pre-date stream_usage fix).")
+        return
+
+    loaded = len(run_files) - skipped
+    click.echo(f"Group: {base_group_run_id}  ({loaded} run files, {skipped} skipped)")
+    click.echo()
+    w = 55
+    click.echo(f"{'Model':<{w}} {'Runs':>5} {'Avg In':>10} {'Avg Out':>10} {'Avg Total':>10} {'Avg Cost':>12}")
+    click.echo("-" * (w + 52))
+    for model_name, samples in sorted(model_samples.items()):
+        n = len(samples)
+        avg_in = sum(s[0] for s in samples) / n
+        avg_out = sum(s[1] for s in samples) / n
+        costs = LLM_COST_PER_1M_TOKENS_TABLE.get(model_name)
+        if costs:
+            avg_cost = (avg_in * costs["input"] + avg_out * costs["output"]) / 1_000_000
+            cost_str = f"${avg_cost:.4f}"
+        else:
+            cost_str = "--"
+        click.echo(f"{model_name:<{w}} {n:>5} {avg_in:>10.0f} {avg_out:>10.0f} {avg_in + avg_out:>10.0f} {cost_str:>12}")
 
 
 if __name__ == "__main__":
