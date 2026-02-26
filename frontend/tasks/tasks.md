@@ -86,33 +86,59 @@ We need to make a new frontend project. Eventually, we will implement the Vercel
 
 ### Task: Create New Chat Screen
 
-- [ ] Create a new screen for the chat interface (consult the frontend/tasks/boardbarian_screens.png)
-- [ ] Add sidebar navigation to the chat screen
-- [ ] "Select Game" should navigate back to the "Select Game" screen
-- [ ] Create a test plan for ensuring the frontend build and the home screen page works correctly
+- [x] Create a new screen for the chat interface (consult the frontend/tasks/boardbarian_screens.png)
+- [x] Add sidebar navigation to the chat screen
+- [x] "Select Game" should navigate back to the "Select Game" screen
+- [x] Create a test plan for ensuring the frontend build and the home screen page works correctly
     * This could be a test you run manually
     * Fill out the test plan below
-- [ ] Execute the test plan to verify this task is done
+- [x] Execute the test plan to verify this task is done
 
 #### Test Plan for Task
 
-TBD
+1. **Production build passes** — run `npm run build` from `frontend/`. Expected: exits 0, no TypeScript errors. ✅ Verified.
+2. **Navigate to new chat** — from the Select Game screen, tap any game card. Expected: navigates to `/chat` and the new chat screen renders with:
+   - Hamburger button (☰) top-left
+   - Compact game card (emoji + colored box) top-center
+   - Game name next to it
+   - User avatar ("AJ") top-right
+   - Large game card + "What can I tell you about <Game>?" in the content area
+   - 3 suggested question buttons below
+   - "Ask anything" input bar pinned to the bottom
+3. **Suggested question fills the input** — tap a suggested question. Expected: the question is added to the messages list and the input stays focused/empty.
+4. **Sidebar opens and closes** — tap ☰ icon. Expected: dark backdrop + slide-in drawer from the left with "Select game", "New Chat", and chat history entries. Tap X or backdrop to close.
+5. **"Select game" link works** — open sidebar, tap "Select game". Expected: navigates to `/select-game`.
+6. **Chat history links work** — open sidebar, tap a chat (e.g. "Grail Knights and break tests"). Expected: navigates to `/chat/conv-3` and that conversation renders.
+7. **Layout at mobile (390px)** — no horizontal overflow, sticky header and input visible.
 
 
 ### Task: Create chat conversation view
 
-- [ ] Implement the view for chats with existing messages
-- [ ] Create mock conversations with messages for testing
+- [x] Implement the view for chats with existing messages
+- [x] Create mock conversations with messages for testing
   * Use the test cases in ./meeplemate/eval/test_cases.yaml as a guide for creating mock conversations
   * Also you can look at the runs under data/evals/generation_runs
-- [ ] Add chain-of-though components to AI assistant responses that support nested thoughts (since the AI Agent will be multi-agent)
-- [ ] Add buttons under AI assistant resposne for "Copy", "Thumbs Up", "Thumbs Down", and "Regenerate"
-- [ ] Create a test plan for ensuring the frontend build and the home screen page works correctly
+- [x] Add chain-of-though components to AI assistant responses that support nested thoughts (since the AI Agent will be multi-agent)
+- [x] Add buttons under AI assistant resposne for "Copy", "Thumbs Up", "Thumbs Down", and "Regenerate"
+- [x] Create a test plan for ensuring the frontend build and the home screen page works correctly
     * This could be a test you run manually
     * Fill out the test plan below
-- [ ] Execute the test plan to verify this task is done
+- [x] Execute the test plan to verify this task is done
 
 #### Test Plan for Task
 
-TBD
+1. **Production build passes** — run `npm run build` from `frontend/`. Expected: exits 0. ✅ Verified.
+2. **Existing conversation renders** — navigate to `/chat/conv-3` (Grail Knights conversation). Expected:
+   - User messages displayed in a right-aligned bubble
+   - Assistant messages displayed left-aligned with markdown rendered (bold, blockquotes)
+   - "Thought for Xs" collapsible header above each AI answer
+   - Expanding the collapsible shows the thinking steps
+   - Copy / 👍 / 👎 / Regenerate action buttons below each AI message
+   - Page scrolled to the bottom on load
+3. **Multi-turn conversation** — navigate to `/chat/conv-2` (Discarding a Class card). Expected: 4 messages (2 user + 2 assistant) render in correct order.
+4. **Copy button** — click Copy on an assistant message. Expected: text is written to the clipboard (verifiable by pasting).
+5. **Thumbs Up/Down and Regenerate** — buttons are present and clickable (no error; backend integration is a future task).
+6. **User can add a message** — type in the input and press Enter or click the send button. Expected: user message appended at the bottom; auto-scroll to new message.
+7. **Chain-of-thought nesting** — click "Thought for Xs" to expand/collapse. Expected: smooth accordion animation shows/hides the thinking steps.
+8. **No console errors** on any of the above screens.
 

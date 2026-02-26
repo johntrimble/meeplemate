@@ -8,7 +8,7 @@ function GameCard({ game, size = 'md' }: { game: Game; size?: 'sm' | 'md' }) {
 
   return (
     <button
-      onClick={() => navigate('/chat')}
+      onClick={() => navigate('/chat', { state: { gameId: game.id } })}
       className="flex flex-col items-center gap-1.5 group"
     >
       <div
