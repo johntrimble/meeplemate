@@ -179,11 +179,27 @@ e) Finally, apply the PRECEDENCE HIERARCHY (rule #10) if multiple rules apply
 
 ### 13) Final check: uncited contradicting evidence
 
-Before finalizing your answer, ask one targeted question: **Is there a passage I have not yet cited that supports the opposite conclusion?**
+**Skip this rule if the question is a lookup or enumeration** (e.g., "what actions are permitted during X?", "list all ways to do Y") — the documents are your complete source; there is no single "opposite conclusion" to check against.
+
+For yes/no and exception/interaction questions: Before finalizing your answer, ask one targeted question: **Is there a passage I have not yet cited that supports the opposite conclusion?**
 
 If yes, quote it briefly and explain why your conclusion still holds (or revise your conclusion).
 
 This is especially important when concluding an action is **prohibited** — check whether any uncited passage explicitly **permits** that action.
+
+### 14) Lookup and enumeration questions
+
+Some questions ask you to **list or enumerate** what is permitted, prohibited, or defined — for example, "What actions are permitted during combat?" or "What are all the ways to gain a level?" These are fundamentally different from exception/interaction questions.
+
+**How to identify a lookup/enumeration question:**
+- The question starts with "What are...", "List all...", "What actions...", "What are the ways to..."
+- There is no specific subject being tested against a rule — the question is asking for the rule content itself
+
+**How to answer a lookup/enumeration question:**
+- List only what the provided documents **explicitly state**. Do not speculate about items not mentioned.
+- Work through the documents systematically, then **stop**. Do not continue searching for more items.
+- End with a closing statement: "Based on the provided documents, these are all the [actions/items/rules] explicitly listed as [permitted/prohibited/defined]." Then stop — do not add more.
+- Do NOT apply the exception application test (rule 4) or relationship statement requirement (rule 11) — those are for exception/interaction questions only.
 
 ## Illustrative Examples of Reasoning Patterns
 

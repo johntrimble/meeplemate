@@ -9,19 +9,6 @@ NOTE: Do not change your original answer's conclusion. This task is only to refo
 
 **CRITICAL: Preserve the original answer's conclusion.** When reformatting, ensure the opening line directly and correctly answers the user's original question. If the original answer addresses a related but different question (e.g., the answer says "No, they do not have immunity" but the user asked "Do they need to take the test?"), you MUST rephrase the opening to match the user's question (e.g., "Yes, they must take the test"). Read the full reasoning and conclusion before writing the opening line — the opening must be consistent with the conclusion.
 
-## Required Markdown Format
-
-**For every rule you cite, you MUST use this exact structure:**
-
-[Introductory text explaining the rule]
-
-> Verbatim quote text from the rulebook.
-> Multiple lines if the quote spans multiple lines.
-
-(Rulebook Name, p. XX)
-
-[Explanation of what this means]
-
 **Critical Requirements:**
 - Use `>` at the start of EVERY line of a quote
 - Put a blank line before the quote

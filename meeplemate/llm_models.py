@@ -454,19 +454,19 @@ def load_tokenizer(model_name:str) -> PreTrainedTokenizerBase:
         trust_remote_code=True,
         device_map="auto"
     )
-    if tokenizer.pad_token is None:
-        # For some reason, this isn't set in the config. For Mistral, it's just
-        # the EOS token (which is the default). However, with OpenHermes, the
-        # EOS token is a different token, but the padding token appears to still
-        # be </s>:
-        #
-        # https://huggingface.co/teknium/OpenHermes-2.5-Mistral-7B/blob/main/special_tokens_map.json
-        #
-        # So if it is not set, we just set it explicitly to </s> here.
-        tokenizer.pad_token = '</s>'
+    # if tokenizer.pad_token is None:
+    #     # For some reason, this isn't set in the config. For Mistral, it's just
+    #     # the EOS token (which is the default). However, with OpenHermes, the
+    #     # EOS token is a different token, but the padding token appears to still
+    #     # be </s>:
+    #     #
+    #     # https://huggingface.co/teknium/OpenHermes-2.5-Mistral-7B/blob/main/special_tokens_map.json
+    #     #
+    #     # So if it is not set, we just set it explicitly to </s> here.
+    #     tokenizer.pad_token = '</s>'
 
-    # Wrap the tokenizer if it does not support system prompts
-    tokenizer = maybe_wrap_tokenizer_no_system_prompt(tokenizer)
+    # # Wrap the tokenizer if it does not support system prompts
+    # tokenizer = maybe_wrap_tokenizer_no_system_prompt(tokenizer)
 
     return tokenizer
 

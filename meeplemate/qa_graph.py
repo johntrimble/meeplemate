@@ -1,13 +1,11 @@
 import copy
 from dataclasses import dataclass
-import json
-from re import sub
 import re
-from typing import Annotated, Any, List, Literal, NotRequired, Protocol, Sequence, Tuple, TypedDict, cast
+import json
+from typing import Annotated, Any, List, Literal, NotRequired, Sequence, Tuple, TypedDict, cast
 from langchain_core.messages import AnyMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
-from langchain_core.tools import Tool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.load import Serializable
 from langchain_core.prompts import ChatPromptTemplate
@@ -17,7 +15,6 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 from langgraph.prebuilt import ToolNode
-from numpy import block
 
 from meeplemate import quote_util
 from meeplemate.ingest.gamepackage import Manifest, get_page_id
@@ -41,10 +38,10 @@ qa_prompt = ChatPromptTemplate.from_messages(
         ("system", system_prompt_template),
         ("user", qa_template),
         ("placeholder", "{messages}"),
-
     ],
     template_format="mustache"
 )
+
 
 class Rulebook(TypedDict):
     rulebook_name: str
@@ -125,11 +122,12 @@ async def retrieve_page(rulebook_name: str, page: int, runtime: ToolRuntime[Game
 def get_chunk_id_tuple(chunk: Chunk) -> Tuple[str, str, int]:
     return (chunk["rulebook_name"], chunk["page"], chunk["start_index"])
 
+
 @dataclass
 class ContextWithSearchChunkService:
     manifest: Manifest
     chunk_search_service: ChunkSearchService
-    
+
 
 # Token budget constants for context window management
 MAX_CONTEXT_SIZE = 29_000
@@ -143,7 +141,7 @@ def _build_answer_prompt():
     return ChatPromptTemplate.from_messages(
         [
             ("system", query_documents_guidelines_template),
-            ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query inside <reasoning> </reasoning> tags. Then answer the user's query. Your answer MUST directly address the user's exact question as phrased. If the user asks 'Do X need to do Y?', your answer must start with 'Yes, X must do Y' or 'No, X do not need to do Y' — not a reframing like 'No, X do not have immunity from Y'."),
+            ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query, then answer the user's query. Your answer MUST directly address the user's exact question as phrased. If the user asks 'Do X need to do Y?', your answer must start with 'Yes, X must do Y' or 'No, X do not need to do Y' — not a reframing like 'No, X do not have immunity from Y'."),
         ],
         template_format="mustache"
     )
@@ -172,6 +170,9 @@ async def search_chunks(search_queries: list[str], runtime: ToolRuntime[ContextW
 
     # TODO: Fix this hack. We keep searching on these terms needlessly
     search_queries = [term for term in search_queries if term not in ['interaction', 'mechanic', 'mechanics', 'relationship']]
+
+    # Hard cap: the tool description says "Limit to 5 queries" but the model sometimes ignores it
+    search_queries = search_queries[:5]
 
     # Get the query from the graph context
     user_query = runtime.state["query"]
@@ -289,9 +290,9 @@ class SeparationCheck(TypedDict):
 # New types for top-level fields
 class IdentifiedMechanics(TypedDict):
     """Game mechanics"""
-    primary_mechanics: Annotated[list[str], ..., "The primary game mechanics involved in the question"]
-    secondary_mechanics: Annotated[list[str], ..., "Other mechanics mentioned or implied that might affect the primary mechanics"]
-    reasoning: Annotated[str, ..., "Brief explanation of why these mechanics were identified and how they relate to each other"]
+    mechanics: Annotated[list[str], ..., "The game mechanics involved in the question"]
+    # secondary_mechanics: Annotated[list[str], ..., "Other mechanics mentioned or implied that might affect the primary mechanics"]
+    # reasoning: Annotated[str, ..., "Brief explanation of why these mechanics were identified and how they relate to each other"]
 
 
 class RelationshipStatement(TypedDict):
@@ -325,7 +326,7 @@ class ExceptionEntry(TypedDict):
 
 class QaResponse(TypedDict):
     """Rules analysis and answer structure"""
-    reasoning: Annotated[str, ..., "Step-by-step reasoning process using bullet points"]
+    # reasoning: Annotated[str, ..., "Step-by-step reasoning process using bullet points"]
     identified_mechanics: IdentifiedMechanics
     # relationship_statements: Annotated[list[RelationshipStatement], ..., "List of relationship statements between mechanics found in the documents"]
     general_rules: Annotated[list[GeneralRule], ..., "List of general rules governing the mechanics in question"]
@@ -1196,9 +1197,15 @@ class Subquestion(TypedDict):
     explanation: Annotated[str, ..., "An explanation as to how an answer to this subquestion helps address the user's original query."]
 
 
+class RelevantMechanic(TypedDict):
+    name: Annotated[str, ..., "Name of the game mechanic, rule concept, or category relevant to answering the question"]
+    in_question: Annotated[bool, ..., "True if this mechanic is explicitly named in the user's question; False if it was introduced by the retrieved documents"]
+
+
 class QuestionAnalysis(TypedDict):
-    classification: Literal["SIMPLE", "COMPLEX"]
-    explanation: Annotated[str, ..., "Explanation of what the user is asking and the key rules and rule interactions involved in the user's query. Free form markdown text."]
+    mechanics: Annotated[list[RelevantMechanic], ..., "All game mechanics relevant to answering the question. Fill this in before determining classification."]
+    classification: Annotated[Literal["SIMPLE", "COMPLEX"], ..., "COMPLEX if any entry in 'mechanics' has in_question=False — the relationship between that unlisted mechanic and the question's mechanics is unresolved and must be researched. SIMPLE only if every mechanic has in_question=True AND a direct answer passage exists in the retrieved documents."]
+    explanation: Annotated[str, ..., "Explanation of what the user is asking and the key rules and rule interactions involved in the user's query. Be concise — 2 to 4 sentences maximum."]
     subquestions: Annotated[list[Subquestion], ..., "List of 2-5 independently answerable subquestions for COMPLEX queries. Empty list for SIMPLE queries."]
 
 
@@ -2019,8 +2026,8 @@ def build_question_answer_graph(
         format_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", system_prompt_template),
-                ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query inside <reasoning> </reasoning> tags. Then answer the user's query."),
-                ("assistant", "<reasoning>{{reasoning}}</reasoning>\n{{answer}}"),
+                ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query, then answer the user's query."),
+                ("assistant", "{{answer}}"),
                 ("user", markdown_format_response_template),
             ],
             template_format="mustache"
@@ -2104,7 +2111,7 @@ def build_question_answer_graph(
     # Compile the agent
     agent = graph.compile(checkpointer=checkpoint_saver)
     return agent
-    
+
 
 class QAServiceInput(GameAgentInputState):
     manifest: Manifest

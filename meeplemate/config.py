@@ -383,18 +383,20 @@ def create_app_system(cfg: Config) -> System[AppServices]:
             api_key = config.api_key.get_secret_value() if config.api_key else "not-needed"
             chat_model = ChatOpenAI(
                 model=config.model_name,
-                max_tokens=config.max_new_tokens,
-                presence_penalty=0.6,
-                temperature=0.7,
+                # max_tokens=config.max_new_tokens,
+                max_tokens=3072,
+                presence_penalty=1.5,
+                temperature=0.6,
                 top_p=0.8,
                 timeout=config.timeout,
                 base_url=config.endpoint,
                 api_key=api_key,
                 streaming=True,
+                stream_usage=True,
                 extra_body={
                     "top_k": 20,
                     "min_p": 0.0,
-                    "repetition_penalty": 1.1,
+                    # "repetition_penalty": 1.1,
                     **({
                         "chat_template_kwargs": {
                             "enable_thinking": False,
