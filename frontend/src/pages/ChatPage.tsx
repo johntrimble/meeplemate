@@ -207,10 +207,10 @@ function ChatInput({ onSubmit }: { onSubmit: (text: string) => void }) {
 
   return (
     <div className="border-t border-border bg-background/95 backdrop-blur px-4 py-3">
-      <div className="flex items-end gap-2 bg-muted rounded-xl px-3 py-2">
+      <div className="max-w-3xl mx-auto flex items-end gap-2 bg-muted rounded-xl px-3 py-2">
         <textarea
           ref={textareaRef}
-          className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none min-h-[24px] max-h-32 leading-relaxed"
+          className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none min-h-[24px] max-h-48 leading-relaxed"
           placeholder="Ask anything"
           value={value}
           rows={1}
@@ -259,7 +259,7 @@ function EmptyState({
   const qs = suggestions[game.id] ?? defaultSuggestions
 
   return (
-    <div className="flex flex-col items-center px-4 pt-10 pb-4">
+    <div className="max-w-3xl mx-auto w-full flex flex-col items-center px-4 pt-10 pb-4">
       {/* Game card */}
       <div
         className="w-24 h-24 rounded-2xl flex items-center justify-center mb-4 shadow-md"
@@ -331,7 +331,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col max-w-lg mx-auto">
+    <div className="h-screen bg-background flex flex-col overflow-hidden">
       <Sidebar
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -340,33 +340,35 @@ export default function ChatPage() {
       />
 
       {/* ── Header ─────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-30 bg-background flex items-center gap-3 px-4 pt-4 pb-3 border-b border-border">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => setSidebarOpen(true)}
-          aria-label="Open menu"
-        >
-          <MenuIcon className="size-5" />
-        </Button>
+      <header className="z-30 bg-background border-b border-border shrink-0">
+        <div className="max-w-3xl mx-auto flex items-center gap-3 px-4 py-3">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open menu"
+          >
+            <MenuIcon className="size-5" />
+          </Button>
 
-        {/* Compact game card */}
-        <div
-          className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
-          style={{ backgroundColor: game.bgColor }}
-        >
-          <span className="text-lg">{game.emoji}</span>
-        </div>
+          {/* Compact game card */}
+          <div
+            className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+            style={{ backgroundColor: game.bgColor }}
+          >
+            <span className="text-lg">{game.emoji}</span>
+          </div>
 
-        <span className="flex-1 text-sm font-medium text-foreground truncate">
-          {game.name}
-        </span>
-
-        {/* User avatar */}
-        <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
-          <span className="text-xs font-semibold text-muted-foreground">
-            {MOCK_USER.initials}
+          <span className="flex-1 text-sm font-medium text-foreground truncate">
+            {game.name}
           </span>
+
+          {/* User avatar */}
+          <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
+            <span className="text-xs font-semibold text-muted-foreground">
+              {MOCK_USER.initials}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -375,7 +377,7 @@ export default function ChatPage() {
         {messages.length === 0 ? (
           <EmptyState game={game} onSuggest={handleSubmit} />
         ) : (
-          <div className="flex flex-col gap-6 px-4 py-6">
+          <div className="max-w-3xl mx-auto flex flex-col gap-6 px-4 py-6">
             {messages.map((msg) =>
               msg.role === 'user' ? (
                 <UserMsg key={msg.id} message={msg} />
@@ -389,7 +391,7 @@ export default function ChatPage() {
       </div>
 
       {/* ── Input ──────────────────────────────────────────────────── */}
-      <div className="sticky bottom-0 z-10">
+      <div className="shrink-0">
         <ChatInput onSubmit={handleSubmit} />
       </div>
     </div>

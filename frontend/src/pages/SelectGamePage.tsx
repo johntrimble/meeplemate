@@ -30,22 +30,24 @@ export default function SelectGamePage() {
     .filter(Boolean) as Game[]
 
   return (
-    <div className="min-h-screen bg-background flex flex-col max-w-lg mx-auto">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="flex items-center justify-between px-4 pt-4 pb-2">
-        <h1 className="text-lg font-semibold text-foreground">Select a Game</h1>
-        <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center shrink-0">
-          <span className="text-xs font-semibold text-muted-foreground">{MOCK_USER.initials}</span>
+      <header className="border-b border-border">
+        <div className="max-w-3xl mx-auto flex items-center justify-between px-4 pt-4 pb-3">
+          <h1 className="text-lg font-semibold text-foreground">Select a Game</h1>
+          <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center shrink-0">
+            <span className="text-xs font-semibold text-muted-foreground">{MOCK_USER.initials}</span>
+          </div>
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-8">
+      <div className="max-w-3xl mx-auto px-4 pb-8">
         {/* Recently Used */}
-        <section className="mt-4">
+        <section className="mt-6">
           <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
             Recently Used
           </h2>
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-4 sm:grid-cols-6 gap-3">
             {recentGames.map((game) => (
               <GameCard key={game.id} game={game} size="md" />
             ))}
@@ -53,8 +55,8 @@ export default function SelectGamePage() {
         </section>
 
         {/* All Games */}
-        <section className="mt-6">
-          <div className="grid grid-cols-3 gap-4">
+        <section className="mt-8">
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
             {GAMES.map((game) => (
               <GameCard key={game.id} game={game} size="md" />
             ))}

@@ -218,8 +218,27 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    /* Firefox */
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.5 0 0 / 20%) transparent;
     }
   body {
     @apply bg-background text-foreground;
     }
+}
+
+/* WebKit (Chrome/Safari/Edge) — thin, low-profile scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: oklch(0.5 0 0 / 22%);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: oklch(0.5 0 0 / 45%);
 }

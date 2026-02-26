@@ -5,7 +5,8 @@ export default function HomePage() {
   const navigate = useNavigate()
 
   return (
-    <div className="min-h-screen bg-background flex flex-col max-w-lg mx-auto px-4">
+    <div className="min-h-screen bg-background">
+      <div className="max-w-3xl mx-auto px-4 flex flex-col">
       {/* Header */}
       <header className="flex items-center justify-end pt-4 pb-2">
         <Button variant="outline" size="sm" onClick={() => navigate('/select-game')}>
@@ -37,6 +38,7 @@ export default function HomePage() {
           </p>
         </div>
       </main>
+      </div>
     </div>
   )
 }
