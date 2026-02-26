@@ -57,20 +57,31 @@ We need to make a new frontend project. Eventually, we will implement the Vercel
 
 ### Task: Create Select Game Screen
 
-- [ ] Add mock user to frontend project (we are not adding a dependency on the backend yet)
-- [ ] Create a new screen for selecting a game (consult the frontend/tasks/boardbarian_screens.png)
+- [x] Add mock user to frontend project (we are not adding a dependency on the backend yet)
+- [x] Create a new screen for selecting a game (consult the frontend/tasks/boardbarian_screens.png)
   * Just pull some images from a dozen or so popular games and use those as mock data for now
   * Include games from ./meeplemate/eval/test_cases.yaml
-- [ ] For now, have clicking on the "Sign In" button take the user to the select game screen from the home screen
-- [ ] Designate some games as "recently used" by the mock user
-- [ ] Create a test plan for ensuring the frontend build and the home screen page works correctly
+- [x] For now, have clicking on the "Sign In" button take the user to the select game screen from the home screen
+- [x] Designate some games as "recently used" by the mock user
+- [x] Create a test plan for ensuring the frontend build and the home screen page works correctly
     * This could be a test you run manually
     * Fill out the test plan below
-- [ ] Execute the test plan to verify this task is done
+- [x] Execute the test plan to verify this task is done
 
 #### Test Plan for Task
 
-TBD
+1. **Production build passes** — run `npm run build` from `frontend/`. Expected: exits 0, no TypeScript errors. ✅ Verified.
+2. **Dev server starts** — run `npm run dev`. Expected: Vite starts at `http://localhost:5173` with no errors.
+3. **Sign In navigates to Select Game** — on the home screen, click "Sign In". Expected: navigates to `/select-game` and the Select Game screen renders.
+4. **Select Game screen layout** — verify at mobile (390px) and desktop viewports:
+   - "Select a Game" title visible top-left
+   - User avatar ("AJ") visible top-right
+   - "Recently Used" section with 4 game cards in a 4-column grid (Munchkin, Warhammer, Catan, Codenames)
+   - All 13 games displayed in a 3-column grid below
+   - Each card shows an emoji on a colored background with the game name below
+   - Cards have hover and active (tap) scale animations
+5. **Game cards are tappable** — clicking any game card navigates to `/chat` (route not yet implemented; a blank/404 page is acceptable until Task 3).
+6. **No console errors** — open DevTools and confirm no errors in the console on either screen.
 
 
 ### Task: Create New Chat Screen

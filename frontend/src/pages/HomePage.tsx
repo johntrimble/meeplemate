@@ -1,11 +1,14 @@
+import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 
 export default function HomePage() {
+  const navigate = useNavigate()
+
   return (
     <div className="min-h-screen bg-background flex flex-col max-w-lg mx-auto px-4">
       {/* Header */}
       <header className="flex items-center justify-end pt-4 pb-2">
-        <Button variant="outline" size="sm">
+        <Button variant="outline" size="sm" onClick={() => navigate('/select-game')}>
           Sign In
         </Button>
       </header>
