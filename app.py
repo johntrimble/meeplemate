@@ -20,9 +20,9 @@ from meeplemate.util import aenumerate
 
 @cl.password_auth_callback
 async def auth(username: str, password: str) -> cl.User | None:
-    if username == "dev" and password == "dev":
+    if username in ["dev", "catherine", "hoang", "jennifer", "john"] and password == "dev":
         # Returning a User marks the login as successful
-        return cl.User(identifier="dev@local", display_name="Dev User")
+        return cl.User(identifier=f"{username}@local", display_name=f"{username.capitalize()} User")
     return None
 
 

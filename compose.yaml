@@ -16,6 +16,22 @@ x-base-service: &base-service
   ipc: host
 
 services:
+  caddy-auth:
+    image: caddy:2
+    profiles: ["public-share"]
+    network_mode: service:ts-meeplemate
+    depends_on:
+      - ts-meeplemate
+      - dev
+    env_file:
+    - path: .env
+      required: false
+    environment:
+    - DEMO_TOKEN=${DEMO_TOKEN}
+    - DEMO_COOKIE=${DEMO_COOKIE}
+    volumes:
+      - ./services/caddy-auth/Caddyfile:/etc/caddy/Caddyfile:ro
+
   ts-meeplemate:
     ports:
     - 8000:8000 # Chainlit
@@ -202,7 +218,7 @@ services:
   vllm-glm-ocr:
     image: vllm/vllm-openai:nightly
     ipc: host
-    # profiles: ["glm-ocr"]
+    profiles: ["glm-ocr"]
 
     environment:
       # HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN}"
