@@ -334,6 +334,15 @@ services:
   #           device_ids: ['0']
   #           capabilities: [gpu]
 
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: pgvector-db
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+    - pgdata:/var/lib/postgresql
+
+
   # Single node Cassandra cluster
   cassandra:
     image: cassandra:5.0
@@ -407,3 +416,4 @@ volumes:
   cassandra_data:
   dse_data:
   tailscale-data-meeplemate:
+  pgdata:

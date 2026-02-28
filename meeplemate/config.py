@@ -5,6 +5,8 @@ import os
 import yaml
 from dataclasses import dataclass
 
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from pydantic import BaseModel, Field, SecretStr, field_validator, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
