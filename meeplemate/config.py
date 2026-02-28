@@ -38,6 +38,7 @@ from meeplemate.cassandra_util import AstraDBSerializableStore
 from meeplemate.chatloop import ChatLoopService, build_chatloop_service
 from meeplemate.component_system import System, factory
 from meeplemate.ingest.gamepackage import GamePackage
+from meeplemate.game_service import GameService
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.retrievers import build_retriever
 from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings
@@ -48,6 +49,7 @@ from chainlit.data.base import BaseDataLayer
 from meeplemate.search import (
     ChunkSearchService, build_chunk_search_service, build_chunk_search_service_2
 )
+from meeplemate.server.deps import ApiDeps
 
 
 class IngestConfig(BaseModel):
@@ -192,22 +194,6 @@ class Config(BaseSettings):
             return Path(v)
         return v
 
-
-@dataclass
-class GameService:
-    data_store: BaseStore
-    version_store: BaseStore
-    
-    async def get_current_version_for_game(self, game_id: str) -> str | None:
-        results = await self.version_store.amget([game_id])
-        assert len(results) == 1 and results[0] is not None, "No version found for game_id"
-        version = results[0]
-        return str(version)
-    
-    async def get_manifest(self, game_id: str) -> GamePackage | None:
-        game_key = await self.get_current_version_for_game(game_id)
-        manifest = self.data_store.mget([game_key])[0]
-        return manifest
 
 
 def create_keyspace(data_api_endpoint:str, data_api_token:str, keyspace:str, replication_factor:int):
@@ -565,6 +551,21 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 {
                     "data_store": "game_data_store",
                     "version_store": "game_version_store",
+                }
+            ),
+            "async_engine": (
+                factory(create_async_engine)(
+                    "postgresql+asyncpg://postgres:password@postgres:5432/postgres",
+                    pool_size=10,
+                    max_overflow=20
+                ),
+                {}
+            ),
+            "api_deps": (
+                factory(ApiDeps)(),
+                {
+                    "chatloop_service": "chatloop_service",
+                    "game_service": "game_service",
                 }
             )
         }

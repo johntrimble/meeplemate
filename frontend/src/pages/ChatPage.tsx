@@ -1,3 +1,5 @@
+import { useChat } from '@ai-sdk/react'
+import { DefaultChatTransport } from 'ai'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
@@ -308,26 +310,54 @@ export default function ChatPage() {
   const gameId = conversation?.gameId ?? locationState?.gameId
   const game = GAMES.find((g) => g.id === gameId) ?? GAMES[0]
 
-  // Local messages (initialised from the mock conversation, or empty)
-  const [messages, setMessages] = useState<ConversationMessage[]>(
-    conversation?.messages ?? [],
-  )
+  // Stable chat ID for the lifetime of this new-chat session.
+  // crypto.randomUUID() only works in secure contexts (HTTPS/localhost), so fall
+  // back to a Math.random-based UUID v4 when accessed over plain HTTP.
+  const chatId = useRef(
+    typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+          const r = (Math.random() * 16) | 0
+          return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+        }),
+  ).current
 
-  // Re-initialise messages when navigating between conversations
-  useEffect(() => {
-    setMessages(conversation?.messages ?? [])
-  }, [id, conversation])
+  const { messages: chatMessages, sendMessage } = useChat({
+    transport: new DefaultChatTransport({
+      api: `/api/chats/${chatId}/stream`,
+      prepareSendMessagesRequest: ({ messages }) => {
+        const last = messages[messages.length - 1]
+        const text = last?.parts
+          .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+          .map((p) => p.text)
+          .join('') ?? ''
+        return { body: { message: text, game_id: gameId ?? '' } }
+      },
+    }),
+  })
+
+  // For existing mock conversations show mock history; for new chats show live messages.
+  // UIMessage (ai@6.x) has no `content` string — text lives in parts[].text.
+  const displayMessages: ConversationMessage[] = conversation
+    ? conversation.messages
+    : chatMessages
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({
+          id: m.id,
+          role: m.role as 'user' | 'assistant',
+          content: m.parts
+            .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+            .map((p) => p.text)
+            .join(''),
+        }))
 
   // Scroll to bottom when messages grow
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [displayMessages.length])
 
   const handleSubmit = (text: string) => {
-    setMessages((prev) => [
-      ...prev,
-      { id: `msg-${Date.now()}`, role: 'user', content: text },
-    ])
+    sendMessage({ text })
   }
 
   return (
@@ -374,11 +404,11 @@ export default function ChatPage() {
 
       {/* ── Scrollable content ─────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto">
-        {messages.length === 0 ? (
+        {displayMessages.length === 0 ? (
           <EmptyState game={game} onSuggest={handleSubmit} />
         ) : (
           <div className="max-w-3xl mx-auto flex flex-col gap-6 px-4 py-6">
-            {messages.map((msg) =>
+            {displayMessages.map((msg) =>
               msg.role === 'user' ? (
                 <UserMsg key={msg.id} message={msg} />
               ) : (

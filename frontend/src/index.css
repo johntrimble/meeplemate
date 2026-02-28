@@ -222,6 +222,10 @@
     scrollbar-width: thin;
     scrollbar-color: oklch(0.5 0 0 / 20%) transparent;
     }
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+    }
   body {
     @apply bg-background text-foreground;
     }
