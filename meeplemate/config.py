@@ -5,7 +5,7 @@ import os
 import yaml
 from dataclasses import dataclass
 
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine, AsyncSession
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -561,11 +561,16 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 ),
                 {}
             ),
+            "async_session_factory": (
+                factory(async_sessionmaker)(expire_on_commit=False),
+                {"bind": "async_engine"},
+            ),
             "api_deps": (
                 factory(ApiDeps)(),
                 {
                     "chatloop_service": "chatloop_service",
                     "game_service": "game_service",
+                    "session_factory": "async_session_factory",
                 }
             )
         }

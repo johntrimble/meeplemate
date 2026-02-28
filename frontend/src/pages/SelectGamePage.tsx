@@ -8,7 +8,7 @@ function GameCard({ game, size = 'md' }: { game: Game; size?: 'sm' | 'md' }) {
 
   return (
     <button
-      onClick={() => navigate('/chat', { state: { gameId: game.id } })}
+      onClick={() => navigate(`/chat/${game.id}`)}
       className="flex flex-col items-center gap-1.5 group"
     >
       <div
@@ -30,9 +30,9 @@ export default function SelectGamePage() {
     .filter(Boolean) as Game[]
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="h-full bg-background flex flex-col">
       {/* Header */}
-      <header className="border-b border-border">
+      <header className="sticky top-0 z-30 border-b border-border bg-background shrink-0">
         <div className="max-w-3xl mx-auto flex items-center justify-between px-4 pt-4 pb-3">
           <h1 className="text-lg font-semibold text-foreground">Select a Game</h1>
           <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center shrink-0">
@@ -41,7 +41,8 @@ export default function SelectGamePage() {
         </div>
       </header>
 
-      <div className="max-w-3xl mx-auto px-4 pb-8">
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="max-w-3xl mx-auto px-4 pb-8">
         {/* Recently Used */}
         <section className="mt-6">
           <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
@@ -62,6 +63,7 @@ export default function SelectGamePage() {
             ))}
           </div>
         </section>
+      </div>
       </div>
     </div>
   )

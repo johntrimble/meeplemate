@@ -1,5 +1,6 @@
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
+import type { UIMessage } from 'ai'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
@@ -17,10 +18,7 @@ import {
 } from '@/components/ai-elements/message'
 import { Button } from '@/components/ui/button'
 import { GAMES, type Game } from '@/data/games'
-import {
-  MOCK_CONVERSATIONS,
-  type ConversationMessage,
-} from '@/data/conversations'
+import type { ConversationMessage } from '@/data/conversations'
 import { MOCK_USER } from '@/data/user'
 import { cn } from '@/lib/utils'
 import {
@@ -37,18 +35,33 @@ import {
 // Sidebar
 // ---------------------------------------------------------------------------
 
+interface ChatSummary {
+  chat_id: string
+  title: string
+}
+
 interface SidebarProps {
   open: boolean
   onClose: () => void
-  currentConvId?: string
-  gameId?: string
+  gameId: string
+  currentChatId?: string
 }
 
-function Sidebar({ open, onClose, currentConvId, gameId }: SidebarProps) {
+function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
   const navigate = useNavigate()
+  const [chats, setChats] = useState<ChatSummary[]>([])
 
-  const go = (path: string, state?: unknown) => {
-    navigate(path, state ? { state } : undefined)
+  // Load past chats for this game whenever the sidebar opens.
+  useEffect(() => {
+    if (!open) return
+    fetch(`/api/games/${gameId}/chats`)
+      .then((r) => r.json())
+      .then((data: ChatSummary[]) => setChats(data))
+      .catch(() => {})
+  }, [open, gameId])
+
+  const go = (path: string) => {
+    navigate(path)
     onClose()
   }
 
@@ -90,27 +103,31 @@ function Sidebar({ open, onClose, currentConvId, gameId }: SidebarProps) {
           <Button
             variant="ghost"
             className="justify-start font-normal"
-            onClick={() => go('/chat', { gameId })}
+            onClick={() => go(`/chat/${gameId}`)}
           >
             New Chat
           </Button>
         </div>
 
-        {/* Chat history */}
+        {/* Chat history for this game */}
         <div className="flex-1 overflow-y-auto p-2">
-          <p className="px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Your chats
-          </p>
-          {MOCK_CONVERSATIONS.map((conv) => (
-            <Button
-              key={conv.id}
-              variant={currentConvId === conv.id ? 'secondary' : 'ghost'}
-              className="w-full justify-start font-normal text-sm truncate"
-              onClick={() => go(`/chat/${conv.id}`)}
-            >
-              {conv.title}
-            </Button>
-          ))}
+          {chats.length > 0 && (
+            <>
+              <p className="px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Your chats
+              </p>
+              {chats.map((chat) => (
+                <Button
+                  key={chat.chat_id}
+                  variant={currentChatId === chat.chat_id ? 'secondary' : 'ghost'}
+                  className="w-full justify-start font-normal text-sm truncate"
+                  onClick={() => go(`/chat/${gameId}/${chat.chat_id}`)}
+                >
+                  {chat.title}
+                </Button>
+              ))}
+            </>
+          )}
         </div>
       </div>
     </>
@@ -177,16 +194,21 @@ function AssistantMsg({ message }: { message: ConversationMessage }) {
 // Chat input
 // ---------------------------------------------------------------------------
 
-function ChatInput({ onSubmit }: { onSubmit: (text: string) => void }) {
+function ChatInput({
+  onSubmit,
+  disabled,
+}: {
+  onSubmit: (text: string) => void
+  disabled?: boolean
+}) {
   const [value, setValue] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const submit = () => {
     const text = value.trim()
-    if (!text) return
+    if (!text || disabled) return
     onSubmit(text)
     setValue('')
-    // reset height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
@@ -199,7 +221,6 @@ function ChatInput({ onSubmit }: { onSubmit: (text: string) => void }) {
     }
   }
 
-  // Auto-grow textarea
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setValue(e.target.value)
     const el = e.target
@@ -222,7 +243,7 @@ function ChatInput({ onSubmit }: { onSubmit: (text: string) => void }) {
         <Button
           type="button"
           size="icon-sm"
-          disabled={!value.trim()}
+          disabled={!value.trim() || disabled}
           onClick={submit}
           aria-label="Send"
         >
@@ -262,7 +283,6 @@ function EmptyState({
 
   return (
     <div className="max-w-3xl mx-auto w-full flex flex-col items-center px-4 pt-10 pb-4">
-      {/* Game card */}
       <div
         className="w-24 h-24 rounded-2xl flex items-center justify-center mb-4 shadow-md"
         style={{ backgroundColor: game.bgColor }}
@@ -274,7 +294,6 @@ function EmptyState({
         What can I tell you about {game.name}?
       </p>
 
-      {/* Suggested questions */}
       <div className="w-full space-y-2">
         <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
           Suggested
@@ -294,82 +313,31 @@ function EmptyState({
 }
 
 // ---------------------------------------------------------------------------
-// ChatPage
+// Shared page chrome (header + sidebar wrapper)
 // ---------------------------------------------------------------------------
 
-export default function ChatPage() {
-  const { id } = useParams<{ id?: string }>()
-  const location = useLocation()
+function PageChrome({
+  game,
+  gameId,
+  chatId,
+  children,
+}: {
+  game: Game
+  gameId: string
+  chatId?: string
+  children: React.ReactNode
+}) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const bottomRef = useRef<HTMLDivElement>(null)
-
-  const locationState = location.state as { gameId?: string } | null
-
-  // Resolve conversation and game
-  const conversation = id ? MOCK_CONVERSATIONS.find((c) => c.id === id) : null
-  const gameId = conversation?.gameId ?? locationState?.gameId
-  const game = GAMES.find((g) => g.id === gameId) ?? GAMES[0]
-
-  // Stable chat ID for the lifetime of this new-chat session.
-  // crypto.randomUUID() only works in secure contexts (HTTPS/localhost), so fall
-  // back to a Math.random-based UUID v4 when accessed over plain HTTP.
-  const chatId = useRef(
-    typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-          const r = (Math.random() * 16) | 0
-          return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
-        }),
-  ).current
-
-  const { messages: chatMessages, sendMessage } = useChat({
-    transport: new DefaultChatTransport({
-      api: `/api/chats/${chatId}/stream`,
-      prepareSendMessagesRequest: ({ messages }) => {
-        const last = messages[messages.length - 1]
-        const text = last?.parts
-          .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-          .map((p) => p.text)
-          .join('') ?? ''
-        return { body: { message: text, game_id: gameId ?? '' } }
-      },
-    }),
-  })
-
-  // For existing mock conversations show mock history; for new chats show live messages.
-  // UIMessage (ai@6.x) has no `content` string — text lives in parts[].text.
-  const displayMessages: ConversationMessage[] = conversation
-    ? conversation.messages
-    : chatMessages
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .map((m) => ({
-          id: m.id,
-          role: m.role as 'user' | 'assistant',
-          content: m.parts
-            .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-            .map((p) => p.text)
-            .join(''),
-        }))
-
-  // Scroll to bottom when messages grow
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [displayMessages.length])
-
-  const handleSubmit = (text: string) => {
-    sendMessage({ text })
-  }
 
   return (
-    <div className="h-screen bg-background flex flex-col overflow-hidden">
+    <div className="fixed inset-0 bg-background flex flex-col">
       <Sidebar
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
-        currentConvId={id}
         gameId={gameId}
+        currentChatId={chatId}
       />
 
-      {/* ── Header ─────────────────────────────────────────────────── */}
       <header className="z-30 bg-background border-b border-border shrink-0">
         <div className="max-w-3xl mx-auto flex items-center gap-3 px-4 py-3">
           <Button
@@ -381,7 +349,6 @@ export default function ChatPage() {
             <MenuIcon className="size-5" />
           </Button>
 
-          {/* Compact game card */}
           <div
             className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
             style={{ backgroundColor: game.bgColor }}
@@ -393,7 +360,6 @@ export default function ChatPage() {
             {game.name}
           </span>
 
-          {/* User avatar */}
           <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
             <span className="text-xs font-semibold text-muted-foreground">
               {MOCK_USER.initials}
@@ -402,8 +368,163 @@ export default function ChatPage() {
         </div>
       </header>
 
-      {/* ── Scrollable content ─────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto">
+      {children}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// New chat — no chatId yet, creates chat on first message
+// ---------------------------------------------------------------------------
+
+function NewChat({ gameId, game }: { gameId: string; game: Game }) {
+  const navigate = useNavigate()
+  const [creating, setCreating] = useState(false)
+
+  const handleSubmit = async (text: string) => {
+    setCreating(true)
+    try {
+      const res = await fetch(`/api/games/${gameId}/chats`, { method: 'POST' })
+      if (!res.ok) throw new Error('Failed to create chat')
+      const { chat_id } = (await res.json()) as { chat_id: string }
+      // Navigate to the permanent URL, carrying the first message as pending state.
+      navigate(`/chat/${gameId}/${chat_id}`, { state: { pendingMessage: text } })
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  return (
+    <PageChrome game={game} gameId={gameId}>
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <EmptyState game={game} onSuggest={handleSubmit} />
+      </div>
+      <div className="shrink-0">
+        <ChatInput onSubmit={handleSubmit} disabled={creating} />
+      </div>
+    </PageChrome>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Existing chat — loads history, then uses useChat
+// ---------------------------------------------------------------------------
+
+function ExistingChat({
+  gameId,
+  chatId,
+  game,
+}: {
+  gameId: string
+  chatId: string
+  game: Game
+}) {
+  const location = useLocation()
+  const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null)
+
+  useEffect(() => {
+    fetch(`/api/chats/${chatId}/messages`)
+      .then((r) => r.json())
+      .then((msgs: UIMessage[]) => setInitialMessages(msgs))
+      .catch(() => setInitialMessages([]))
+  }, [chatId])
+
+  if (initialMessages === null) {
+    // Loading history — show minimal chrome so the page doesn't flash blank
+    return (
+      <PageChrome game={game} gameId={gameId} chatId={chatId}>
+        <div className="flex-1 min-h-0 flex items-center justify-center">
+          <span className="text-sm text-muted-foreground">Loading…</span>
+        </div>
+      </PageChrome>
+    )
+  }
+
+  const pendingMessage =
+    (location.state as { pendingMessage?: string } | null)?.pendingMessage ?? null
+
+  return (
+    <ChatView
+      gameId={gameId}
+      chatId={chatId}
+      game={game}
+      initialMessages={initialMessages}
+      pendingMessage={pendingMessage}
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ChatView — renders once history is loaded, drives useChat
+// ---------------------------------------------------------------------------
+
+function ChatView({
+  gameId,
+  chatId,
+  game,
+  initialMessages,
+  pendingMessage,
+}: {
+  gameId: string
+  chatId: string
+  game: Game
+  initialMessages: UIMessage[]
+  pendingMessage: string | null
+}) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const pendingSent = useRef(false)
+
+  const { messages: chatMessages, sendMessage } = useChat({
+    messages: initialMessages,
+    transport: new DefaultChatTransport({
+      api: `/api/chats/${chatId}/stream`,
+      prepareSendMessagesRequest: ({ messages }) => {
+        const last = messages[messages.length - 1]
+        const text =
+          last?.parts
+            .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+            .map((p) => p.text)
+            .join('') ?? ''
+        return { body: { message: text, game_id: gameId } }
+      },
+    }),
+  })
+
+  // Send the pending message once on mount (carried from NewChat navigation).
+  useEffect(() => {
+    if (!pendingMessage || pendingSent.current) return
+    pendingSent.current = true
+    sendMessage({ text: pendingMessage })
+    // Clear pending message from location state so a refresh doesn't re-send it.
+    navigate(location.pathname, { replace: true, state: {} })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Scroll to bottom when messages grow.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages.length])
+
+  const displayMessages: ConversationMessage[] = chatMessages
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => ({
+      id: m.id,
+      role: m.role as 'user' | 'assistant',
+      content: m.parts
+        .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+        .map((p) => p.text)
+        .join(''),
+    }))
+
+  const handleSubmit = (text: string) => {
+    sendMessage({ text })
+  }
+
+  return (
+    <PageChrome game={game} gameId={gameId} chatId={chatId}>
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {displayMessages.length === 0 ? (
           <EmptyState game={game} onSuggest={handleSubmit} />
         ) : (
@@ -420,10 +541,24 @@ export default function ChatPage() {
         )}
       </div>
 
-      {/* ── Input ──────────────────────────────────────────────────── */}
       <div className="shrink-0">
         <ChatInput onSubmit={handleSubmit} />
       </div>
-    </div>
+    </PageChrome>
   )
+}
+
+// ---------------------------------------------------------------------------
+// ChatPage — router entry point
+// ---------------------------------------------------------------------------
+
+export default function ChatPage() {
+  const { gameId, chatId } = useParams<{ gameId: string; chatId?: string }>()
+  const game = GAMES.find((g) => g.id === gameId) ?? GAMES[0]
+
+  if (!chatId) {
+    return <NewChat gameId={gameId!} game={game} />
+  }
+
+  return <ExistingChat key={chatId} gameId={gameId!} chatId={chatId} game={game} />
 }

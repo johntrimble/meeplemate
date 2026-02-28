@@ -1,8 +1,18 @@
 # db/models.py
 import sqlalchemy as sa
+from sqlalchemy import orm
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from meeplemate.db.base import Base
+
+
+class Chat(Base):
+    __tablename__ = "chat"
+
+    chat_id = sa.Column(UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
+    game_id = sa.Column(sa.Text, nullable=False, index=True)
+    created_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=func.now())
+
 
 class ChatMessage(Base):
     __tablename__ = "chat_message"
@@ -12,7 +22,7 @@ class ChatMessage(Base):
     role = sa.Column(sa.Text, nullable=False)  # optionally an Enum
     created_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=func.now())
 
-    parts = sa.orm.relationship("ChatMessagePart", back_populates="message", cascade="all, delete-orphan")
+    parts = orm.relationship("ChatMessagePart", back_populates="message", cascade="all, delete-orphan")
 
 class ChatMessagePart(Base):
     __tablename__ = "chat_message_part"
@@ -24,7 +34,7 @@ class ChatMessagePart(Base):
     payload = sa.Column(JSONB, nullable=False)
     updated_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
-    message = sa.orm.relationship("ChatMessage", back_populates="parts")
+    message = orm.relationship("ChatMessage", back_populates="parts")
 
     __table_args__ = (
         sa.Index("ix_chat_message_part_message_id_ordinal", "message_id", "ordinal"),

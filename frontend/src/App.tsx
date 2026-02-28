@@ -8,8 +8,8 @@ function App() {
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route path="/select-game" element={<SelectGamePage />} />
-      <Route path="/chat" element={<ChatPage />} />
-      <Route path="/chat/:id" element={<ChatPage />} />
+      <Route path="/chat/:gameId" element={<ChatPage />} />
+      <Route path="/chat/:gameId/:chatId" element={<ChatPage />} />
     </Routes>
   )
 }
