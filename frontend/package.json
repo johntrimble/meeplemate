@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.106",
+    "@fontsource-variable/geist": "^5.2.8",
+    "@fontsource-variable/geist-mono": "^5.2.7",
     "@radix-ui/react-use-controllable-state": "^1.2.2",
     "@rive-app/react-webgl2": "^4.27.0",
     "@streamdown/cjk": "^1.0.2",
