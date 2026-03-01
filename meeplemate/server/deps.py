@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from meeplemate.chatloop import ChatLoopService
+from meeplemate.db.datalayer import BaseDataLayer
 from meeplemate.game_service import GameService
 
 
@@ -11,4 +10,4 @@ class ApiDeps:
     """Dependencies for the API."""
     chatloop_service: ChatLoopService
     game_service: GameService
-    session_factory: async_sessionmaker[AsyncSession]
+    data_layer: BaseDataLayer

@@ -228,7 +228,7 @@ def import_documents(path: Path):
                 factory(ImportDocumentsJob)(
                     path=path,
                     gp=load_game_package(path),
-                    concurrency=10,
+                    concurrency=5,
                 ),
                 {
                     "vector_store": "vector_store",
@@ -240,7 +240,7 @@ def import_documents(path: Path):
             )
         }
     )
-    system = System.subsystem(system, names=["import_job", "keyspace_creator"])
+    system = System.subsystem(system, names=["import_job"])
 
     async def _import_documents():
         async with system.astart() as services:

@@ -3,7 +3,7 @@ import copy
 from dataclasses import dataclass
 import re
 import json
-from typing import Annotated, Any, List, Literal, NotRequired, Sequence, Tuple, TypedDict, cast
+from typing import Annotated, Any, List, Literal, NotRequired, Optional, Sequence, Tuple, TypedDict, cast
 from langchain_core.messages import AnyMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
@@ -1213,7 +1213,7 @@ class QuestionAnalysis(TypedDict):
 
 
 def build_analyze_question_graph(
-    checkpoint_saver: BaseCheckpointSaver,
+    checkpoint_saver: Optional[BaseCheckpointSaver],
     chat_model: BaseChatModel,
     tokenizer: Any
 ) -> CompiledStateGraph[QuestionAnalysisOverallState, QuestionAnalysisContext, QuestionAnalysisOverallState, QuestionAnalysisOverallState]:
@@ -1394,7 +1394,7 @@ class CoordinationOverallState(TypedDict):
     classification: Literal["SIMPLE", "COMPLEX"]
 
 def build_coordinating_agent_graph(
-    checkpoint_saver: BaseCheckpointSaver,
+    checkpoint_saver: Optional[BaseCheckpointSaver],
     analyze_question_agent: CompiledStateGraph[QuestionAnalysisOverallState, QuestionAnalysisContext, QuestionAnalysisOverallState, QuestionAnalysisOverallState],
     game_agent: CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState],
 ) -> CompiledStateGraph[CoordinationOverallState, GameAgentContext, CoordinationInputState, CoordinationOutputState]:
@@ -1913,7 +1913,7 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
 
 
 def build_question_answer_graph(
-    checkpoint_saver: BaseCheckpointSaver,
+    checkpoint_saver: Optional[BaseCheckpointSaver],
     chat_model: BaseChatModel,
     tokenizer: Any,
 ) -> CompiledStateGraph[GameAgentOverallState, GameAgentContext, GameAgentInputState, GameAgentOutputState]:
@@ -2155,7 +2155,7 @@ QAService = Runnable[QAServiceInput, GameAgentOutputState]
 
 
 def build_qa_service(
-    checkpoint_saver: BaseCheckpointSaver,
+    checkpoint_saver: Optional[BaseCheckpointSaver],
     chat_model: BaseChatModel,
     full_page_store: BaseStore[str, Serializable],
     chunk_search_service: ChunkSearchService,

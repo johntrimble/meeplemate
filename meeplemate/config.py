@@ -1,7 +1,10 @@
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Iterator, Literal, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
+from typing import Any, AsyncIterator, Callable, Iterator, Literal, Optional, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
 import os
+from langchain_postgres import PGEngine
+from meeplemate.postgres.vectorstore import PartitionedPGVectorStore
+from langchain_postgres.v2.indexes import DistanceStrategy
 import yaml
 from dataclasses import dataclass
 
@@ -36,15 +39,17 @@ from chainlit_cassandra_data_layer.data import CassandraDataLayer
 
 from meeplemate.cassandra_util import AstraDBSerializableStore
 from meeplemate.chatloop import ChatLoopService, build_chatloop_service
-from meeplemate.component_system import System, factory
+from meeplemate.component_system import System, afactory, factory
 from meeplemate.ingest.gamepackage import GamePackage
 from meeplemate.game_service import GameService
+from meeplemate.postgres.store import PostgresJSONStore, PostgresSerializableStore
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.retrievers import build_retriever
 from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings
 from meeplemate.pdf import parse_pdf
 from meeplemate.qa import build_qa_chain
 from chainlit.data.base import BaseDataLayer
+from meeplemate.db.repository import PostgresDataLayer
 
 from meeplemate.search import (
     ChunkSearchService, build_chunk_search_service, build_chunk_search_service_2
@@ -279,7 +284,7 @@ class GameRulesAgentState(MessagesState):
     manifest: GameManifest
 
 
-def build_graph(checkpoint_saver: BaseCheckpointSaver, chain: Runnable):
+def build_graph(checkpoint_saver: Optional[BaseCheckpointSaver], chain: Runnable):
     async def call_chain(state: GameRulesAgentState):
         msg = None
         for msg in reversed(state["messages"]):
@@ -398,17 +403,17 @@ def create_app_system(cfg: Config) -> System[AppServices]:
 
     system = System[AppServices](
         {
-            "db_cluster": (
-                factory(Cluster)(
-                    contact_points=cfg.db.contact_points,
-                    load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=cfg.db.dc)
-                ),
-                []
-            ),
-            "db_session": (
-                create_session,
-                ["db_cluster"]
-            ),
+            # "db_cluster": (
+            #     factory(Cluster)(
+            #         contact_points=cfg.db.contact_points,
+            #         load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=cfg.db.dc)
+            #     ),
+            #     []
+            # ),
+            # "db_session": (
+            #     create_session,
+            #     ["db_cluster"]
+            # ),
             "embedding_model": (
                 factory(OpenAIEmbeddings)(
                     model=cfg.embedding.model,
@@ -420,17 +425,28 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 []
             ),
             "vector_store": (
-                factory(build_vectorstore_cassandra)(api_endpoint=cfg.data_api.endpoint, token=cfg.data_api.token.get_secret_value(), namespace=cfg.data_api.namespace),
-                {"embedding_model": "embedding_model"},
+                afactory(PartitionedPGVectorStore.create)(
+                    table_name="rules_vectors",
+                    schema_name="public",
+                    id_column="langchain_id",
+                    content_column="content",
+                    embedding_column="embedding",
+                    metadata_columns=["game_version", "game_id"],
+                    metadata_json_column="langchain_metadata",
+                    distance_strategy=DistanceStrategy.COSINE_DISTANCE,
+                ),
+                {
+                    "embedding_service": "embedding_model",
+                    "engine": "pg_engine",
+                },
             ),
             "docstore": (
-                factory(AstraDBSerializableStore)(
-                    collection_name="document_store",
-                    api_endpoint=cfg.data_api.endpoint,
-                    token=cfg.data_api.token.get_secret_value(),
-                    namespace=cfg.data_api.namespace,
+                factory(PostgresSerializableStore)(
+                    namespace="document_store",
                 ),
-                []
+                {
+                    "engine": "async_engine",
+                }
             ),
             "tokenizer": (
                 factory(load_tokenizer)(cfg.model_name),
@@ -451,70 +467,68 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 ),
                 {"chat_model": "chat_model", "retriever": "retriever", "embedding_model": "embedding_model"}
             ),
-            "checkpointer": (
-                factory(
-                    CassandraSaver,
-                    start=lambda saver: saver.setup(replication_factor=cfg.db.replication_factor)
-                )(
-                    thread_id_type="uuid",
-                    keyspace=cfg.db.langgraph_keyspace,
-                ),
-                {"session": "db_session"}
-            ),
+            # "checkpointer": (
+            #     factory(
+            #         CassandraSaver,
+            #         start=lambda saver: saver.setup(replication_factor=cfg.db.replication_factor)
+            #     )(
+            #         thread_id_type="uuid",
+            #         keyspace=cfg.db.langgraph_keyspace,
+            #     ),
+            #     {"session": "db_session"}
+            # ),
             "agent_graph": (
-                factory(build_graph)(),
-                {"checkpoint_saver": "checkpointer", "chain": "qa_chain"},
+                factory(build_graph)(checkpoint_saver=None),
+                {"chain": "qa_chain"},
             ),
-            "keyspace_creator": (
-                keyspace_creator(
-                    [
-                        (cfg.data_api.namespace, cfg.db.replication_factor),
-                    ],
-                    data_api_endpoint=cfg.data_api.endpoint,
-                    data_api_token=cfg.data_api.token.get_secret_value(),
-                    create_keyspaces=cfg.db.create_keyspaces,
-                ),
-                []
-            ),
-            "data_layer": (
-                create_data_layer(
-                    storage_client=None,
-                    keyspace=cfg.db.chainlit_keyspace,
-                    replication_factor=cfg.db.replication_factor,
-                ),
-                ["db_session"]
-            ),
+            # "keyspace_creator": (
+            #     keyspace_creator(
+            #         [
+            #             (cfg.data_api.namespace, cfg.db.replication_factor),
+            #         ],
+            #         data_api_endpoint=cfg.data_api.endpoint,
+            #         data_api_token=cfg.data_api.token.get_secret_value(),
+            #         create_keyspaces=cfg.db.create_keyspaces,
+            #     ),
+            #     []
+            # ),
+            # "data_layer": (
+            #     create_data_layer(
+            #         storage_client=None,
+            #         keyspace=cfg.db.chainlit_keyspace,
+            #         replication_factor=cfg.db.replication_factor,
+            #     ),
+            #     ["db_session"]
+            # ),
             "game_version_store": (
-                factory(AstraDBStore)(
-                    collection_name="current_game_version",
-                    api_endpoint=cfg.data_api.endpoint,
-                    token=cfg.data_api.token.get_secret_value(),
-                    namespace=cfg.data_api.namespace,
+                factory(PostgresJSONStore)(
+                    namespace="current_game_version",
                 ),
-                []
+                {
+                    "engine": "async_engine",
+                }
             ),
             "game_data_store": (
-                factory(AstraDBStore)(
-                    collection_name="game_info",
-                    api_endpoint=cfg.data_api.endpoint,
-                    token=cfg.data_api.token.get_secret_value(),
-                    namespace=cfg.data_api.namespace,
+                factory(PostgresJSONStore)(
+                    namespace="game_info",
                 ),
-                []
+                                {
+                    "engine": "async_engine",
+                }
             ),
             "full_page_store": (
-                factory(AstraDBSerializableStore)(
-                    collection_name="full_page_store",
-                    api_endpoint=cfg.data_api.endpoint,
-                    token=cfg.data_api.token.get_secret_value(),
-                    namespace=cfg.data_api.namespace,
+                factory(PostgresSerializableStore)(
+                    namespace="full_page_store",
                 ),
-                []
+                {
+                    "engine": "async_engine",
+                }
             ),
             "chunk_search_service": (
-                factory(build_chunk_search_service)(),
+                factory(build_chunk_search_service)(
+                    checkpoint_saver=None,
+                ),
                 {
-                    "checkpoint_saver": "checkpointer",
                     "chat_model": "chat_model",
                     "retriever": "retriever",
                 }
@@ -528,9 +542,10 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 }
             ),
             "qa_service": (
-                factory(build_qa_service)(),
+                factory(build_qa_service)(
+                    checkpoint_saver=None,
+                ),
                 {
-                    "checkpoint_saver": "checkpointer",
                     "chat_model": "chat_model",
                     "full_page_store": "full_page_store",
                     "chunk_search_service": "chunk_search_service_2",
@@ -538,9 +553,8 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 }
             ),
             "chatloop_service": (
-                factory(build_chatloop_service)(),
+                factory(build_chatloop_service)(checkpoint_saver=None),
                 {
-                    "checkpoint_saver": "checkpointer",
                     "chat_model": "chat_model",
                     "tokenizer": "tokenizer",
                     "qa_service": "qa_service",
@@ -561,16 +575,20 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 ),
                 {}
             ),
-            "async_session_factory": (
-                factory(async_sessionmaker)(expire_on_commit=False),
-                {"bind": "async_engine"},
+            "pg_engine": (
+                factory(PGEngine.from_engine)(),
+                {"engine": "async_engine"},
+            ),
+            "pg_data_layer": (
+                factory(PostgresDataLayer)(),
+                {"engine": "async_engine"},
             ),
             "api_deps": (
                 factory(ApiDeps)(),
                 {
                     "chatloop_service": "chatloop_service",
                     "game_service": "game_service",
-                    "session_factory": "async_session_factory",
+                    "data_layer": "pg_data_layer",
                 }
             )
         }

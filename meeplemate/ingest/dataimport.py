@@ -95,6 +95,13 @@ async def aslurp_document(path: Path) -> Document:
 
 
 async def run_import_documents(job: ImportDocumentsJob) -> None:
+    # Ensure the vector store partition exists before spawning concurrent tasks
+    ensure_partition = getattr(job.vector_store, "ensure_partition", None)
+    if callable(ensure_partition):
+        game_version = job.gp.get("game_version")
+        if game_version:
+            await ensure_partition(game_version)  # type: ignore[misc]
+
     tasks = []
     sem = asyncio.Semaphore(job.concurrency)
 

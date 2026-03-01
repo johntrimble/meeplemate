@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import AbstractAsyncContextManager, ExitStack, AsyncExitStack, asynccontextmanager, contextmanager
 from functools import partial
 from typing import AsyncIterator, Awaitable, Callable, Collection, ContextManager, Iterator, Mapping, Self, Sequence, TypedDict, Tuple, Any, TypeVar, Type, Generic, cast, get_args
@@ -331,6 +332,8 @@ def afactory(
     @asynccontextmanager
     async def construct(*args, **kwargs) -> AsyncIterator[ServiceT]:
         instance = service_type(*args, **kwargs)
+        if asyncio.iscoroutine(instance):
+            instance = await instance
         stack = AsyncExitStack()
         async with stack:
             # Add instance to the stack if it supports async context management
