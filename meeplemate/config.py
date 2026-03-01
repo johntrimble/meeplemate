@@ -2,6 +2,9 @@ from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator, Literal, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
 import os
+from langchain_postgres import PGEngine
+from meeplemate.postgres.vectorstore import PartitionedPGVectorStore
+from langchain_postgres.v2.indexes import DistanceStrategy
 import yaml
 from dataclasses import dataclass
 
@@ -36,9 +39,10 @@ from chainlit_cassandra_data_layer.data import CassandraDataLayer
 
 from meeplemate.cassandra_util import AstraDBSerializableStore
 from meeplemate.chatloop import ChatLoopService, build_chatloop_service
-from meeplemate.component_system import System, factory
+from meeplemate.component_system import System, afactory, factory
 from meeplemate.ingest.gamepackage import GamePackage
 from meeplemate.game_service import GameService
+from meeplemate.postgres.store import PostgresJSONStore, PostgresSerializableStore
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.retrievers import build_retriever
 from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings
@@ -420,17 +424,28 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 []
             ),
             "vector_store": (
-                factory(build_vectorstore_cassandra)(api_endpoint=cfg.data_api.endpoint, token=cfg.data_api.token.get_secret_value(), namespace=cfg.data_api.namespace),
-                {"embedding_model": "embedding_model"},
+                afactory(PartitionedPGVectorStore.create)(
+                    table_name="rules_vectors",
+                    schema_name="public",
+                    id_column="langchain_id",
+                    content_column="content",
+                    embedding_column="embedding",
+                    metadata_columns=["game_version", "game_id"],
+                    metadata_json_column="langchain_metadata",
+                    distance_strategy=DistanceStrategy.COSINE_DISTANCE,
+                ),
+                {
+                    "embedding_service": "embedding_model",
+                    "engine": "pg_engine",
+                },
             ),
             "docstore": (
-                factory(AstraDBSerializableStore)(
-                    collection_name="document_store",
-                    api_endpoint=cfg.data_api.endpoint,
-                    token=cfg.data_api.token.get_secret_value(),
-                    namespace=cfg.data_api.namespace,
+                factory(PostgresSerializableStore)(
+                    namespace="document_store",
                 ),
-                []
+                {
+                    "engine": "async_engine",
+                }
             ),
             "tokenizer": (
                 factory(load_tokenizer)(cfg.model_name),
@@ -485,31 +500,28 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 ["db_session"]
             ),
             "game_version_store": (
-                factory(AstraDBStore)(
-                    collection_name="current_game_version",
-                    api_endpoint=cfg.data_api.endpoint,
-                    token=cfg.data_api.token.get_secret_value(),
-                    namespace=cfg.data_api.namespace,
+                factory(PostgresJSONStore)(
+                    namespace="current_game_version",
                 ),
-                []
+                {
+                    "engine": "async_engine",
+                }
             ),
             "game_data_store": (
-                factory(AstraDBStore)(
-                    collection_name="game_info",
-                    api_endpoint=cfg.data_api.endpoint,
-                    token=cfg.data_api.token.get_secret_value(),
-                    namespace=cfg.data_api.namespace,
+                factory(PostgresJSONStore)(
+                    namespace="game_info",
                 ),
-                []
+                                {
+                    "engine": "async_engine",
+                }
             ),
             "full_page_store": (
-                factory(AstraDBSerializableStore)(
-                    collection_name="full_page_store",
-                    api_endpoint=cfg.data_api.endpoint,
-                    token=cfg.data_api.token.get_secret_value(),
-                    namespace=cfg.data_api.namespace,
+                factory(PostgresSerializableStore)(
+                    namespace="full_page_store",
                 ),
-                []
+                {
+                    "engine": "async_engine",
+                }
             ),
             "chunk_search_service": (
                 factory(build_chunk_search_service)(),
@@ -560,6 +572,10 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     max_overflow=20
                 ),
                 {}
+            ),
+            "pg_engine": (
+                factory(PGEngine.from_engine)(),
+                {"engine": "async_engine"},
             ),
             "async_session_factory": (
                 factory(async_sessionmaker)(expire_on_commit=False),

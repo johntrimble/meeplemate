@@ -228,7 +228,7 @@ def import_documents(path: Path):
                 factory(ImportDocumentsJob)(
                     path=path,
                     gp=load_game_package(path),
-                    concurrency=10,
+                    concurrency=5,
                 ),
                 {
                     "vector_store": "vector_store",

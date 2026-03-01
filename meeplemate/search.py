@@ -521,16 +521,16 @@ def build_chunk_search_service_2(
     default_token_budget: int = 13000,
 ):
     @chain
-    def chain_func(input: ChunkSearchServiceInput) -> ChunkSearchOutputState:
+    async def chain_func(input: ChunkSearchServiceInput) -> ChunkSearchOutputState:
         budget = input.get("token_budget", default_token_budget)
 
         query = input["query"]
         if isinstance(query, str):
             query = [query]
-        
+
         # Assert we have a game version
         assert "game_version" in input["manifest"], "Game version is required in the manifest"
-        
+
         manifest = input["manifest"]
         game_id = manifest["game_id"]
         game_version = manifest["game_version"]
@@ -543,7 +543,7 @@ def build_chunk_search_service_2(
         for q in query:
             # Step 1: Retrieve a large set of potentially relevant chunks using
             # the vectorstore
-            docs_and_scores = vectorstore.similarity_search_with_relevance_scores(
+            docs_and_scores = await vectorstore.asimilarity_search_with_relevance_scores(
                 q,
                 filter=filter,
                 k=50
@@ -577,7 +577,7 @@ def build_chunk_search_service_2(
         parent_docs = []
         for i in range(0, len(unique_parent_doc_ids), ASTRADB_IN_LIMIT):
             batch = unique_parent_doc_ids[i:i + ASTRADB_IN_LIMIT]
-            parent_docs.extend(docstore.mget(batch))
+            parent_docs.extend(await docstore.amget(batch))
         # Log warning for missing docs
         for doc_id, doc in zip(unique_parent_doc_ids, parent_docs):
             if doc is None:
