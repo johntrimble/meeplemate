@@ -10,6 +10,20 @@ Notebook: [code/notebooks/self_consistency_board_game_questions.ipynb](code/note
 
 This notebook was part of a presentation I gave exploring the use of self-consistency in answering board game questions. In particular, it compares techniques for applying self-consistency to open-ended questions where it is harder to define a "consensus" answer.
 
+## Running API and custom frontend
+
+Backend:
+
+```bash
+uvicorn meeplemate.server.api:app --reload --host 0.0.0.0 --port 8000
+```
+
+Frontend:
+
+```bash
+cd frontend && npm run dev
+```
+
 ## Running the code
 
 1. Download the Munchkin rule PDFs from https://munchkin.game/gameplay/rules/ and place them in the code/munchkin_rules directory

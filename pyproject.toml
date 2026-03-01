@@ -39,6 +39,9 @@ dependencies = [
     "pyyaml",
     "clingo",
     "rapidfuzz",
+    "asyncpg",
+    "sqlalchemy[asyncio]",
+    "alembic",
 #    "glmocr @ git+https://github.com/zai-org/GLM-OCR.git@main"
 ]
 
@@ -85,3 +88,5 @@ torchvision = { index = "pytorch-cu128" }
 
 [project.scripts]
 meeplemate-cli = "meeplemate.cli:cli"
+mm-eval = "meeplemate.eval.__main__:cli"
+mm-ingest = "meeplemate.ingest.__main__:cli"

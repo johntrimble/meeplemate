@@ -32,7 +32,7 @@ from meeplemate.ingest.gamepackage import GamePackage, get_game_key_for_id_versi
 from meeplemate.component_system import factory
 from meeplemate.qa_graph import Chunk, QAService, QAServiceInput, QuoteValidationException
 from meeplemate.util import slurp_json
-from meeplemate.config import GameService
+from meeplemate.game_service import GameService
 
 logger = structlog.get_logger(__name__)
 
