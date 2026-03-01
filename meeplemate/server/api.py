@@ -152,31 +152,68 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
     chatloop_service = _deps.chatloop_service
     session_factory = _deps.session_factory
     chat_uuid = UUID(chat_id)
+    message_id = uuid4()
+
+    # Persist the user message
+    async with session_factory() as session:
+        await ChatRepository(session).save_message(
+            message_id=uuid4(),
+            chat_id=chat_uuid,
+            role="user",
+            parts=[{"part_id": str(uuid4()), "part_type": "text", "payload": {"text": request.message}}],
+        )
 
     async def sse_generator():
+        # https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
         msg_id = uuid4()
         text_id = str(uuid4())
 
-        # Persist the user message before streaming starts.
-        async with session_factory() as session:
-            await ChatRepository(session).save_message(
-                message_id=uuid4(),
-                chat_id=chat_uuid,
-                role="user",
-                parts=[{"part_id": str(uuid4()), "part_type": "text", "payload": {"text": request.message}}],
-            )
-
+        # Start the message
         yield f'data: {json.dumps({"type": "start", "messageId": str(msg_id)})}\n\n'
-        yield f'data: {json.dumps({"type": "text-start", "id": text_id})}\n\n'
 
-        accumulated: list[str] = []
-        async for chunk in chatloop_service.astream_response(service_input):
-            if chunk.content:
-                delta = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
-                accumulated.append(delta)
-                yield f'data: {json.dumps({"type": "text-delta", "id": text_id, "delta": delta})}\n\n'
+        step_is_open: bool = False
 
-        yield f'data: {json.dumps({"type": "text-end", "id": text_id})}\n\n'
+        def maybe_close_step():
+            nonlocal step_is_open
+            if step_is_open:
+                step_is_open = False
+                yield f'data: {json.dumps({"type": "finish-step"})}\n\n'
+
+        def open_step(description: str):
+            nonlocal step_is_open
+
+            for e in maybe_close_step():
+                yield e
+
+            step_is_open = True
+            reasoning_uuid = str(uuid4())
+            description = f"{description}"
+            yield f'data: {json.dumps({"type": "start-step"})}\n\n'
+            yield f'data: {json.dumps({"type": "reasoning-start", "id": reasoning_uuid})}\n\n'
+            yield f'data: {json.dumps({"type": "reasoning-delta", "id": reasoning_uuid, "delta": description})}\n\n'
+            yield f'data: {json.dumps({"type": "reasoning-end", "id": reasoning_uuid})}\n\n'
+
+        final_answer = ""
+
+        async for _, _, event in chatloop_service.astream(service_input, subgraphs=True, stream_mode=["custom"]):
+            match event:
+                case {"type": "mm_step", "description": description}:
+                    for e in open_step(description):
+                        yield e
+                case {"type": "mm_refined_user_query", "refined_query": refined_query}:
+                    description = f"Refined user query: {refined_query}"
+                    reasoning_uuid = str(uuid4())
+                    yield f'data: {json.dumps({"type": "reasoning-start", "id": reasoning_uuid})}\n\n'
+                    yield f'data: {json.dumps({"type": "reasoning-delta", "id": reasoning_uuid, "delta": description})}\n\n'
+                    yield f'data: {json.dumps({"type": "reasoning-end", "id": reasoning_uuid})}\n\n'
+                case {"type": "mm_user_query_answered", "answer": answer}:
+                    reasoning_uuid = str(uuid4())
+                    final_answer = answer
+                    yield f'data: {json.dumps({"type": "text-start", "id": reasoning_uuid})}\n\n'
+                    yield f'data: {json.dumps({"type": "text-delta", "id": reasoning_uuid, "delta": answer})}\n\n'
+                    yield f'data: {json.dumps({"type": "text-end", "id": reasoning_uuid})}\n\n'
+                    for e in maybe_close_step():
+                        yield e
 
         # Persist the complete assistant message.
         async with session_factory() as session:
@@ -184,7 +221,7 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
                 message_id=msg_id,
                 chat_id=chat_uuid,
                 role="assistant",
-                parts=[{"part_id": text_id, "part_type": "text", "payload": {"text": "".join(accumulated)}}],
+                parts=[{"part_id": text_id, "part_type": "text", "payload": {"text": final_answer}}],
             )
 
         yield f'data: {json.dumps({"type": "finish"})}\n\n'

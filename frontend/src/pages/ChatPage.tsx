@@ -1,14 +1,13 @@
 import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport } from 'ai'
+import { DefaultChatTransport, isReasoningUIPart, isTextUIPart } from 'ai'
 import type { UIMessage } from 'ai'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
-  ChainOfThought,
-  ChainOfThoughtContent,
-  ChainOfThoughtHeader,
-  ChainOfThoughtStep,
-} from '@/components/ai-elements/chain-of-thought'
+  Reasoning,
+  ReasoningContent,
+  ReasoningTrigger,
+} from '@/components/ai-elements/reasoning'
 import {
   Message,
   MessageAction,
@@ -18,7 +17,6 @@ import {
 } from '@/components/ai-elements/message'
 import { Button } from '@/components/ui/button'
 import { GAMES, type Game } from '@/data/games'
-import type { ConversationMessage } from '@/data/conversations'
 import { MOCK_USER } from '@/data/user'
 import { cn } from '@/lib/utils'
 import {
@@ -138,54 +136,57 @@ function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
 // Message renderers
 // ---------------------------------------------------------------------------
 
-function UserMsg({ message }: { message: ConversationMessage }) {
+function UserMsg({ message }: { message: UIMessage }) {
+  const text = message.parts.filter(isTextUIPart).map((p) => p.text).join('')
   return (
     <Message from="user">
-      <MessageContent>{message.content}</MessageContent>
+      <MessageContent>{text}</MessageContent>
     </Message>
   )
 }
 
-function AssistantMsg({ message }: { message: ConversationMessage }) {
+function AssistantMsg({ message, isStreaming }: { message: UIMessage; isStreaming: boolean }) {
+  const reasoningParts = message.parts.filter(isReasoningUIPart)
+  const textParts = message.parts.filter(isTextUIPart)
+  const combinedReasoning = reasoningParts.map((p) => p.text).join('\n\n')
+  const combinedText = textParts.map((p) => p.text).join('')
+  const isReasoningStreaming = isStreaming && combinedText.length === 0
+
   const handleCopy = () => {
-    navigator.clipboard.writeText(message.content).catch(() => {})
+    navigator.clipboard.writeText(combinedText).catch(() => {})
   }
 
   return (
     <Message from="assistant">
-      {message.thinkingSteps && message.thinkingSteps.length > 0 && (
-        <ChainOfThought>
-          <ChainOfThoughtHeader>
-            {message.thinkingDuration
-              ? `Thought for ${message.thinkingDuration}s`
-              : 'Thought'}
-          </ChainOfThoughtHeader>
-          <ChainOfThoughtContent>
-            {message.thinkingSteps.map((step, i) => (
-              <ChainOfThoughtStep key={i} label={step.label} />
-            ))}
-          </ChainOfThoughtContent>
-        </ChainOfThought>
+      {reasoningParts.length > 0 && (
+        <Reasoning isStreaming={isReasoningStreaming}>
+          <ReasoningTrigger />
+          <ReasoningContent>{combinedReasoning}</ReasoningContent>
+        </Reasoning>
       )}
 
-      <MessageContent>
-        <MessageResponse>{message.content}</MessageResponse>
-      </MessageContent>
+      {combinedText && (
+        <MessageContent>
+          <MessageResponse>{combinedText}</MessageResponse>
+        </MessageContent>
+      )}
 
-      <MessageActions>
-        <MessageAction tooltip="Copy" onClick={handleCopy}>
-          <CopyIcon className="size-4" />
-        </MessageAction>
-        <MessageAction tooltip="Good response">
-          <ThumbsUpIcon className="size-4" />
-        </MessageAction>
-        <MessageAction tooltip="Bad response">
-          <ThumbsDownIcon className="size-4" />
-        </MessageAction>
-        <MessageAction tooltip="Regenerate">
-          <RefreshCwIcon className="size-4" />
-        </MessageAction>
-      </MessageActions>
+      {combinedText && (
+        <MessageActions>
+          <MessageAction tooltip="Copy" onClick={handleCopy}>
+            <CopyIcon className="size-4" />
+          </MessageAction>
+          <MessageAction tooltip="Good response">
+            <ThumbsUpIcon className="size-4" />
+          </MessageAction>
+          <MessageAction tooltip="Bad response">
+            <ThumbsDownIcon className="size-4" />
+          </MessageAction>
+          <MessageAction tooltip="Regenerate">
+            <RefreshCwIcon className="size-4" />
+          </MessageAction>
+        </MessageActions>
+      )}
     </Message>
   )
 }
@@ -476,7 +477,7 @@ function ChatView({
   const bottomRef = useRef<HTMLDivElement>(null)
   const pendingSent = useRef(false)
 
-  const { messages: chatMessages, sendMessage } = useChat({
+  const { messages: chatMessages, sendMessage, status } = useChat({
     messages: initialMessages,
     transport: new DefaultChatTransport({
       api: `/api/chats/${chatId}/stream`,
@@ -502,21 +503,16 @@ function ChatView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Scroll to bottom when messages grow.
+  // Scroll to bottom on new messages (smooth) or streaming content growth (instant).
+  const prevLengthRef = useRef(chatMessages.length)
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chatMessages.length])
+    const lengthChanged = chatMessages.length !== prevLengthRef.current
+    prevLengthRef.current = chatMessages.length
+    bottomRef.current?.scrollIntoView({ behavior: lengthChanged ? 'smooth' : 'instant' })
+  }, [chatMessages])
 
-  const displayMessages: ConversationMessage[] = chatMessages
-    .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .map((m) => ({
-      id: m.id,
-      role: m.role as 'user' | 'assistant',
-      content: m.parts
-        .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-        .map((p) => p.text)
-        .join(''),
-    }))
+  const isStreaming = status === 'streaming' || status === 'submitted'
+  const displayMessages = chatMessages.filter((m) => m.role === 'user' || m.role === 'assistant')
 
   const handleSubmit = (text: string) => {
     sendMessage({ text })
@@ -529,11 +525,15 @@ function ChatView({
           <EmptyState game={game} onSuggest={handleSubmit} />
         ) : (
           <div className="max-w-3xl mx-auto flex flex-col gap-6 px-4 py-6">
-            {displayMessages.map((msg) =>
+            {displayMessages.map((msg, i) =>
               msg.role === 'user' ? (
                 <UserMsg key={msg.id} message={msg} />
               ) : (
-                <AssistantMsg key={msg.id} message={msg} />
+                <AssistantMsg
+                  key={msg.id}
+                  message={msg}
+                  isStreaming={isStreaming && i === displayMessages.length - 1}
+                />
               ),
             )}
             <div ref={bottomRef} />
