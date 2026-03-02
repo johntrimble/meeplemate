@@ -1,7 +1,7 @@
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport, isReasoningUIPart, isTextUIPart } from 'ai'
 import type { UIMessage } from 'ai'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   Reasoning,
@@ -45,18 +45,53 @@ interface SidebarProps {
   currentChatId?: string
 }
 
+interface ChatsPage {
+  pageInfo: { hasNextPage: boolean; endCursor: string | null }
+  data: ChatSummary[]
+}
+
 function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
   const navigate = useNavigate()
   const [chats, setChats] = useState<ChatSummary[]>([])
+  const [endCursor, setEndCursor] = useState<string | null>(null)
+  const [hasNextPage, setHasNextPage] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const sentinelRef = useRef<HTMLDivElement>(null)
 
-  // Load past chats for this game whenever the sidebar opens.
+  const loadChats = useCallback((cursor: string | null) => {
+    setLoading(true)
+    const params = new URLSearchParams({ first: '20' })
+    if (cursor) params.set('cursor', cursor)
+    fetch(`/api/games/${gameId}/chats?${params}`)
+      .then((r) => r.json())
+      .then((page: ChatsPage) => {
+        setChats((prev) => cursor ? [...prev, ...page.data] : page.data)
+        setHasNextPage(page.pageInfo.hasNextPage)
+        setEndCursor(page.pageInfo.endCursor ?? null)
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [gameId])
+
+  // Reset and load first page when the sidebar opens or game changes.
   useEffect(() => {
     if (!open) return
-    fetch(`/api/games/${gameId}/chats`)
-      .then((r) => r.json())
-      .then((page: { data: ChatSummary[] }) => setChats(page.data))
-      .catch(() => {})
-  }, [open, gameId])
+    setChats([])
+    setEndCursor(null)
+    setHasNextPage(false)
+    loadChats(null)
+  }, [open, gameId, loadChats])
+
+  // Load the next page when the sentinel scrolls into view.
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el || !hasNextPage || loading) return
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) loadChats(endCursor)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hasNextPage, loading, endCursor, loadChats])
 
   const go = (path: string) => {
     navigate(path)
@@ -110,22 +145,25 @@ function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
         {/* Chat history for this game */}
         <div className="flex-1 overflow-y-auto p-2">
           {chats.length > 0 && (
-            <>
-              <p className="px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                Your chats
-              </p>
-              {chats.map((chat) => (
-                <Button
-                  key={chat.chat_id}
-                  variant={currentChatId === chat.chat_id ? 'secondary' : 'ghost'}
-                  className="w-full justify-start font-normal text-sm truncate"
-                  onClick={() => go(`/chat/${gameId}/${chat.chat_id}`)}
-                >
-                  {chat.title}
-                </Button>
-              ))}
-            </>
+            <p className="px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              Your chats
+            </p>
           )}
+          {chats.map((chat) => (
+            <Button
+              key={chat.chat_id}
+              variant={currentChatId === chat.chat_id ? 'secondary' : 'ghost'}
+              className="w-full justify-start font-normal text-sm truncate"
+              onClick={() => go(`/chat/${gameId}/${chat.chat_id}`)}
+            >
+              {chat.title}
+            </Button>
+          ))}
+          <div ref={sentinelRef} className="py-1 flex justify-center">
+            {loading && (
+              <span className="text-xs text-muted-foreground">Loading…</span>
+            )}
+          </div>
         </div>
       </div>
     </>
