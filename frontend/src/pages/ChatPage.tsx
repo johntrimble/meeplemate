@@ -54,7 +54,7 @@ function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
     if (!open) return
     fetch(`/api/games/${gameId}/chats`)
       .then((r) => r.json())
-      .then((data: ChatSummary[]) => setChats(data))
+      .then((page: { data: ChatSummary[] }) => setChats(page.data))
       .catch(() => {})
   }, [open, gameId])
 

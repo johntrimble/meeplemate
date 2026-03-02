@@ -49,6 +49,7 @@ from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, sentence_
 from meeplemate.pdf import parse_pdf
 from meeplemate.qa import build_qa_chain
 from chainlit.data.base import BaseDataLayer
+from meeplemate.db.repository import PostgresDataLayer
 
 from meeplemate.search import (
     ChunkSearchService, build_chunk_search_service, build_chunk_search_service_2
@@ -577,16 +578,16 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 factory(PGEngine.from_engine)(),
                 {"engine": "async_engine"},
             ),
-            "async_session_factory": (
-                factory(async_sessionmaker)(expire_on_commit=False),
-                {"bind": "async_engine"},
+            "pg_data_layer": (
+                factory(PostgresDataLayer)(),
+                {"engine": "async_engine"},
             ),
             "api_deps": (
                 factory(ApiDeps)(),
                 {
                     "chatloop_service": "chatloop_service",
                     "game_service": "game_service",
-                    "session_factory": "async_session_factory",
+                    "data_layer": "pg_data_layer",
                 }
             )
         }
