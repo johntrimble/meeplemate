@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import operator
-from typing import Annotated, Any, AsyncIterator, Protocol, TypedDict, cast, runtime_checkable
+from typing import Annotated, Any, AsyncIterator, Optional, Protocol, TypedDict, cast, runtime_checkable
 from backoff import runtime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage, trim_messages
@@ -70,7 +70,7 @@ class RefinedQuery(TypedDict):
     refined_query: str
 
 
-def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> CompiledStateGraph[ChatLoopState, ChatLoopContext, ChatLoopInputState, ChatLoopOutputState]:
+def build_chatloop_graph(checkpoint_saver: Optional[BaseCheckpointSaver], chat_model: BaseChatModel, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> CompiledStateGraph[ChatLoopState, ChatLoopContext, ChatLoopInputState, ChatLoopOutputState]:
 
     async def compress_messages(state: ChatLoopState, *, runtime: Runtime[ChatLoopContext]) -> dict:
         new_messages = trim_messages(
@@ -167,9 +167,9 @@ def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Base
     builder.add_node("compress_messages", compress_messages)
 
     # Add edges
-    builder.add_edge(START, "refine_query")
-    builder.add_edge("refine_query", "compress_messages")
-    builder.add_edge("compress_messages", "respond_to_query")
+    builder.add_edge(START, "compress_messages")
+    builder.add_edge("compress_messages", "refine_query")
+    builder.add_edge("refine_query", "respond_to_query")
     builder.add_edge("respond_to_query", END)
 
     graph = builder.compile(checkpointer=checkpoint_saver)
@@ -199,7 +199,7 @@ class ChatLoopService(Protocol):
         ...
 
 
-def build_chatloop_service(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, tokenizer: Any, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> ChatLoopService:
+def build_chatloop_service(checkpoint_saver: Optional[BaseCheckpointSaver], chat_model: BaseChatModel, tokenizer: Any, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> ChatLoopService:
     agent_graph = build_chatloop_graph(
         checkpoint_saver,
         chat_model,

@@ -1,6 +1,6 @@
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Iterator, Literal, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
+from typing import Any, AsyncIterator, Callable, Iterator, Literal, Optional, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
 import os
 from langchain_postgres import PGEngine
 from meeplemate.postgres.vectorstore import PartitionedPGVectorStore
@@ -284,7 +284,7 @@ class GameRulesAgentState(MessagesState):
     manifest: GameManifest
 
 
-def build_graph(checkpoint_saver: BaseCheckpointSaver, chain: Runnable):
+def build_graph(checkpoint_saver: Optional[BaseCheckpointSaver], chain: Runnable):
     async def call_chain(state: GameRulesAgentState):
         msg = None
         for msg in reversed(state["messages"]):
@@ -467,19 +467,19 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 ),
                 {"chat_model": "chat_model", "retriever": "retriever", "embedding_model": "embedding_model"}
             ),
-            "checkpointer": (
-                factory(
-                    CassandraSaver,
-                    start=lambda saver: saver.setup(replication_factor=cfg.db.replication_factor)
-                )(
-                    thread_id_type="uuid",
-                    keyspace=cfg.db.langgraph_keyspace,
-                ),
-                {"session": "db_session"}
-            ),
+            # "checkpointer": (
+            #     factory(
+            #         CassandraSaver,
+            #         start=lambda saver: saver.setup(replication_factor=cfg.db.replication_factor)
+            #     )(
+            #         thread_id_type="uuid",
+            #         keyspace=cfg.db.langgraph_keyspace,
+            #     ),
+            #     {"session": "db_session"}
+            # ),
             "agent_graph": (
-                factory(build_graph)(),
-                {"checkpoint_saver": "checkpointer", "chain": "qa_chain"},
+                factory(build_graph)(checkpoint_saver=None),
+                {"chain": "qa_chain"},
             ),
             "keyspace_creator": (
                 keyspace_creator(
@@ -525,9 +525,10 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 }
             ),
             "chunk_search_service": (
-                factory(build_chunk_search_service)(),
+                factory(build_chunk_search_service)(
+                    checkpoint_saver=None,
+                ),
                 {
-                    "checkpoint_saver": "checkpointer",
                     "chat_model": "chat_model",
                     "retriever": "retriever",
                 }
@@ -541,9 +542,10 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 }
             ),
             "qa_service": (
-                factory(build_qa_service)(),
+                factory(build_qa_service)(
+                    checkpoint_saver=None,
+                ),
                 {
-                    "checkpoint_saver": "checkpointer",
                     "chat_model": "chat_model",
                     "full_page_store": "full_page_store",
                     "chunk_search_service": "chunk_search_service_2",
@@ -551,9 +553,8 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 }
             ),
             "chatloop_service": (
-                factory(build_chatloop_service)(),
+                factory(build_chatloop_service)(checkpoint_saver=None),
                 {
-                    "checkpoint_saver": "checkpointer",
                     "chat_model": "chat_model",
                     "tokenizer": "tokenizer",
                     "qa_service": "qa_service",

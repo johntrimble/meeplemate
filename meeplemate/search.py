@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from operator import itemgetter
-from typing import Annotated, Any, Literal, NotRequired, Sequence, TypedDict, List, cast
+from typing import Annotated, Any, Literal, NotRequired, Optional, Sequence, TypedDict, List, cast
 from langchain.messages import AIMessage
 from langchain_classic.retrievers import MultiVectorRetriever
 from langchain_classic.schema.runnable import ConfigurableField
@@ -229,7 +229,7 @@ def validate_relevance_results(documents: list[Document], relevance_results: Chu
 
 
 def build_chunk_search_graph(
-    checkpoint_saver: BaseCheckpointSaver,
+    checkpoint_saver: Optional[BaseCheckpointSaver],
     chat_model: BaseChatModel,
     retriever: MultiVectorRetriever|VectorStoreRetriever,
     select_chunks_prompt: ChatPromptTemplate=SELECT_RELEVANT_RESULTS_PROMPT,
@@ -452,7 +452,7 @@ ChunkSearchService = Runnable[ChunkSearchServiceInput, ChunkSearchOutputState]
 
 
 def build_chunk_search_service(
-    checkpoint_saver: BaseCheckpointSaver,
+    checkpoint_saver: Optional[BaseCheckpointSaver],
     chat_model: BaseChatModel,
     retriever: MultiVectorRetriever|VectorStoreRetriever,
     max_attempts=5

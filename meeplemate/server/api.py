@@ -1,14 +1,16 @@
 import json
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
+from langchain import messages
 from pydantic import BaseModel, ConfigDict
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
-from meeplemate.chatloop import ChatLoopServiceInput
+from meeplemate.chatloop import ChatLoopServiceInput, cast
 from meeplemate.component_system import subsystem
 from meeplemate.config import Config, System, create_app_system
+from meeplemate.db.datalayer import TextMessagePart
 from meeplemate.server.deps import ApiDeps
 
 _deps: ApiDeps
@@ -155,15 +157,10 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Game '{request.game_id}' not found")
 
-    service_input: ChatLoopServiceInput = {
-        "messages": [HumanMessage(content=request.message)],
-        "manifest": manifest,
-        "thread_id": chat_id,
-    }
-
     chatloop_service = _deps.chatloop_service
     data_layer = _deps.data_layer
     chat_uuid = UUID(chat_id)
+
 
     # Persist the user message
     await data_layer.save_message(
@@ -172,6 +169,30 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
         role="user",
         parts=[{"type": "text", "text": request.message}],
     )
+
+    # Get all messages for this chat so far
+    messages = await data_layer.get_messages(chat_uuid)
+
+    # Convert messages to LangChain format for the service input
+    langchain_messages: list[AnyMessage] = []
+    for message in messages:
+        # Get last text part, this should be the message content
+        text_parts = [p for p in message["parts"] if p["type"] == "text"]
+        content = cast(TextMessagePart, text_parts[-1])["text"] if text_parts else ""
+        role = message["role"]
+        if role == "user":
+            langchain_messages.append(HumanMessage(content=content))
+        else:
+            # For simplicity, we treat all non-user messages as assistant messages.
+            # In a more complex implementation, we might have system messages or other roles.
+            langchain_messages.append(AIMessage(content=content))
+
+
+    service_input: ChatLoopServiceInput = {
+        "messages": langchain_messages,
+        "manifest": manifest,
+        "thread_id": chat_id,
+    }
 
     async def sse_generator():
         # https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
