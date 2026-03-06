@@ -16,8 +16,9 @@ import {
   MessageResponse,
 } from '@/components/ai-elements/message'
 import { Button } from '@/components/ui/button'
+import { useAuthFetch } from '@/auth/authFetch'
+import { useAuth } from '@/auth/useAuth'
 import { GAMES, type Game } from '@/data/games'
-import { MOCK_USER } from '@/data/user'
 import { cn } from '@/lib/utils'
 import {
   CopyIcon,
@@ -52,6 +53,7 @@ interface ChatsPage {
 
 function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
   const navigate = useNavigate()
+  const authFetch = useAuthFetch()
   const [chats, setChats] = useState<ChatSummary[]>([])
   const [endCursor, setEndCursor] = useState<string | null>(null)
   const [hasNextPage, setHasNextPage] = useState(false)
@@ -62,7 +64,7 @@ function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
     setLoading(true)
     const params = new URLSearchParams({ first: '20' })
     if (cursor) params.set('cursor', cursor)
-    fetch(`/api/games/${gameId}/chats?${params}`)
+    authFetch(`/api/games/${gameId}/chats?${params}`)
       .then((r) => r.json())
       .then((page: ChatsPage) => {
         setChats((prev) => cursor ? [...prev, ...page.data] : page.data)
@@ -71,7 +73,7 @@ function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [gameId])
+  }, [gameId, authFetch])
 
   // Reset and load first page when the sidebar opens or game changes.
   useEffect(() => {
@@ -355,6 +357,12 @@ function EmptyState({
 // Shared page chrome (header + sidebar wrapper)
 // ---------------------------------------------------------------------------
 
+function initials(name: string | null, email: string | null): string {
+  if (name) return name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()
+  if (email) return email[0].toUpperCase()
+  return '?'
+}
+
 function PageChrome({
   game,
   gameId,
@@ -366,6 +374,7 @@ function PageChrome({
   chatId?: string
   children: React.ReactNode
 }) {
+  const { user } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
@@ -401,7 +410,7 @@ function PageChrome({
 
           <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
             <span className="text-xs font-semibold text-muted-foreground">
-              {MOCK_USER.initials}
+              {initials(user?.name ?? null, user?.email ?? null)}
             </span>
           </div>
         </div>
@@ -418,12 +427,13 @@ function PageChrome({
 
 function NewChat({ gameId, game }: { gameId: string; game: Game }) {
   const navigate = useNavigate()
+  const authFetch = useAuthFetch()
   const [creating, setCreating] = useState(false)
 
   const handleSubmit = async (text: string) => {
     setCreating(true)
     try {
-      const res = await fetch(`/api/games/${gameId}/chats`, { method: 'POST' })
+      const res = await authFetch(`/api/games/${gameId}/chats`, { method: 'POST' })
       if (!res.ok) throw new Error('Failed to create chat')
       const { chat_id } = (await res.json()) as { chat_id: string }
       // Navigate to the permanent URL, carrying the first message as pending state.
@@ -459,13 +469,16 @@ function ExistingChat({
   game: Game
 }) {
   const location = useLocation()
+  const authFetch = useAuthFetch()
   const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null)
 
   useEffect(() => {
-    fetch(`/api/chats/${chatId}/messages`)
+    authFetch(`/api/chats/${chatId}/messages`)
       .then((r) => r.json())
       .then((msgs: UIMessage[]) => setInitialMessages(msgs))
       .catch(() => setInitialMessages([]))
+  // authFetch identity is stable within a session; chatId is the real dep.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId])
 
   if (initialMessages === null) {
@@ -512,6 +525,7 @@ function ChatView({
 }) {
   const navigate = useNavigate()
   const location = useLocation()
+  const { getIdToken } = useAuth()
   const bottomRef = useRef<HTMLDivElement>(null)
   const pendingSent = useRef(false)
 
@@ -519,14 +533,18 @@ function ChatView({
     messages: initialMessages,
     transport: new DefaultChatTransport({
       api: `/api/chats/${chatId}/stream`,
-      prepareSendMessagesRequest: ({ messages }) => {
+      prepareSendMessagesRequest: async ({ messages }) => {
         const last = messages[messages.length - 1]
         const text =
           last?.parts
             .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
             .map((p) => p.text)
             .join('') ?? ''
-        return { body: { message: text, game_id: gameId } }
+        const token = await getIdToken()
+        return {
+          body: { message: text, game_id: gameId },
+          headers: { Authorization: `Bearer ${token}` },
+        }
       },
     }),
   })

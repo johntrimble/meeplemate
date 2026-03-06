@@ -1,0 +1,132 @@
+/**
+ * AuthProvider
+ *
+ * Switches between two implementations based on the VITE_AUTH_BYPASS env var:
+ *
+ *   VITE_AUTH_BYPASS=true  →  MockAuthProvider  (no Firebase, no login redirect)
+ *   (default)              →  FirebaseAuthProvider
+ *
+ * Both expose the same AuthContext shape so the rest of the app is unaware
+ * of which mode is active.
+ */
+
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { initializeApp, type FirebaseApp } from 'firebase/app'
+import {
+  getAuth,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+  type User,
+} from 'firebase/auth'
+import { AuthContext, type AuthUser } from './AuthContext'
+
+// ---------------------------------------------------------------------------
+// Firebase config — these values are NOT secrets; safe to include in client code.
+// ---------------------------------------------------------------------------
+
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+}
+
+// ---------------------------------------------------------------------------
+// Real Firebase provider
+// ---------------------------------------------------------------------------
+
+function FirebaseAuthProvider({ children }: { children: ReactNode }) {
+  const appRef = useRef<FirebaseApp | null>(null)
+  const [user, setUser] = useState<AuthUser | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [loginError, setLoginError] = useState<string | null>(null)
+
+  if (!appRef.current) {
+    appRef.current = initializeApp(firebaseConfig)
+  }
+  const auth = getAuth(appRef.current)
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser: User | null) => {
+      if (firebaseUser) {
+        setUser({
+          uid: firebaseUser.uid,
+          email: firebaseUser.email,
+          name: firebaseUser.displayName,
+          photoURL: firebaseUser.photoURL,
+        })
+      } else {
+        setUser(null)
+      }
+      setIsLoading(false)
+    })
+    return unsubscribe
+  }, [auth])
+
+  const getIdToken = () => {
+    const firebaseUser = auth.currentUser
+    if (!firebaseUser) return Promise.reject(new Error('Not authenticated'))
+    return firebaseUser.getIdToken()
+  }
+
+  const login = () =>
+    signInWithPopup(auth, new GoogleAuthProvider()).then(() => {}).catch((err: { code?: string }) => {
+      if (err?.code === 'auth/admin-restricted-operation') {
+        setLoginError('Sign-up is currently disabled. Contact the app administrator.')
+      } else if (err?.code && err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
+        setLoginError('Sign-in failed. Please try again.')
+      }
+    })
+
+  const logout = () => {
+    signOut(auth).catch(console.error)
+  }
+
+  return (
+    <AuthContext.Provider value={{ user, isLoading, loginError, getIdToken, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Bypass (mock) provider — no Firebase required
+// ---------------------------------------------------------------------------
+
+function MockAuthProvider({ children }: { children: ReactNode }) {
+  const raw = import.meta.env.VITE_AUTH_BYPASS_USER ?? '{}'
+  const parsed = JSON.parse(raw) as Partial<AuthUser>
+  const user: AuthUser = {
+    uid: parsed.uid ?? 'local-dev',
+    email: parsed.email ?? 'dev@local',
+    name: parsed.name ?? 'Dev User',
+    photoURL: parsed.photoURL ?? null,
+  }
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        isLoading: false,
+        loginError: null,
+        getIdToken: () => Promise.resolve('bypass-token'),
+        login: () => Promise.resolve(),
+        logout: () => {},
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Exported provider — picks the right implementation
+// ---------------------------------------------------------------------------
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  if (import.meta.env.VITE_AUTH_BYPASS === 'true') {
+    return <MockAuthProvider>{children}</MockAuthProvider>
+  }
+  return <FirebaseAuthProvider>{children}</FirebaseAuthProvider>
+}

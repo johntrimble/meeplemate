@@ -11,6 +11,7 @@ class Chat(Base):
 
     chat_id = sa.Column(UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
     game_id = sa.Column(sa.Text, nullable=False, index=True)
+    user_id = sa.Column(sa.Text, nullable=False, index=True)
     created_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=func.now())
 
 

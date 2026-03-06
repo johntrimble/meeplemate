@@ -43,6 +43,7 @@ dependencies = [
     "asyncpg",
     "sqlalchemy[asyncio]",
     "alembic",
+    "firebase-admin",
 #    "glmocr @ git+https://github.com/zai-org/GLM-OCR.git@main"
 ]
 

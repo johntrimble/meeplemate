@@ -16,5 +16,10 @@ export default defineConfig({
     proxy: {
       '/api': 'http://localhost:8000',
     },
+    headers: {
+      // Firebase signInWithPopup requires cross-origin popup communication.
+      // Without this, Chrome's COOP policy blocks window.close in the auth popup.
+      'Cross-Origin-Opener-Policy': 'unsafe-none',
+    },
   },
 })

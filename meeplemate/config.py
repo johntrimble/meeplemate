@@ -138,6 +138,20 @@ class QAChainConfig(BaseModel):
     consistency_kwargs: dict[str, Any] = Field(default_factory=lambda: {"samples": 3})
 
 
+class FirebaseConfig(BaseModel):
+    """Firebase Auth configuration for token validation."""
+    project_id: str = Field(default="boardbarian", description="Firebase project ID")
+    # Supply exactly one of these for the Admin SDK credential:
+    service_account_path: Optional[str] = Field(
+        default=None,
+        description="Path to a service account JSON key file (MM_FIREBASE__SERVICE_ACCOUNT_PATH)",
+    )
+    service_account_json: Optional[str] = Field(
+        default=None,
+        description="Base64-encoded service account JSON (MM_FIREBASE__SERVICE_ACCOUNT_JSON)",
+    )
+
+
 class Config(BaseSettings):
     """Main application configuration with environment variable support.
 
@@ -166,6 +180,12 @@ class Config(BaseSettings):
     load_docs: bool = Field(default=False)
     model_name: str = Field(description="Primary model name for tokenizer/other purposes")
     qa_chain_config: QAChainConfig = Field(default_factory=QAChainConfig)
+    firebase: FirebaseConfig = Field(default_factory=FirebaseConfig)
+    auth_bypass: bool = Field(default=False, description="Skip token validation and use a hardcoded user (MM_AUTH_BYPASS)")
+    auth_bypass_user: Optional[str] = Field(
+        default=None,
+        description='JSON string for bypass user, e.g. {"uid":"dev","email":"dev@local","name":"Dev"} (MM_AUTH_BYPASS_USER)',
+    )
 
     def __init__(self, **kwargs):
         """Initialize config with support for YAML file loading.

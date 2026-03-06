@@ -1,9 +1,8 @@
 import json
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
-from langchain import messages
 from pydantic import BaseModel, ConfigDict
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
@@ -11,6 +10,7 @@ from meeplemate.chatloop import ChatLoopServiceInput, cast
 from meeplemate.component_system import subsystem
 from meeplemate.config import Config, System, create_app_system
 from meeplemate.db.datalayer import TextMessagePart
+from meeplemate.server.auth import AuthUser, get_current_user
 from meeplemate.server.deps import ApiDeps
 
 _deps: ApiDeps
@@ -57,6 +57,7 @@ class GamesPage(BaseModel):
 async def get_games(
     first: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
+    user: AuthUser = Depends(get_current_user),
 ) -> GamesPage:
     """List of all supported games with pagination."""
     games, has_next, start_cursor, end_cursor = await _deps.game_service.list_games(
@@ -87,10 +88,11 @@ async def list_game_chats(
     game_id: str,
     first: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
+    user: AuthUser = Depends(get_current_user),
 ) -> ChatsPage:
-    """Return chats for a game, newest first, with pagination."""
+    """Return chats for a game belonging to the authenticated user, newest first."""
     from meeplemate.db.datalayer import Pagination
-    result = await _deps.data_layer.list_chats(game_id, Pagination(first=first, cursor=cursor))
+    result = await _deps.data_layer.list_chats(game_id, user.uid, Pagination(first=first, cursor=cursor))
     return ChatsPage(
         pageInfo=PageInfo(
             hasNextPage=result.pageInfo.hasNextPage,
@@ -106,16 +108,19 @@ class CreateChatResponse(BaseModel):
 
 
 @app.post("/api/games/{game_id}/chats")
-async def create_chat(game_id: str) -> CreateChatResponse:
+async def create_chat(
+    game_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> CreateChatResponse:
     """
-    Create a new chat for a game. Only called when the user actually sends
-    their first message, so the chat record is created lazily.
+    Create a new chat for a game scoped to the authenticated user.
+    Only called when the user actually sends their first message.
     """
     manifest = await _deps.game_service.get_manifest(game_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Game '{game_id}' not found")
 
-    chat_id = await _deps.data_layer.create_chat(game_id)
+    chat_id = await _deps.data_layer.create_chat(game_id, user.uid)
     return CreateChatResponse(chat_id=str(chat_id))
 
 
@@ -131,9 +136,15 @@ class ChatMessageOut(BaseModel):
 
 
 @app.get("/api/chats/{chat_id}/messages")
-async def get_chat_messages(chat_id: str) -> list[ChatMessageOut]:
+async def get_chat_messages(
+    chat_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> list[ChatMessageOut]:
     """Return all messages for a chat in chronological order."""
     chat_uuid = UUID(chat_id)
+    chat = await _deps.data_layer.get_chat(chat_uuid)
+    if chat is None or chat["user_id"] != user.uid:
+        raise HTTPException(status_code=404, detail="Chat not found")
     messages = await _deps.data_layer.get_messages(chat_uuid)
     return [ChatMessageOut.model_validate(m) for m in messages]
 
@@ -148,7 +159,11 @@ class StreamChatRequest(BaseModel):
 
 
 @app.post("/api/chats/{chat_id}/stream")
-async def stream_chat(chat_id: str, request: StreamChatRequest):
+async def stream_chat(
+    chat_id: str,
+    request: StreamChatRequest,
+    user: AuthUser = Depends(get_current_user),
+):
     """
     Stream an assistant response using the Vercel AI UI message stream protocol.
     https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
@@ -157,10 +172,13 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Game '{request.game_id}' not found")
 
+    chat_uuid = UUID(chat_id)
+    chat = await _deps.data_layer.get_chat(chat_uuid)
+    if chat is None or chat["user_id"] != user.uid:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
     chatloop_service = _deps.chatloop_service
     data_layer = _deps.data_layer
-    chat_uuid = UUID(chat_id)
-
 
     # Persist the user message
     await data_layer.save_message(
@@ -176,17 +194,13 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
     # Convert messages to LangChain format for the service input
     langchain_messages: list[AnyMessage] = []
     for message in messages:
-        # Get last text part, this should be the message content
         text_parts = [p for p in message["parts"] if p["type"] == "text"]
         content = cast(TextMessagePart, text_parts[-1])["text"] if text_parts else ""
         role = message["role"]
         if role == "user":
             langchain_messages.append(HumanMessage(content=content))
         else:
-            # For simplicity, we treat all non-user messages as assistant messages.
-            # In a more complex implementation, we might have system messages or other roles.
             langchain_messages.append(AIMessage(content=content))
-
 
     service_input: ChatLoopServiceInput = {
         "messages": langchain_messages,
@@ -199,7 +213,6 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
         msg_id = uuid4()
         text_id = str(uuid4())
 
-        # Start the message
         yield f'data: {json.dumps({"type": "start", "messageId": str(msg_id)})}\n\n'
 
         step_is_open: bool = False
@@ -218,7 +231,6 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
 
             step_is_open = True
             reasoning_uuid = str(uuid4())
-            description = f"{description}"
             yield f'data: {json.dumps({"type": "start-step"})}\n\n'
             yield f'data: {json.dumps({"type": "reasoning-start", "id": reasoning_uuid})}\n\n'
             yield f'data: {json.dumps({"type": "reasoning-delta", "id": reasoning_uuid, "delta": description})}\n\n'
@@ -246,7 +258,6 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
                     for e in maybe_close_step():
                         yield e
 
-        # Persist the complete assistant message.
         await data_layer.save_message(
             message_id=msg_id,
             chat_id=chat_uuid,
