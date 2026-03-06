@@ -88,6 +88,11 @@ RUN apt-get update && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Playwright Chromium for browser automation (@playwright/mcp)
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN npx playwright install chromium --with-deps && \
+    chmod -R 777 /opt/ms-playwright
+
 # User and group IDs for the non-root user
 # These should match the host user to avoid permission issues with mounted volumes.
 ARG USERNAME=vscode
