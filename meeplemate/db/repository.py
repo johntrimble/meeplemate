@@ -59,16 +59,17 @@ class PostgresDataLayer(BaseDataLayer):
             return ChatDict(
                 chat_id=str(chat.chat_id),
                 game_id=str(chat.game_id),
+                user_id=str(chat.user_id),
                 created_at=_encode_cursor(chat.created_at),
             )
 
     async def list_chats(
-        self, game_id: str, pagination: Pagination
+        self, game_id: str, user_id: str, pagination: Pagination
     ) -> PaginatedResponse[ChatSummary]:
         async with self._session_factory() as session:
             q = (
                 select(Chat)
-                .where(Chat.game_id == game_id)
+                .where(Chat.game_id == game_id, Chat.user_id == user_id)
                 .order_by(Chat.created_at.desc())
             )
             if pagination.cursor:
@@ -96,9 +97,9 @@ class PostgresDataLayer(BaseDataLayer):
                 data=summaries,
             )
 
-    async def create_chat(self, game_id: str) -> UUID:
+    async def create_chat(self, game_id: str, user_id: str) -> UUID:
         async with self._session_factory() as session:
-            chat = Chat(game_id=game_id)
+            chat = Chat(game_id=game_id, user_id=user_id)
             session.add(chat)
             await session.commit()
             await session.refresh(chat)

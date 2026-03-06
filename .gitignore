@@ -5,3 +5,4 @@ munchkin_rules
 .venv
 /data
 *.egg-info
+.playwright-mcp/
