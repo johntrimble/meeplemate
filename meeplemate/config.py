@@ -403,17 +403,17 @@ def create_app_system(cfg: Config) -> System[AppServices]:
 
     system = System[AppServices](
         {
-            "db_cluster": (
-                factory(Cluster)(
-                    contact_points=cfg.db.contact_points,
-                    load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=cfg.db.dc)
-                ),
-                []
-            ),
-            "db_session": (
-                create_session,
-                ["db_cluster"]
-            ),
+            # "db_cluster": (
+            #     factory(Cluster)(
+            #         contact_points=cfg.db.contact_points,
+            #         load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=cfg.db.dc)
+            #     ),
+            #     []
+            # ),
+            # "db_session": (
+            #     create_session,
+            #     ["db_cluster"]
+            # ),
             "embedding_model": (
                 factory(OpenAIEmbeddings)(
                     model=cfg.embedding.model,
@@ -481,25 +481,25 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 factory(build_graph)(checkpoint_saver=None),
                 {"chain": "qa_chain"},
             ),
-            "keyspace_creator": (
-                keyspace_creator(
-                    [
-                        (cfg.data_api.namespace, cfg.db.replication_factor),
-                    ],
-                    data_api_endpoint=cfg.data_api.endpoint,
-                    data_api_token=cfg.data_api.token.get_secret_value(),
-                    create_keyspaces=cfg.db.create_keyspaces,
-                ),
-                []
-            ),
-            "data_layer": (
-                create_data_layer(
-                    storage_client=None,
-                    keyspace=cfg.db.chainlit_keyspace,
-                    replication_factor=cfg.db.replication_factor,
-                ),
-                ["db_session"]
-            ),
+            # "keyspace_creator": (
+            #     keyspace_creator(
+            #         [
+            #             (cfg.data_api.namespace, cfg.db.replication_factor),
+            #         ],
+            #         data_api_endpoint=cfg.data_api.endpoint,
+            #         data_api_token=cfg.data_api.token.get_secret_value(),
+            #         create_keyspaces=cfg.db.create_keyspaces,
+            #     ),
+            #     []
+            # ),
+            # "data_layer": (
+            #     create_data_layer(
+            #         storage_client=None,
+            #         keyspace=cfg.db.chainlit_keyspace,
+            #         replication_factor=cfg.db.replication_factor,
+            #     ),
+            #     ["db_session"]
+            # ),
             "game_version_store": (
                 factory(PostgresJSONStore)(
                     namespace="current_game_version",

@@ -240,7 +240,7 @@ def import_documents(path: Path):
             )
         }
     )
-    system = System.subsystem(system, names=["import_job", "keyspace_creator"])
+    system = System.subsystem(system, names=["import_job"])
 
     async def _import_documents():
         async with system.astart() as services:
