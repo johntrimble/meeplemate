@@ -1,15 +1,16 @@
 import json
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
+from langchain import messages
 from pydantic import BaseModel, ConfigDict
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
-from meeplemate.chatloop import ChatLoopServiceInput
+from meeplemate.chatloop import ChatLoopServiceInput, cast
 from meeplemate.component_system import subsystem
 from meeplemate.config import Config, System, create_app_system
-from meeplemate.db.repository import ChatRepository
+from meeplemate.db.datalayer import TextMessagePart
 from meeplemate.server.deps import ApiDeps
 
 _deps: ApiDeps
@@ -76,12 +77,28 @@ class ChatSummary(BaseModel):
     title: str
 
 
+class ChatsPage(BaseModel):
+    pageInfo: PageInfo
+    data: list[ChatSummary]
+
+
 @app.get("/api/games/{game_id}/chats")
-async def list_game_chats(game_id: str) -> list[ChatSummary]:
-    """Return all chats for a game, newest first."""
-    async with _deps.session_factory() as session:
-        chats = await ChatRepository(session).get_chats_for_game(game_id=game_id)
-    return [ChatSummary(**c) for c in chats]
+async def list_game_chats(
+    game_id: str,
+    first: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+) -> ChatsPage:
+    """Return chats for a game, newest first, with pagination."""
+    from meeplemate.db.datalayer import Pagination
+    result = await _deps.data_layer.list_chats(game_id, Pagination(first=first, cursor=cursor))
+    return ChatsPage(
+        pageInfo=PageInfo(
+            hasNextPage=result.pageInfo.hasNextPage,
+            startCursor=result.pageInfo.startCursor,
+            endCursor=result.pageInfo.endCursor,
+        ),
+        data=[ChatSummary(**c) for c in result.data],
+    )
 
 
 class CreateChatResponse(BaseModel):
@@ -98,13 +115,11 @@ async def create_chat(game_id: str) -> CreateChatResponse:
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Game '{game_id}' not found")
 
-    async with _deps.session_factory() as session:
-        chat_id = await ChatRepository(session).create_chat(game_id=game_id)
-
+    chat_id = await _deps.data_layer.create_chat(game_id)
     return CreateChatResponse(chat_id=str(chat_id))
 
 
-class MessagePart(BaseModel):
+class MessagePartOut(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: str
 
@@ -112,16 +127,15 @@ class MessagePart(BaseModel):
 class ChatMessageOut(BaseModel):
     id: str
     role: str
-    parts: list[MessagePart]
+    parts: list[MessagePartOut]
 
 
 @app.get("/api/chats/{chat_id}/messages")
 async def get_chat_messages(chat_id: str) -> list[ChatMessageOut]:
     """Return all messages for a chat in chronological order."""
     chat_uuid = UUID(chat_id)
-    async with _deps.session_factory() as session:
-        messages = await ChatRepository(session).get_messages(chat_id=chat_uuid)
-    return [ChatMessageOut(**m) for m in messages]
+    messages = await _deps.data_layer.get_messages(chat_uuid)
+    return [ChatMessageOut.model_validate(m) for m in messages]
 
 
 # ---------------------------------------------------------------------------
@@ -143,25 +157,42 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Game '{request.game_id}' not found")
 
+    chatloop_service = _deps.chatloop_service
+    data_layer = _deps.data_layer
+    chat_uuid = UUID(chat_id)
+
+
+    # Persist the user message
+    await data_layer.save_message(
+        message_id=uuid4(),
+        chat_id=chat_uuid,
+        role="user",
+        parts=[{"type": "text", "text": request.message}],
+    )
+
+    # Get all messages for this chat so far
+    messages = await data_layer.get_messages(chat_uuid)
+
+    # Convert messages to LangChain format for the service input
+    langchain_messages: list[AnyMessage] = []
+    for message in messages:
+        # Get last text part, this should be the message content
+        text_parts = [p for p in message["parts"] if p["type"] == "text"]
+        content = cast(TextMessagePart, text_parts[-1])["text"] if text_parts else ""
+        role = message["role"]
+        if role == "user":
+            langchain_messages.append(HumanMessage(content=content))
+        else:
+            # For simplicity, we treat all non-user messages as assistant messages.
+            # In a more complex implementation, we might have system messages or other roles.
+            langchain_messages.append(AIMessage(content=content))
+
+
     service_input: ChatLoopServiceInput = {
-        "messages": [HumanMessage(content=request.message)],
+        "messages": langchain_messages,
         "manifest": manifest,
         "thread_id": chat_id,
     }
-
-    chatloop_service = _deps.chatloop_service
-    session_factory = _deps.session_factory
-    chat_uuid = UUID(chat_id)
-    message_id = uuid4()
-
-    # Persist the user message
-    async with session_factory() as session:
-        await ChatRepository(session).save_message(
-            message_id=uuid4(),
-            chat_id=chat_uuid,
-            role="user",
-            parts=[{"part_id": str(uuid4()), "part_type": "text", "payload": {"text": request.message}}],
-        )
 
     async def sse_generator():
         # https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
@@ -216,13 +247,12 @@ async def stream_chat(chat_id: str, request: StreamChatRequest):
                         yield e
 
         # Persist the complete assistant message.
-        async with session_factory() as session:
-            await ChatRepository(session).save_message(
-                message_id=msg_id,
-                chat_id=chat_uuid,
-                role="assistant",
-                parts=[{"part_id": text_id, "part_type": "text", "payload": {"text": final_answer}}],
-            )
+        await data_layer.save_message(
+            message_id=msg_id,
+            chat_id=chat_uuid,
+            role="assistant",
+            parts=[{"type": "text", "id": text_id, "text": final_answer}],
+        )
 
         yield f'data: {json.dumps({"type": "finish"})}\n\n'
         yield 'data: [DONE]\n\n'

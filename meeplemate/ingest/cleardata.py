@@ -91,6 +91,12 @@ class ClearOldDataJob:
         await self.clear_data_with_prefix(self.full_page_store, f"{game_key_with_version}#")
         await self.amdelete_bs(self.game_data_store, [game_key_with_version])
 
+        # Drop the vector store partition for this version if supported
+        delete_partition = getattr(self.vector_store, "delete_partition", None)
+        if callable(delete_partition):
+            game_version = game_key_with_version.split("#", 1)[1]
+            await delete_partition(game_version)  # type: ignore[misc]
+
     async def clear_old_game_data(self, game_id: str):
         # Get the current version for the game
         (game_key, ) = await self.game_version_store.amget([game_id])
