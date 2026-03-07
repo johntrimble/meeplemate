@@ -354,7 +354,5 @@ services:
 
 volumes:
   claude_data:
-  cassandra_data:
-  dse_data:
   tailscale-data-meeplemate:
   pgdata:
