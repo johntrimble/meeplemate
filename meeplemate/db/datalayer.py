@@ -155,6 +155,7 @@ class ChatSummary(TypedDict):
 class ChatDict(TypedDict):
     chat_id: str
     game_id: str
+    user_id: str
     created_at: str  # ISO-8601
 
 
@@ -185,13 +186,13 @@ class BaseDataLayer(ABC):
 
     @abstractmethod
     async def list_chats(
-        self, game_id: str, pagination: Pagination
+        self, game_id: str, user_id: str, pagination: Pagination
     ) -> PaginatedResponse[ChatSummary]:
-        """All chats for a game, newest first, each with a derived title."""
+        """All chats for a game belonging to user_id, newest first, each with a derived title."""
 
     @abstractmethod
-    async def create_chat(self, game_id: str) -> UUID:
-        """Create a new chat session and return its UUID."""
+    async def create_chat(self, game_id: str, user_id: str) -> UUID:
+        """Create a new chat session for user_id and return its UUID."""
 
     @abstractmethod
     async def delete_chat(self, chat_id: UUID) -> bool:

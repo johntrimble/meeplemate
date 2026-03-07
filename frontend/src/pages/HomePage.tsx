@@ -9,7 +9,7 @@ export default function HomePage() {
       <div className="max-w-3xl mx-auto px-4 flex flex-col">
       {/* Header */}
       <header className="flex items-center justify-end pt-4 pb-2">
-        <Button variant="outline" size="sm" onClick={() => navigate('/select-game')}>
+        <Button variant="outline" size="sm" onClick={() => navigate('/login')}>
           Sign In
         </Button>
       </header>
