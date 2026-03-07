@@ -36,6 +36,8 @@ services:
     ports:
     - 8000:8000 # Chainlit
     - 5173:5173 # vite
+    - 4000:4000 # Firebase Emulator UI
+    - 9099:9099 # Firebase Auth Emulator
     hostname: ts-meeplemate
     env_file:
     - path: .env
@@ -68,6 +70,8 @@ services:
         condition: service_healthy
       data-api:
         condition: service_healthy
+      firebase-emulator:
+        condition: service_started
     build:
       # Build context is the pytorch Dockerfile directory
       context: ./services/dev/
@@ -272,7 +276,7 @@ services:
 
 
   tei:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
     # CPU only: no GPU devices, no --gpus flag
     ipc: host
 
@@ -284,7 +288,7 @@ services:
     # TEI is configured via CLI args, like TGI/vLLM
     command:
       - --max-concurrent-requests
-      - "2"
+      - "5"
       - "--model-id"
       - "jinaai/jina-embeddings-v2-base-en"
       - "--pooling"
@@ -334,6 +338,11 @@ services:
   #           # device_ids: ['0', '1']
   #           device_ids: ['0']
   #           capabilities: [gpu]
+
+  firebase-emulator:
+    build:
+      context: ./services/firebase-emulator/
+    network_mode: service:ts-meeplemate
 
   postgres:
     image: pgvector/pgvector:pg18

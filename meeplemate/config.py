@@ -150,6 +150,10 @@ class FirebaseConfig(BaseModel):
         default=None,
         description="Base64-encoded service account JSON (MM_FIREBASE__SERVICE_ACCOUNT_JSON)",
     )
+    emulator_host: Optional[str] = Field(
+        default=None,
+        description="Firebase Auth Emulator host (e.g. firebase-emulator:9099). When set, token verification is directed to the emulator (MM_FIREBASE__EMULATOR_HOST)",
+    )
 
 
 class Config(BaseSettings):

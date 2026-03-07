@@ -1,11 +1,14 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { useAuth } from '@/auth/useAuth'
 
 export default function LoginPage() {
-  const { user, isLoading, login, loginError } = useAuth()
+  const { user, isLoading, login, loginError, emulatorMode } = useAuth()
   const navigate = useNavigate()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
 
   useEffect(() => {
     if (!isLoading && user) {
@@ -22,7 +25,30 @@ export default function LoginPage() {
         <h1 className="text-xl font-semibold text-foreground">Boardbarian</h1>
         <p className="text-sm text-muted-foreground">Sign in to ask rules questions</p>
       </div>
-      <Button onClick={login}>Sign in with Google</Button>
+      {emulatorMode ? (
+        <form
+          className="flex flex-col gap-3 w-64"
+          onSubmit={e => { e.preventDefault(); login({ email, password }) }}
+        >
+          <Input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            required
+          />
+          <Input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            required
+          />
+          <Button type="submit">Sign in (emulator)</Button>
+        </form>
+      ) : (
+        <Button onClick={() => login()}>Sign in with Google</Button>
+      )}
       {loginError && <p className="text-sm text-destructive">{loginError}</p>}
     </div>
   )

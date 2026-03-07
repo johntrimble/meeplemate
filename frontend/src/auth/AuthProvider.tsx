@@ -1,10 +1,11 @@
 /**
  * AuthProvider
  *
- * Switches between two implementations based on the VITE_AUTH_BYPASS env var:
+ * Switches between two implementations based on env vars:
  *
- *   VITE_AUTH_BYPASS=true  →  MockAuthProvider  (no Firebase, no login redirect)
- *   (default)              →  FirebaseAuthProvider
+ *   VITE_AUTH_BYPASS=true     →  MockAuthProvider  (no Firebase, no login redirect)
+ *   VITE_FIREBASE_EMULATOR=true  →  FirebaseAuthProvider connected to local emulator
+ *   (default)                 →  FirebaseAuthProvider connected to real Firebase
  *
  * Both expose the same AuthContext shape so the rest of the app is unaware
  * of which mode is active.
@@ -13,14 +14,21 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { initializeApp, type FirebaseApp } from 'firebase/app'
 import {
+  connectAuthEmulator,
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
   type User,
 } from 'firebase/auth'
 import { AuthContext, type AuthUser } from './AuthContext'
+
+const EMULATOR_MODE = import.meta.env.VITE_FIREBASE_EMULATOR === 'true'
+// If no explicit host is configured, use the same hostname the browser is using.
+// This means localhost:5173 → localhost:9099, ubuntu-box.local:5173 → ubuntu-box.local:9099, etc.
+const EMULATOR_HOST = import.meta.env.VITE_FIREBASE_EMULATOR_HOST ?? `${window.location.hostname}:9099`
 
 // ---------------------------------------------------------------------------
 // Firebase config — these values are NOT secrets; safe to include in client code.
@@ -44,6 +52,9 @@ function FirebaseAuthProvider({ children }: { children: ReactNode }) {
 
   if (!appRef.current) {
     appRef.current = initializeApp(firebaseConfig)
+    if (EMULATOR_MODE) {
+      connectAuthEmulator(getAuth(appRef.current), `http://${EMULATOR_HOST}`, { disableWarnings: true })
+    }
   }
   const auth = getAuth(appRef.current)
 
@@ -70,21 +81,30 @@ function FirebaseAuthProvider({ children }: { children: ReactNode }) {
     return firebaseUser.getIdToken()
   }
 
-  const login = () =>
-    signInWithPopup(auth, new GoogleAuthProvider()).then(() => {}).catch((err: { code?: string }) => {
+  const login = (credentials?: { email: string; password: string }) => {
+    if (EMULATOR_MODE && credentials) {
+      return signInWithEmailAndPassword(auth, credentials.email, credentials.password)
+        .then(() => {})
+        .catch((err: { code?: string }) => {
+          setLoginError('Sign-in failed. Check your credentials.')
+          console.error(err)
+        })
+    }
+    return signInWithPopup(auth, new GoogleAuthProvider()).then(() => {}).catch((err: { code?: string }) => {
       if (err?.code === 'auth/admin-restricted-operation') {
         setLoginError('Sign-up is currently disabled. Contact the app administrator.')
       } else if (err?.code && err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
         setLoginError('Sign-in failed. Please try again.')
       }
     })
+  }
 
   const logout = () => {
     signOut(auth).catch(console.error)
   }
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, loginError, getIdToken, login, logout }}>
+    <AuthContext.Provider value={{ user, isLoading, loginError, emulatorMode: EMULATOR_MODE, getIdToken, login, logout }}>
       {children}
     </AuthContext.Provider>
   )
@@ -110,6 +130,7 @@ function MockAuthProvider({ children }: { children: ReactNode }) {
         user,
         isLoading: false,
         loginError: null,
+        emulatorMode: false,
         getIdToken: () => Promise.resolve('bypass-token'),
         login: () => Promise.resolve(),
         logout: () => {},

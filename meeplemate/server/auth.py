@@ -49,6 +49,9 @@ def _get_firebase_app() -> firebase_admin.App:
     cfg = Config()
     fb = cfg.firebase
 
+    if fb.emulator_host:
+        os.environ.setdefault("FIREBASE_AUTH_EMULATOR_HOST", fb.emulator_host)
+
     credential: firebase_admin.credentials.Base = None  # type: ignore[assignment]
 
     if fb.service_account_path:
