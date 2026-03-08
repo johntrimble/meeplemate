@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any, Optional, cast
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -118,6 +118,37 @@ class PostgresDataLayer(BaseDataLayer):
             await session.execute(delete(Chat).where(Chat.chat_id == chat_id))
             await session.commit()
             return True
+
+    async def list_recent_game_ids(
+        self, user_id: str, pagination: Pagination
+    ) -> PaginatedResponse[str]:
+        async with self._session_factory() as session:
+            latest_per_game = (
+                select(Chat.game_id, func.max(Chat.created_at).label("last_active"))
+                .where(Chat.user_id == user_id)
+                .group_by(Chat.game_id)
+                .subquery()
+            )
+            q = select(
+                latest_per_game.c.game_id,
+                latest_per_game.c.last_active,
+            ).order_by(latest_per_game.c.last_active.desc())
+            if pagination.cursor:
+                q = q.where(latest_per_game.c.last_active < _decode_cursor(pagination.cursor))
+            q = q.limit(pagination.first + 1)
+            rows = list((await session.execute(q)).all())
+
+            has_next = len(rows) > pagination.first
+            rows = rows[: pagination.first]
+
+            game_ids = [row.game_id for row in rows]
+            start_cursor = _encode_cursor(rows[0].last_active) if rows else None
+            end_cursor = _encode_cursor(rows[-1].last_active) if rows else None
+
+            return PaginatedResponse(
+                pageInfo=PageInfo(hasNextPage=has_next, startCursor=start_cursor, endCursor=end_cursor),
+                data=game_ids,
+            )
 
     # --- Messages ---
 

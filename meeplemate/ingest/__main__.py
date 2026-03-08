@@ -13,7 +13,7 @@ from meeplemate.ingest.gamepackage import load_game_package
 from meeplemate.ingest.initgp import InitGamePackageJob
 from meeplemate.ingest.ocr import OcrJob, PageNumberFixUpJob, PageNumberOcrJob
 from meeplemate.ingest.documentmetadata import DocumentMetadataJobJob
-from meeplemate.ingest.summary import ExtractTerminologyJob, GenerateGameReferenceJob, save_manifest
+from meeplemate.ingest.summary import ExtractTerminologyJob, GenerateGameReferenceJob, PresentationJob, SettingSummaryJob, save_manifest
 
 logger = structlog.get_logger(__name__)
 
@@ -309,6 +309,69 @@ def generate_reference(path: Path):
                 {
                     "chat_model": "chat_model",
                     "tokenizer": "tokenizer",
+                }
+            )
+        },
+    )
+
+    async def _run():
+        async with system.astart() as services:
+            pass
+    
+    asyncio.run(_run())
+
+
+@cli.command()
+@click.argument("path", type=Path)
+def generate_setting_summary(path: Path):
+    settings: Config = Config()
+    settings.chat.max_new_tokens = 10_000
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "generate_setting_summary_job": (
+                afactory(
+                    SettingSummaryJob,
+                    astart=SettingSummaryJob.run,
+                )(
+                    gp=load_game_package(path),
+                    path=path,
+                ),
+                {
+                    "chat_model": "chat_model",
+                    "tokenizer": "tokenizer",
+                }
+            )
+        },
+    )
+
+    async def _run():
+        async with system.astart() as services:
+            pass
+    
+    asyncio.run(_run())
+
+
+@cli.command()
+@click.argument("path", type=Path)
+def generate_presentation(path: Path):
+    settings: Config = Config()
+    settings.chat.max_new_tokens = 10_000
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "generate_presentation_job": (
+                afactory(
+                    PresentationJob,
+                    astart=PresentationJob.run,
+                )(
+                    gp=load_game_package(path),
+                    path=path,
+                ),
+                {
+                    "chat_model": "chat_model",
                 }
             )
         },

@@ -2,9 +2,11 @@
 import asyncio
 from dataclasses import dataclass
 import functools
+from itertools import groupby
 from pathlib import Path
 import re
-from typing import Any, AsyncIterator, Tuple
+from typing import Any, AsyncIterator, Tuple, TypedDict
+from unittest.mock import Base
 
 from langchain_core.documents.base import Document
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -14,9 +16,9 @@ from langchain_core.prompts.prompt import PromptTemplate
 
 from langchain_classic.output_parsers.regex import RegexParser
 
-from meeplemate.ingest.gamepackage import amap, get_document_page_aiter, save_manifest, document_keys
+from meeplemate.ingest.gamepackage import amap, get_document_page_aiter, get_game_presentation_path, get_game_setting_summary_path, save_manifest, document_keys
 from meeplemate.ingest.ocr import GamePackage, aspit
-from meeplemate.util import achain, aenumerate, apairwise, arepeat, atakewhile, compose, queue_to_async_iter, sink_into_queue, pipeline, to_async_iter, xf_amap
+from meeplemate.util import achain, aenumerate, apairwise, arepeat, aslurp, aspit_yaml, atakewhile, compose, queue_to_async_iter, sink_into_queue, pipeline, to_async_iter, xf_amap
 
 from structlog import get_logger
 
@@ -111,6 +113,98 @@ SHORT_SUMMARY_PROMPT = ChatPromptTemplate.from_messages(
     template_format="mustache"
 )
 
+SETTING_SUMMARY_SYSTEM_TEMPLATE = """\
+You are an expert at summarizing the genre, world, and setting of a board game based on its rulebook content. Your goal is to create a concise and engaging summary that captures the essence of the game's theme and setting, helping players quickly understand the game's world and what makes it unique. Focus exclusively on narrative, thematic, and atmospheric elements. Never include game mechanics, rules, card effects, turn procedures, or win conditions — even when described in narrative language.
+""".strip()
+
+SETTING_PAGE_BY_PAGE_SUMMARY_TEMPLATE = """\
+## Current Summary
+
+<summary>
+{{current_summary}}
+</summary>
+
+## Rulebook Pages
+
+{{#documents}}
+<document name="{{metadata.rulebook_name}}" page="{{metadata.page_num}}">
+{{page_content}}
+</document>
+{{/documents}}
+
+## Instructions
+
+- Read the current summary and the provided rulebook pages carefully.
+- Provide a step-by-step analysis of how to update the summary based on the new information from the rulebook pages.
+- Identify any important details about the game's genre, world, or setting that are missing from the current summary.
+- Update the summary to include these new details while ensuring it remains concise and easy to understand.
+- Ensure that the summary is well-organized, using headings or bullet points if necessary to enhance readability.
+- Avoid adding unnecessary details or overly complex explanations; focus on the most relevant information.
+- Focus ONLY on: the game's genre, fictional world, story premise, tone, aesthetic, factions, characters, races, lore, and thematic atmosphere.
+- Do NOT include: turn structure, card effects, combat rules, stat modifiers, win conditions, setup procedures, or any game rules — even when they are described using narrative or thematic language.
+- The final summary should be comprehensive yet succinct, providing players with a clear understanding of the game's genre, world, and setting.
+- If there is no new information to add, retain and output the current summary as is.
+- Keep summary length to a maximum of 500 words.
+- Output the updated summary in markdown format.
+
+## Formatting
+
+- Output reasoning steps as a bulleted list.
+- Output the summary enclosed within <summary> and </summary> tags.
+""".strip()
+
+SETTING_PAGE_BY_PAGE_SUMMARY_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", SETTING_SUMMARY_SYSTEM_TEMPLATE),
+        ("human", SETTING_PAGE_BY_PAGE_SUMMARY_TEMPLATE),
+    ],
+    template_format="mustache"
+)
+
+SETTING_SUMMARY_OF_SUMMARIES_TEMPLATE = """\
+## Current Summary
+
+<summary>
+{{current_summary}}
+</summary>
+
+## Document Summaries
+
+{{#documents}}
+<document name="{{metadata.rulebook_name}}">
+{{page_content}}
+</document>
+{{/documents}}
+
+## Instructions
+
+- Read the current summary and the provided document summaries carefully.
+- Provide a step-by-step analysis of how to update the summary based on the new information from the document summaries.
+- Identify any important details about the game's genre, world, or setting that are missing from the current summary.
+- If the input summaries contain any mechanical content (card effects, turn procedures, stat rules, win conditions), exclude it — only carry forward setting, world, and thematic details.
+- Update the summary to include these new details while ensuring it remains concise and easy to understand.
+- Focus ONLY on: genre, fictional world, story premise, tone, aesthetic, factions, characters, races, lore, and thematic atmosphere.
+- Do NOT include: turn structure, card effects, combat rules, stat modifiers, win conditions, setup procedures, or any game rules — even when described in narrative language.
+- Ensure that the summary is well-organized, using headings or bullet points if necessary to enhance readability.
+- Avoid adding unnecessary details or overly complex explanations; focus on the most relevant information.
+- The final summary should be comprehensive yet succinct, providing players with a clear understanding of the game's genre, world, and setting.
+- If there is no new information to add, retain and output the current summary as is.
+- Keep summary length to a maximum of 500 words.
+- Output the updated summary in markdown format.
+
+## Formatting
+
+- Output reasoning steps as a bulleted list.
+- Output the summary enclosed within <summary> and </summary> tags.
+""".strip()
+
+SETTING_SUMMARY_OF_SUMMARIES_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", SETTING_SUMMARY_SYSTEM_TEMPLATE),
+        ("human", SETTING_SUMMARY_OF_SUMMARIES_TEMPLATE),
+    ],
+    template_format="mustache"
+)
 
 def game_summary_path(gp: GamePackage) -> Path:
     return gp["path"] / "summary.md"
@@ -132,7 +226,7 @@ async def generate_summary_with_refinement(
 ):
     # We need to be careful here. We want pairs of consecutive pages to
     # ensure we don't split important context. However, if we just use
-    # apairwise, we might not process any pages is there's only one page.
+    # apairwise, we might not process any pages if there's only one page.
 
     # Convert pages to dictionaries for use with the prompt template
     page_iter = amap(Document.model_dump, documents)
@@ -181,6 +275,91 @@ async def generate_summary_with_refinement(
             logger.exception("Failed to process pages")
 
     return current_summary.strip()
+
+
+async def aggregate_summaries(
+    chat_model: BaseChatModel,
+    prompt: BasePromptTemplate,
+    documents: list[Document],
+    summary_tag: str = "summary",
+) -> str:
+    escaped_tag = re.escape(summary_tag)
+    regex_pattern = rf".*<{escaped_tag}>([\s\S]*)</{escaped_tag}>.*"
+    output_parser = RegexParser(
+        regex=regex_pattern,
+        output_keys=["summary"],
+    )
+    chain = prompt | chat_model | output_parser
+    input = {
+        "current_summary": "",
+        "documents": [doc.model_dump() for doc in documents],
+    }
+    output = await chain.ainvoke(input)
+    return output["summary"].strip()
+
+
+async def generate_hierarchical_summary_with_refinement(
+    gp: GamePackage,
+    chat_model: BaseChatModel,
+    summary_prompt: BasePromptTemplate,
+    summary_of_summaries_prompt: BasePromptTemplate,
+    summary_tag: str = "summary",
+):
+    doc_keys = list(document_keys(gp))
+    tasks = []
+    # Generate summaries of each document
+    for document_key in doc_keys:
+        document_iter = get_document_page_aiter(gp, document_key=document_key)
+        task = asyncio.create_task(
+            generate_summary_with_refinement(
+                chat_model=chat_model,
+                prompt=summary_prompt,
+                documents=document_iter,
+                summary_tag=summary_tag,
+            )
+        )
+        tasks.append(task)
+    
+    # Raise any exceptions that occurred during summary generation
+    raw_summaries = await asyncio.gather(*tasks, return_exceptions=True)
+    for document_key, summary in zip(doc_keys, raw_summaries):
+        if isinstance(summary, Exception):
+            raise summary
+    summaries: list[str] = raw_summaries  # type: ignore[assignment]
+
+    # Make Document instances out of summaries
+    documents = []
+    rulebook_names = {
+        rulebook["document_key"]: rulebook["name"]
+        for rulebook in gp["rulebooks"]
+    }
+    for document_key, summary in zip(doc_keys, summaries):
+        documents.append(
+            Document(
+                page_content=summary,
+                metadata={
+                    "rulebook_name": rulebook_names.get(document_key, ""),
+                    "document_key": document_key,
+                    "game_name": gp["name"],
+                }
+            )
+        )
+    
+    # Now generate overall summary — single call to give all documents equal weight
+    overall_summary = await aggregate_summaries(
+        chat_model=chat_model,
+        prompt=summary_of_summaries_prompt,
+        documents=documents,
+        summary_tag=summary_tag,
+    )
+
+    # Build result dictionary
+    result = {}
+    for document_key, summary in zip(doc_keys, summaries):
+        result[document_key] = summary
+    result[""] = overall_summary
+
+    return result
 
 
 @dataclass
@@ -418,3 +597,103 @@ class ExtractTerminologyJob:
                 print(f"Updated Summary:\n{current_summary}\n\n\n")
             except:
                 logger.exception("Failed to process pages")
+
+
+@dataclass
+class SettingSummaryJob:
+    path: Path
+    gp: GamePackage
+    chat_model: BaseChatModel
+    tokenizer: Any
+    summary_tag: str = "summary"
+
+    async def run(self):
+        summaries_dict = await generate_hierarchical_summary_with_refinement(
+            gp=self.gp,
+            chat_model=self.chat_model,
+            summary_prompt=SETTING_PAGE_BY_PAGE_SUMMARY_PROMPT,
+            summary_of_summaries_prompt=SETTING_SUMMARY_OF_SUMMARIES_PROMPT,
+            summary_tag=self.summary_tag,
+        )
+
+        for document_key, summary in summaries_dict.items():
+            if document_key == "":
+                path = get_game_setting_summary_path(self.gp)
+            else:
+                path = self.path / document_key / "setting_summary.md"
+            logger.info(f"Writing summary to path", path=path)
+            path.parent.mkdir(exist_ok=True)
+            await aspit(summary, path)
+
+
+UNICODE_BACKGROUND_COLOR_TEMPLATE = """
+Given this board game description:
+
+<description>
+{{summary}}
+</description>
+
+Give a single unicode character that best encapsulates the setting/background of the game. Also, provide a background color as a hexcode sequence (like what one might use in CSS) upon which the unicode character will be set. Your selections should both convey the setting, while also looking well-coordinated for displaying to a user.
+
+Give your response in the following JSON format:
+
+{
+"reasoning": "<... reasoning for the unicode and background color selection... >",
+"unicode_character": "<single unicode character>",
+"background_color": "#<hexcode of background color"
+}
+""".strip()
+
+UNICODE_BACKGROUND_COLOR_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("human", UNICODE_BACKGROUND_COLOR_TEMPLATE),
+    ],
+    template_format="mustache"
+)
+
+
+class UnicodeBackgroundOutput(TypedDict):
+    reasoning: str
+    unicode_character: str
+    background_color: str
+
+
+@dataclass
+class PresentationJob:
+    path: Path
+    gp: GamePackage
+    chat_model: BaseChatModel
+
+    async def run(self):
+        # Load the summary
+        summary_path = get_game_setting_summary_path(self.gp)
+        summary = await aslurp(summary_path)
+
+        # Generate unicode character and background color for presentation
+        # on the frontend. Use self-consistency to find a good option.
+        model_with_structured_output = self.chat_model.with_structured_output(
+            UnicodeBackgroundOutput
+        )
+        chain = UNICODE_BACKGROUND_COLOR_PROMPT | model_with_structured_output
+        input = {
+            "summary": summary,
+        }
+        outputs = []
+        for i in range(5):
+            output = await chain.ainvoke(input)
+            outputs.append(output)
+
+
+        # Select the output with the most common unicode character
+        outputs_by_unicode = {}
+        for output in outputs:
+            unicode_char = output["unicode_character"]
+            outputs_by_unicode.setdefault(unicode_char, []).append(output)
+
+        most_common_unicode = max(outputs_by_unicode.items(), key=lambda x: len(x[1]))[0]
+        output = outputs_by_unicode[most_common_unicode][0]
+
+        # Save the output
+        presentation_path = get_game_presentation_path(self.gp)
+        await aspit_yaml(output, presentation_path)
+        

@@ -198,6 +198,15 @@ class BaseDataLayer(ABC):
     async def delete_chat(self, chat_id: UUID) -> bool:
         """Delete a chat and cascade-delete its messages. Returns True if found."""
 
+    @abstractmethod
+    async def list_recent_game_ids(
+        self, user_id: str, pagination: Pagination
+    ) -> PaginatedResponse[str]:
+        """Distinct game_ids with the most recent chat activity for user_id, newest first.
+
+        Cursor encodes the MAX(created_at) of the last game's most recent chat.
+        """
+
     # --- Messages ---
 
     @abstractmethod

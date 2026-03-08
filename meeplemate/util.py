@@ -27,6 +27,11 @@ def slurp_yaml(f):
             fp.close()
 
 
+async def aslurp_yaml(path: Path | str) -> Any:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, slurp_yaml, path)
+
+
 def dump_jsonl(obj_list, fp):
     for obj in obj_list:
         print(json.dumps(obj), file=fp)

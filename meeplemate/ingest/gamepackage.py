@@ -23,6 +23,8 @@ class Manifest(TypedDict):
     game_version: NotRequired[str]
     rulebooks: Sequence[RulebookDescriptor]
     summary: NotRequired[str]
+    emoji: NotRequired[str]
+    background_color: NotRequired[str]
 
 
 class GamePackage(Manifest, TypedDict):
@@ -86,6 +88,16 @@ def get_page(gp:GamePackage, document_key: str, page_num: int) -> Page:
 def get_raw_documents_directory_path(gp: GamePackage) -> Path:
     raw_docs_path = gp["path"] / "raw_documents"
     return raw_docs_path
+
+
+def get_game_setting_summary_path(gp: GamePackage) -> Path:
+    summary_path = gp["path"] / "game_setting_summary.md"
+    return summary_path
+
+
+def get_game_presentation_path(gp: GamePackage) -> Path:
+    presentation_path = gp["path"] / "presentation.yaml"
+    return presentation_path
 
 
 def page_md_path(page: Page) -> Path:

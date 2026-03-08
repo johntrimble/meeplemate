@@ -21,6 +21,17 @@ class GameService:
         manifest = (await self.data_store.amget([game_key]))[0]
         return manifest
 
+    async def get_games_by_ids(self, game_ids: list[str]) -> list[GamePackage]:
+        """Fetch multiple games by ID. Preserves order; skips missing games."""
+        if not game_ids:
+            return []
+        versions = await self.version_store.amget(game_ids)
+        data_keys = [str(v) for v in versions if v is not None]
+        if not data_keys:
+            return []
+        manifests = await self.data_store.amget(data_keys)
+        return [m for m in manifests if m is not None]
+
     async def list_games(
         self, *, after: str | None = None, limit: int = 20
     ) -> tuple[list[GamePackage], bool, str | None, str | None]:
@@ -28,7 +39,7 @@ class GameService:
 
         Returns (games, has_next_page, start_cursor, end_cursor).
         """
-        all_ids: list[str] = sorted([key async for key in await self.version_store.ayield_keys()])
+        all_ids: list[str] = sorted([key async for key in self.version_store.ayield_keys()])
 
         start = 0
         if after is not None:

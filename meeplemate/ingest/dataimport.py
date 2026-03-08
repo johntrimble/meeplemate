@@ -14,10 +14,10 @@ from langchain_core.stores import BaseStore
 from langchain_core.vectorstores.base import VectorStore
 
 from meeplemate.ingest.chunkbuild import ChildChunkDescriptor, ChunkDescriptor, child_chunks_for_chunk_iter, chunks_for_page_iter, get_child_chunk_path, get_chunk_path
-from meeplemate.ingest.gamepackage import GamePackage, get_page, get_pages_iter, page_to_document, get_game_key
+from meeplemate.ingest.gamepackage import GamePackage, get_game_presentation_path, get_page, get_pages_iter, page_to_document, get_game_key
 from structlog import get_logger
 
-from meeplemate.util import amap, achain_from_aiterable, aslurp, sem_guard
+from meeplemate.util import amap, achain_from_aiterable, aslurp, aslurp_yaml, sem_guard
 
 logger = get_logger(__name__)
 
@@ -66,6 +66,16 @@ async def import_game_data(job: ImportDocumentsJob) -> None:
     for rulebook in game_data["rulebooks"]:
         rulebook.pop("strategy", None)
         rulebook.pop("path", None)
+
+    # Add presentation data to help with displaying the game on the frontend
+    presentation_path = get_game_presentation_path(job.gp)
+    presentation_data = await aslurp_yaml(presentation_path)
+
+    if "unicode_character" in presentation_data:
+        game_data["emoji"] = presentation_data["unicode_character"]
+    
+    if "background_color" in presentation_data:
+        game_data["background_color"] = presentation_data["background_color"]
     
     logger.info("Saving game data", game_data=game_data)
     
@@ -94,6 +104,15 @@ async def aslurp_document(path: Path) -> Document:
     return document
 
 
+def add_game_metadata_to_document(document: Document, gp: GamePackage) -> Document:
+    game_metadata = {
+        "game_id": gp["game_id"],
+        "game_version": gp.get("game_version", ""),
+    }
+    document.metadata.update(game_metadata)
+    return document
+
+
 async def run_import_documents(job: ImportDocumentsJob) -> None:
     # Ensure the vector store partition exists before spawning concurrent tasks
     ensure_partition = getattr(job.vector_store, "ensure_partition", None)
@@ -114,6 +133,7 @@ async def run_import_documents(job: ImportDocumentsJob) -> None:
     pages_iter = get_pages_iter(job.gp)
     page_documents_iter = amap(page_to_document, pages_iter)
     async for document in page_documents_iter:
+        document = add_game_metadata_to_document(document, job.gp)
         assert document.id is not None, "Document must have an ID"
         add_sem_guarded_task(
             job.full_page_store.amset([(document.id, document)])
@@ -124,6 +144,7 @@ async def run_import_documents(job: ImportDocumentsJob) -> None:
     chunk_paths_iter = amap(get_chunk_path, chunks_iter)
     documents_iter = amap(aslurp_document, chunk_paths_iter)
     async for document in documents_iter:
+        document = add_game_metadata_to_document(document, job.gp)
         assert document.id is not None, "Document must have an ID"
         add_sem_guarded_task(
             job.chunk_store.amset([(document.id, document)])
@@ -134,6 +155,7 @@ async def run_import_documents(job: ImportDocumentsJob) -> None:
     child_chunk_paths_iter = amap(get_child_chunk_path, child_chunks_iter)
     child_documents_iter = amap(aslurp_document, child_chunk_paths_iter)
     async for document in child_documents_iter:
+        document = add_game_metadata_to_document(document, job.gp)
         assert document.id is not None, "Document must have an ID"
         add_sem_guarded_task(
             job.vector_store.aadd_documents([document])
