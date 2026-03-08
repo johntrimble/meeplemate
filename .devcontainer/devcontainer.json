@@ -12,6 +12,11 @@
   "workspaceFolder": "/workspace",
 
   // VS Code specific customizations.
+  // Disable SSH agent forwarding so the container cannot use host SSH keys.
+  "remoteEnv": {
+    "SSH_AUTH_SOCK": ""
+  },
+
   "customizations": {
     "vscode": {
       // Default settings for VS Code inside the container.

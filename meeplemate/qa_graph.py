@@ -1,3 +1,4 @@
+import asyncio
 import copy
 from dataclasses import dataclass
 import re
@@ -11,6 +12,7 @@ from langchain_core.load import Serializable
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable,  RunnableConfig, chain
 from langchain_core.stores import BaseStore
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
@@ -19,6 +21,7 @@ from langgraph.prebuilt import ToolNode
 from meeplemate import quote_util
 from meeplemate.ingest.gamepackage import Manifest, get_page_id
 from meeplemate.search import ChunkSearchService, ChunkSearchServiceInput, CompiledStateGraph
+from meeplemate.stream_events import StepEvent, AnalyzedUserQueryEvent, SubquestionAnsweredEvent, UserQueryAnsweredEvent
 from structlog import get_logger
 
 from meeplemate.util import load_template
@@ -1397,6 +1400,9 @@ def build_coordinating_agent_graph(
 ) -> CompiledStateGraph[CoordinationOverallState, GameAgentContext, CoordinationInputState, CoordinationOutputState]:
     
     async def analyze_question(state: CoordinationInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        writer = get_stream_writer()
+        writer(StepEvent(type="mm_step", description="Analyzing user query"))
+
         logger.info("Analyzing question", query=state["query"])
         state_analyze_question = create_question_analysis_state(query=state["query"])
         context_analyze_question = QuestionAnalysisContext(
@@ -1408,6 +1414,8 @@ def build_coordinating_agent_graph(
             context=context_analyze_question,
             config=config
         )
+
+        writer(AnalyzedUserQueryEvent(type="mm_user_query_analysis", analysis=result["analysis"], classification=result["classification"]))
 
         return {
             "question_analysis": result["analysis"],
@@ -1427,6 +1435,9 @@ def build_coordinating_agent_graph(
             "query": state["query"],
         }
 
+        writer = get_stream_writer()
+        writer(StepEvent(type="mm_step", description="Answering user query"))
+
         response = await game_agent.ainvoke(
             input,
             context=runtime.context,
@@ -1442,6 +1453,9 @@ def build_coordinating_agent_graph(
     async def ask_subquestions(state: AskSubquestionsInputState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
         subquestions = state["subquestions"]
 
+        writer = get_stream_writer()
+        writer(StepEvent(type="mm_step", description="Breaking down into subquestions"))
+
         inputs = []
         for question in subquestions:
             logger.info("Asking subquestion", question=question)
@@ -1450,21 +1464,36 @@ def build_coordinating_agent_graph(
             }
             inputs.append(input)
         
-        responses: list[GameAgentOutputState] = await game_agent.abatch(
-            inputs,
-            context=runtime.context,
-            config=config
-        )
+        async def result_with_input(coroutine, input):
+            result = await coroutine
+            return result, input
+
+        tasks = []
+        for input in inputs:
+            task = asyncio.create_task(
+                result_with_input(
+                    game_agent.ainvoke(
+                        input,
+                        context=runtime.context,
+                        config=config
+                    ),
+                    input
+                )
+            )
+            tasks.append(task)
 
         subquestions_answers: list[ClarifyingQA] = []
-        for question, response in zip(subquestions, responses):
+        for future in asyncio.as_completed(tasks):
+            response, input = await future
+            writer(SubquestionAnsweredEvent(type="mm_subquestion_answered", question=input["query"], answer=response["response"], valid=response["valid"]))
+
             if not response["valid"]:
-                logger.error("Subquestion answer was not valid", question=question, answer=response["response"])
+                logger.error("Subquestion answer was not valid", question=input["query"], answer=response["response"])
                 continue
 
             subquestions_answers.append(
                 ClarifyingQA(
-                    question=question,
+                    question=input["query"],
                     answer=response["response"],
                     evidence=response["evidence"],
                 )
@@ -1486,6 +1515,9 @@ def build_coordinating_agent_graph(
         
         evidence = dedupe_chunks(evidence)
 
+        writer = get_stream_writer()
+        writer(StepEvent(type="mm_step", description="Answering user query"))
+
         input = {
             "query": state["query"],
             "clarifying_questions": state.get("clarifying_questions", []),
@@ -1503,6 +1535,8 @@ def build_coordinating_agent_graph(
         }
 
     async def produce_response(state: CoordinationOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        writer = get_stream_writer()
+        writer(UserQueryAnsweredEvent(type="mm_user_query_answered", answer=state["response"], query=state["query"]))
         return {}
     
     async def route_by_classification(state: CoordinationOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> Literal["ask_simple_question", "ask_subquestions"]:

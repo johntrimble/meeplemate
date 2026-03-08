@@ -8,6 +8,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda, chain, patch_config
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -16,6 +17,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 
 from meeplemate.qa_graph import GameAgentContext, GameAgentInputState, GameAgentOutputState, GameAgentOverallState, QAService, QAServiceInput
+from meeplemate.stream_events import RefinedUserQueryEvent, StepEvent
 
 
 system_prompt_template = """\
@@ -106,6 +108,8 @@ def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Base
         return output
     
     async def refine_query(state: ChatLoopState, *, runtime: Runtime[ChatLoopContext]) -> dict:
+        writer = get_stream_writer()
+        writer(StepEvent(type="mm_step", description="Refining query"))
         manifest = runtime.context.manifest
 
         current_message = state["messages"][-1]
@@ -119,6 +123,7 @@ def build_chatloop_graph(checkpoint_saver: BaseCheckpointSaver, chat_model: Base
             "query": current_message.content,
         }
         result: RefinedQuery = cast(RefinedQuery, await chain.ainvoke(input=input))
+        writer(RefinedUserQueryEvent(type="mm_refined_user_query", description=result["refined_query"]))
         return {
             "refined_queries": {current_message.id: result["refined_query"]}
         }
@@ -190,6 +195,9 @@ class ChatLoopService(Protocol):
         """
         ...
 
+    def astream(self, input: ChatLoopServiceInput, *args, config: RunnableConfig | None = None, **kwargs) -> AsyncIterator[dict[str, Any] | Any]:
+        ...
+
 
 def build_chatloop_service(checkpoint_saver: BaseCheckpointSaver, chat_model: BaseChatModel, tokenizer: Any, qa_service: QAService, refine_prompt: ChatPromptTemplate=REFINE_QUESTION_PROMPT) -> ChatLoopService:
     agent_graph = build_chatloop_graph(
@@ -202,6 +210,22 @@ def build_chatloop_service(checkpoint_saver: BaseCheckpointSaver, chat_model: Ba
     class _ChatLoopService(ChatLoopService):
         def __init__(self, graph: CompiledStateGraph[ChatLoopState, ChatLoopContext, ChatLoopInputState, ChatLoopOutputState]):
             self.graph = graph
+
+        async def astream(self, input: ChatLoopServiceInput, *args, config: RunnableConfig | None = None, **kwargs) -> AsyncIterator[dict[str, Any] | Any]:
+            thread_config = {"thread_id": input["thread_id"]}
+            config = patch_config(config, configurable=thread_config)
+            context = ChatLoopContext(manifest=input["manifest"], tokenizer=tokenizer)
+            graph_input: ChatLoopInputState = {"messages": input["messages"]}
+
+            async for value in self.graph.astream(
+                graph_input,
+                *args,
+                context=context,
+                config=config,
+                **kwargs
+            ):
+                yield value
+
 
         async def astream_response(self, input: ChatLoopServiceInput, config: RunnableConfig | None = None) -> AsyncIterator[AIMessageChunk]:
             thread_config = {"thread_id": input["thread_id"]}
