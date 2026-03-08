@@ -18,7 +18,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { useAuthFetch } from '@/auth/authFetch'
 import { useAuth } from '@/auth/useAuth'
-import { GAMES, type Game } from '@/data/games'
+import { type Game } from '@/data/games'
+import { useGame } from '@/hooks/useGame'
 import { cn } from '@/lib/utils'
 import {
   CopyIcon,
@@ -610,7 +611,17 @@ function ChatView({
 
 export default function ChatPage() {
   const { gameId, chatId } = useParams<{ gameId: string; chatId?: string }>()
-  const game = GAMES.find((g) => g.id === gameId) ?? GAMES[0]
+  const { game, isLoading, error } = useGame(gameId!)
+
+  if (isLoading || !game) {
+    return (
+      <div className="fixed inset-0 bg-background flex items-center justify-center">
+        <span className="text-sm text-muted-foreground">
+          {error ?? 'Loading…'}
+        </span>
+      </div>
+    )
+  }
 
   if (!chatId) {
     return <NewChat gameId={gameId!} game={game} />

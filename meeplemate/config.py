@@ -101,7 +101,7 @@ class ChatServiceConfig(BaseModel):
     model_name: str = Field(description="Name of the chat model")
     endpoint_type: Literal["tgi", "openai"] = Field(description="Type of endpoint (TGI or OpenAI-compatible)")
     endpoint: str = Field(description="Chat service endpoint URL")
-    max_new_tokens: int = Field(default=1024, ge=1, description="Maximum tokens to generate")
+    max_new_tokens: int = Field(default=3072, ge=1, description="Maximum tokens to generate")
     timeout: int = Field(default=900, ge=1, description="Request timeout in seconds")
     api_key: SecretStr | None = Field(default=None, description="API key for authentication (if required)")
     explicit_disable_thinking: bool = Field(default=False, description="Explicitly disable thinking for certain models")
@@ -401,7 +401,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
             chat_model = ChatOpenAI(
                 model=config.model_name,
                 # max_tokens=config.max_new_tokens,
-                max_tokens=3072,
+                max_tokens=config.max_new_tokens,
                 presence_penalty=1.5,
                 temperature=0.6,
                 top_p=0.8,

@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from meeplemate.chatloop import ChatLoopServiceInput, cast
 from meeplemate.component_system import subsystem
 from meeplemate.config import Config, System, create_app_system
-from meeplemate.db.datalayer import TextMessagePart
+from meeplemate.db.datalayer import Pagination, TextMessagePart
 from meeplemate.server.auth import AuthUser, get_current_user
 from meeplemate.server.deps import ApiDeps
 
@@ -40,6 +40,8 @@ class GameInfo(BaseModel):
     id: str
     name: str
     summary: str | None = None
+    emoji: str | None = None
+    background_color: str | None = None
 
 
 class PageInfo(BaseModel):
@@ -65,7 +67,37 @@ async def get_games(
     )
     return GamesPage(
         pageInfo=PageInfo(hasNextPage=has_next, startCursor=start_cursor, endCursor=end_cursor),
-        data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary")) for g in games],
+        data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary"), emoji=g.get("emoji"), background_color=g.get("background_color")) for g in games],
+    )
+
+
+@app.get("/api/games/{game_id}")
+async def get_game(
+    game_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> GameInfo:
+    """Get a single game by ID."""
+    manifest = await _deps.game_service.get_manifest(game_id)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Game not found")
+    return GameInfo(id=manifest["game_id"], name=manifest["name"], summary=manifest.get("summary"), emoji=manifest.get("emoji"), background_color=manifest.get("background_color"))
+
+
+@app.get("/api/recent-games")
+async def get_recent_games(
+    first: int = Query(default=5, ge=1, le=20),
+    cursor: str | None = Query(default=None),
+    user: AuthUser = Depends(get_current_user),
+) -> GamesPage:
+    """Games the current user has most recently chatted in, newest-first."""
+    recent = await _deps.data_layer.list_recent_game_ids(
+        user_id=user.uid,
+        pagination=Pagination(first=first, cursor=cursor),
+    )
+    games = await _deps.game_service.get_games_by_ids(recent.data)
+    return GamesPage(
+        pageInfo=PageInfo(hasNextPage=recent.pageInfo.hasNextPage, startCursor=recent.pageInfo.startCursor, endCursor=recent.pageInfo.endCursor),
+        data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary"), emoji=g.get("emoji"), background_color=g.get("background_color")) for g in games],
     )
 
 

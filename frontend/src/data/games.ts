@@ -6,6 +6,33 @@ export interface Game {
   bgColor: string
 }
 
+export interface GameInfo {
+  id: string
+  name: string
+  summary?: string
+  emoji?: string
+  background_color?: string
+}
+
+export interface GamesPage {
+  pageInfo: {
+    hasNextPage: boolean
+    startCursor?: string
+    endCursor?: string
+  }
+  data: GameInfo[]
+}
+
+export function apiGameToGame(g: GameInfo): Game {
+  return {
+    id: g.id,
+    name: g.name,
+    shortName: g.name,
+    emoji: g.emoji ?? '🎲',
+    bgColor: g.background_color ?? '#374151',
+  }
+}
+
 export const GAMES: Game[] = [
   // Games from eval test cases
   { id: 'munchkin', name: 'Munchkin', shortName: 'Munchkin', emoji: '⚔️', bgColor: '#7f1d1d' },
