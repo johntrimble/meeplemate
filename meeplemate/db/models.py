@@ -6,6 +6,33 @@ from sqlalchemy.sql import func
 from meeplemate.db.base import Base
 
 
+class AppUser(Base):
+    """Firebase-authenticated user record with optional metadata overrides."""
+    __tablename__ = "app_user"
+
+    user_id = sa.Column(sa.Text, primary_key=True)  # Firebase UID
+    email = sa.Column(sa.Text, nullable=True)
+    name = sa.Column(sa.Text, nullable=True)
+    # Stores per-user rate limit overrides under key "rate_limits":
+    # {"rate_limits": {"8H": 100000, "7D": 400000, "30D": 1000000}}
+    metadata_ = sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb"))
+
+
+class TokenUsage(Base):
+    """Token usage records for rolling-window rate limiting."""
+    __tablename__ = "token_usage"
+
+    id = sa.Column(UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
+    user_id = sa.Column(sa.Text, nullable=False)
+    tokens_used = sa.Column(sa.Integer, nullable=False)
+    recorded_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        sa.Index("ix_token_usage_user_recorded", "user_id", "recorded_at"),
+        sa.Index("ix_token_usage_recorded", "recorded_at"),
+    )
+
+
 class Chat(Base):
     __tablename__ = "chat"
 

@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Generic, Literal, NotRequired, Optional, TypedDict, TypeVar, Union
 from uuid import UUID
+
 
 # ---------------------------------------------------------------------------
 # Provider metadata
@@ -170,6 +172,22 @@ class MessageDict(TypedDict):
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class UserRecord:
+    """A persisted application user (backed by Firebase Auth)."""
+    uid: str
+    email: Optional[str]
+    name: Optional[str]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class WindowStats:
+    """Aggregate token usage for a rolling time window."""
+    total_tokens: int
+    oldest_recorded_at: Optional[datetime]
+
+
 class BaseDataLayer(ABC):
     """Abstract persistence interface for MeepleMate.
 
@@ -228,6 +246,45 @@ class BaseDataLayer(ABC):
         after streaming completes, not raw SSE chunks. Each element is a
         discriminated-union dict keyed on ``type``.
         """
+
+    # --- Users ---
+
+    @abstractmethod
+    async def upsert_user(self, uid: str, email: Optional[str], name: Optional[str]) -> UserRecord:
+        """Upsert a user row (keyed by Firebase UID), syncing email/name. Returns the full record."""
+
+    # --- Token usage ---
+
+    @abstractmethod
+    async def get_window_stats(self, user_id: str, since: datetime) -> WindowStats:
+        """Sum of tokens and oldest record timestamp for user_id in the rolling window [since, now]."""
+
+    @abstractmethod
+    async def get_app_window_stats(self, since: datetime) -> WindowStats:
+        """Sum of tokens and oldest record timestamp across ALL users in the rolling window [since, now]."""
+
+    @abstractmethod
+    async def check_and_reserve_user(
+        self,
+        user_id: str,
+        window_params: list[tuple[str, datetime]],  # (window_name, since)
+        estimated: int,
+        user_limits: dict[str, int],
+    ) -> list[WindowStats]:
+        """Within a per-user pg_advisory_xact_lock: fetch per-user window stats and check limits.
+
+        If any limit would be exceeded (used + estimated > limit): commit (release lock) and
+        return the stats WITHOUT inserting a reservation.
+        If all limits are satisfied: INSERT estimated tokens as a reservation, commit, and
+        return the stats (before the reservation).
+
+        The caller is responsible for re-checking whether the returned stats indicate a
+        violation and raising 429 accordingly.
+        """
+
+    @abstractmethod
+    async def record_token_usage(self, user_id: str, tokens: int) -> None:
+        """Persist a token usage record for user_id."""
 
     # --- Lifecycle ---
 

@@ -55,6 +55,7 @@ from meeplemate.search import (
     ChunkSearchService, build_chunk_search_service, build_chunk_search_service_2
 )
 from meeplemate.server.deps import ApiDeps
+from meeplemate.server.rate_limit import RateLimitConfig, RateLimiter
 
 
 class IngestConfig(BaseModel):
@@ -185,6 +186,7 @@ class Config(BaseSettings):
     model_name: str = Field(description="Primary model name for tokenizer/other purposes")
     qa_chain_config: QAChainConfig = Field(default_factory=QAChainConfig)
     firebase: FirebaseConfig = Field(default_factory=FirebaseConfig)
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     auth_bypass: bool = Field(default=False, description="Skip token validation and use a hardcoded user (MM_AUTH_BYPASS)")
     auth_bypass_user: Optional[str] = Field(
         default=None,
@@ -349,6 +351,7 @@ class AppServices(TypedDict):
     chatloop_service: ChatLoopService
     qa_service: QAService
     game_service: GameService
+    rate_limiter: RateLimiter
 
 
 class GameInfoDao:
@@ -607,12 +610,17 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 factory(PostgresDataLayer)(),
                 {"engine": "async_engine"},
             ),
+            "rate_limiter": (
+                factory(RateLimiter)(cfg.rate_limit),
+                ["pg_data_layer"],
+            ),
             "api_deps": (
                 factory(ApiDeps)(),
                 {
                     "chatloop_service": "chatloop_service",
                     "game_service": "game_service",
                     "data_layer": "pg_data_layer",
+                    "rate_limiter": "rate_limiter",
                 }
             )
         }

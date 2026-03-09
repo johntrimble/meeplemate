@@ -1,9 +1,11 @@
 import base64
+import hashlib
 from datetime import datetime
 from typing import Any, Optional, cast
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -16,8 +18,16 @@ from meeplemate.db.datalayer import (
     PageInfo,
     Pagination,
     PaginatedResponse,
+    UserRecord,
+    WindowStats,
 )
-from meeplemate.db.models import Chat, ChatMessage, ChatMessagePart
+from meeplemate.db.models import AppUser, Chat, ChatMessage, ChatMessagePart, TokenUsage
+
+
+def _user_lock_key(user_id: str) -> int:
+    """Deterministic 63-bit positive integer for pg_advisory_xact_lock."""
+    digest = hashlib.blake2b(user_id.encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big") & 0x7FFFFFFFFFFFFFFF
 
 
 def _encode_cursor(dt: Any) -> str:
@@ -198,6 +208,96 @@ class PostgresDataLayer(BaseDataLayer):
                         payload=part,
                     )
                 )
+            await session.commit()
+
+    # --- Users ---
+
+    async def upsert_user(self, uid: str, email: Optional[str], name: Optional[str]) -> UserRecord:
+        async with self._session_factory() as session:
+            stmt = (
+                pg_insert(AppUser)
+                .values(user_id=uid, email=email, name=name)
+                .on_conflict_do_update(
+                    index_elements=["user_id"],
+                    set_={"email": email, "name": name},
+                )
+                .returning(AppUser)
+            )
+            result = await session.execute(stmt)
+            row = result.scalar_one()
+            await session.commit()
+            return UserRecord(
+                uid=str(row.user_id),
+                email=row.email,
+                name=row.name,
+                metadata=dict(row.metadata_ or {}),
+            )
+
+    # --- Token usage ---
+
+    async def get_window_stats(self, user_id: str, since: datetime) -> WindowStats:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(
+                    func.coalesce(func.sum(TokenUsage.tokens_used), 0),
+                    func.min(TokenUsage.recorded_at),
+                ).where(
+                    TokenUsage.user_id == user_id,
+                    TokenUsage.recorded_at >= since,
+                )
+            )
+            total, oldest = result.one()
+            return WindowStats(total_tokens=int(total), oldest_recorded_at=oldest)
+
+    async def get_app_window_stats(self, since: datetime) -> WindowStats:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(
+                    func.coalesce(func.sum(TokenUsage.tokens_used), 0),
+                    func.min(TokenUsage.recorded_at),
+                ).where(TokenUsage.recorded_at >= since)
+            )
+            total, oldest = result.one()
+            return WindowStats(total_tokens=int(total), oldest_recorded_at=oldest)
+
+    async def check_and_reserve_user(
+        self,
+        user_id: str,
+        window_params: list[tuple[str, datetime]],
+        estimated: int,
+        user_limits: dict[str, int],
+    ) -> list[WindowStats]:
+        lock_key = _user_lock_key(user_id)
+        async with self._session_factory() as session:
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+
+            stats: list[WindowStats] = []
+            violated = False
+            for name, since in window_params:
+                result = await session.execute(
+                    select(
+                        func.coalesce(func.sum(TokenUsage.tokens_used), 0),
+                        func.min(TokenUsage.recorded_at),
+                    ).where(
+                        TokenUsage.user_id == user_id,
+                        TokenUsage.recorded_at >= since,
+                    )
+                )
+                total, oldest = result.one()
+                ws = WindowStats(total_tokens=int(total), oldest_recorded_at=oldest)
+                stats.append(ws)
+                if int(total) + estimated > user_limits[name]:
+                    violated = True
+
+            if not violated:
+                session.add(TokenUsage(user_id=user_id, tokens_used=estimated))
+
+            await session.commit()
+            return stats
+
+    async def record_token_usage(self, user_id: str, tokens: int) -> None:
+        async with self._session_factory() as session:
+            session.add(TokenUsage(user_id=user_id, tokens_used=tokens))
             await session.commit()
 
     # --- Lifecycle ---
