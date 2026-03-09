@@ -2,7 +2,8 @@ import json
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from typing import Literal
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
@@ -171,6 +172,7 @@ class ChatMessageOut(BaseModel):
     id: str
     role: str
     parts: list[MessagePartOut]
+    feedback: int | None = None
 
 
 @app.get("/api/chats/{chat_id}/messages")
@@ -186,6 +188,45 @@ async def get_chat_messages(
         raise HTTPException(status_code=404, detail="Chat not found")
     messages = await deps.data_layer.get_messages(chat_uuid)
     return [ChatMessageOut.model_validate(m) for m in messages]
+
+
+# ---------------------------------------------------------------------------
+# Feedback
+# ---------------------------------------------------------------------------
+
+class FeedbackRequest(BaseModel):
+    value: Literal[0, 1]
+
+
+@app.put("/api/messages/{message_id}/feedback", status_code=204)
+async def set_message_feedback(
+    message_id: str,
+    body: FeedbackRequest,
+    user: AuthUser = Depends(get_current_user),
+    deps: ApiDeps = Depends(get_deps),
+) -> Response:
+    """Upsert thumbs-up (1) or thumbs-down (0) feedback for a message."""
+    msg_uuid = UUID(message_id)
+    owner = await deps.data_layer.get_message_owner(msg_uuid)
+    if owner != user.uid:
+        raise HTTPException(status_code=404, detail="Message not found")
+    await deps.data_layer.upsert_feedback(msg_uuid, body.value)
+    return Response(status_code=204)
+
+
+@app.delete("/api/messages/{message_id}/feedback", status_code=204)
+async def delete_message_feedback(
+    message_id: str,
+    user: AuthUser = Depends(get_current_user),
+    deps: ApiDeps = Depends(get_deps),
+) -> Response:
+    """Remove feedback for a message."""
+    msg_uuid = UUID(message_id)
+    owner = await deps.data_layer.get_message_owner(msg_uuid)
+    if owner != user.uid:
+        raise HTTPException(status_code=404, detail="Message not found")
+    await deps.data_layer.delete_feedback(msg_uuid)
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------
