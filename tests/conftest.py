@@ -99,6 +99,9 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
     }
     mock_data_layer.get_messages.return_value = []
     mock_data_layer.save_message.return_value = None
+    mock_data_layer.get_message_owner.return_value = "test-uid"
+    mock_data_layer.upsert_feedback.return_value = None
+    mock_data_layer.delete_feedback.return_value = None
 
     mock_deps = ApiDeps(
         chatloop_service=mock_chatloop,

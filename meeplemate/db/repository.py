@@ -180,10 +180,8 @@ class PostgresDataLayer(BaseDataLayer):
                 MessageDict(
                     id=str(msg.message_id),
                     role=str(msg.role),
-                    parts=[
-                        p.payload
-                        for p in sorted(msg.parts, key=lambda p: p.ordinal)
-                    ],
+                    parts=[p.payload for p in sorted(msg.parts, key=lambda p: p.ordinal)],
+                    feedback=msg.feedback,
                 )
                 for msg in messages
             ]
@@ -208,6 +206,36 @@ class PostgresDataLayer(BaseDataLayer):
                         payload=part,
                     )
                 )
+            await session.commit()
+
+    # --- Feedback ---
+
+    async def get_message_owner(self, message_id: UUID) -> str | None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Chat.user_id)
+                .join(ChatMessage, ChatMessage.chat_id == Chat.chat_id)
+                .where(ChatMessage.message_id == message_id)
+            )
+            row = result.scalar_one_or_none()
+            return str(row) if row is not None else None
+
+    async def upsert_feedback(self, message_id: UUID, value: int, comment: str | None = None) -> None:
+        async with self._session_factory() as session:
+            await session.execute(
+                ChatMessage.__table__.update()
+                .where(ChatMessage.message_id == message_id)
+                .values(feedback=value)
+            )
+            await session.commit()
+
+    async def delete_feedback(self, message_id: UUID) -> None:
+        async with self._session_factory() as session:
+            await session.execute(
+                ChatMessage.__table__.update()
+                .where(ChatMessage.message_id == message_id)
+                .values(feedback=None)
+            )
             await session.commit()
 
     # --- Users ---

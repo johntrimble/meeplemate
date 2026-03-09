@@ -49,6 +49,7 @@ class ChatMessage(Base):
     chat_id = sa.Column(UUID(as_uuid=True), nullable=False, index=True)
     role = sa.Column(sa.Text, nullable=False)  # optionally an Enum
     created_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=func.now())
+    feedback = sa.Column(sa.Integer, nullable=True)  # 0 = thumbs down, 1 = thumbs up, NULL = no feedback
 
     parts = orm.relationship("ChatMessagePart", back_populates="message", cascade="all, delete-orphan")
 

@@ -186,7 +186,18 @@ function UserMsg({ message }: { message: UIMessage }) {
   )
 }
 
-function AssistantMsg({ message, isStreaming }: { message: UIMessage; isStreaming: boolean }) {
+function AssistantMsg({
+  message,
+  isStreaming,
+  feedback,
+  onFeedback,
+}: {
+  message: UIMessage
+  isStreaming: boolean
+  feedback: 0 | 1 | null
+  onFeedback: (v: 0 | 1 | null) => void
+}) {
+  const authFetch = useAuthFetch()
   const reasoningParts = message.parts.filter(isReasoningUIPart)
   const textParts = message.parts.filter(isTextUIPart)
   const combinedReasoning = reasoningParts.map((p) => p.text).join('\n\n')
@@ -195,6 +206,20 @@ function AssistantMsg({ message, isStreaming }: { message: UIMessage; isStreamin
 
   const handleCopy = () => {
     navigator.clipboard.writeText(combinedText).catch(() => {})
+  }
+
+  const handleFeedback = async (clicked: 0 | 1) => {
+    if (feedback === clicked) {
+      await authFetch(`/api/messages/${message.id}/feedback`, { method: 'DELETE' })
+      onFeedback(null)
+    } else {
+      await authFetch(`/api/messages/${message.id}/feedback`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: clicked }),
+      })
+      onFeedback(clicked)
+    }
   }
 
   return (
@@ -217,11 +242,19 @@ function AssistantMsg({ message, isStreaming }: { message: UIMessage; isStreamin
           <MessageAction tooltip="Copy" onClick={handleCopy}>
             <CopyIcon className="size-4" />
           </MessageAction>
-          <MessageAction tooltip="Good response">
-            <ThumbsUpIcon className="size-4" />
+          <MessageAction
+            tooltip="Good response"
+            onClick={() => handleFeedback(1)}
+            className={feedback === 1 ? 'text-primary' : undefined}
+          >
+            <ThumbsUpIcon className="size-4" fill={feedback === 1 ? 'currentColor' : 'none'} />
           </MessageAction>
-          <MessageAction tooltip="Bad response">
-            <ThumbsDownIcon className="size-4" />
+          <MessageAction
+            tooltip="Bad response"
+            onClick={() => handleFeedback(0)}
+            className={feedback === 0 ? 'text-primary' : undefined}
+          >
+            <ThumbsDownIcon className="size-4" fill={feedback === 0 ? 'currentColor' : 'none'} />
           </MessageAction>
           <MessageAction tooltip="Regenerate">
             <RefreshCwIcon className="size-4" />
@@ -529,6 +562,14 @@ function ChatView({
   const { getIdToken } = useAuth()
   const bottomRef = useRef<HTMLDivElement>(null)
   const pendingSent = useRef(false)
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, 0 | 1 | null>>(() => {
+    const map: Record<string, 0 | 1 | null> = {}
+    for (const msg of initialMessages) {
+      const fb = (msg as UIMessage & { feedback?: number | null }).feedback
+      if (fb === 0 || fb === 1) map[msg.id] = fb
+    }
+    return map
+  })
 
   const { messages: chatMessages, sendMessage, status } = useChat({
     messages: initialMessages,
@@ -590,6 +631,8 @@ function ChatView({
                   key={msg.id}
                   message={msg}
                   isStreaming={isStreaming && i === displayMessages.length - 1}
+                  feedback={feedbackMap[msg.id] ?? null}
+                  onFeedback={(v) => setFeedbackMap((prev) => ({ ...prev, [msg.id]: v }))}
                 />
               ),
             )}

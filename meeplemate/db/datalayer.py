@@ -165,6 +165,7 @@ class MessageDict(TypedDict):
     id: str
     role: str  # "user" | "assistant" | "system"
     parts: list[MessagePart]  # same shape going in and coming out
+    feedback: NotRequired[int | None]  # 0 = thumbs down, 1 = thumbs up, absent/None = no feedback
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +230,7 @@ class BaseDataLayer(ABC):
 
     @abstractmethod
     async def get_messages(self, chat_id: UUID) -> list[MessageDict]:
-        """All messages for a chat, ordered chronologically."""
+        """All messages for a chat, ordered chronologically. Includes ``feedback`` (0/1/None)."""
 
     @abstractmethod
     async def save_message(
@@ -246,6 +247,20 @@ class BaseDataLayer(ABC):
         after streaming completes, not raw SSE chunks. Each element is a
         discriminated-union dict keyed on ``type``.
         """
+
+    # --- Feedback ---
+
+    @abstractmethod
+    async def get_message_owner(self, message_id: UUID) -> str | None:
+        """Return the user_id of the chat that owns this message, or None if not found."""
+
+    @abstractmethod
+    async def upsert_feedback(self, message_id: UUID, value: int) -> None:
+        """Set feedback for a message (0 = thumbs down, 1 = thumbs up)."""
+
+    @abstractmethod
+    async def delete_feedback(self, message_id: UUID) -> None:
+        """Remove feedback for a message."""
 
     # --- Users ---
 
