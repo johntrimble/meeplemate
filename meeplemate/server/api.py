@@ -2,7 +2,7 @@ import json
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
@@ -12,21 +12,22 @@ from meeplemate.config import Config, System, create_app_system
 from meeplemate.db.datalayer import Pagination, TextMessagePart
 from meeplemate.server.auth import AuthUser, get_current_user
 from meeplemate.server.deps import ApiDeps
-
-_deps: ApiDeps
+from meeplemate.server.rate_limit import RateLimitState, TokenCountingCallback, check_rate_limit
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _deps
-
     settings: Config = Config()
     app_system: System = create_app_system(settings)
     system = subsystem(app_system, names=["api_deps"])
 
     async with system.astart() as started_system:
-        _deps = started_system["api_deps"]
+        app.state.deps = started_system["api_deps"]
         yield
+
+
+def get_deps(request: Request) -> ApiDeps:
+    return request.app.state.deps
 
 
 app = FastAPI(lifespan=lifespan)
@@ -60,9 +61,10 @@ async def get_games(
     first: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
     user: AuthUser = Depends(get_current_user),
+    deps: ApiDeps = Depends(get_deps),
 ) -> GamesPage:
     """List of all supported games with pagination."""
-    games, has_next, start_cursor, end_cursor = await _deps.game_service.list_games(
+    games, has_next, start_cursor, end_cursor = await deps.game_service.list_games(
         after=cursor, limit=first
     )
     return GamesPage(
@@ -75,9 +77,10 @@ async def get_games(
 async def get_game(
     game_id: str,
     user: AuthUser = Depends(get_current_user),
+    deps: ApiDeps = Depends(get_deps),
 ) -> GameInfo:
     """Get a single game by ID."""
-    manifest = await _deps.game_service.get_manifest(game_id)
+    manifest = await deps.game_service.get_manifest(game_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail="Game not found")
     return GameInfo(id=manifest["game_id"], name=manifest["name"], summary=manifest.get("summary"), emoji=manifest.get("emoji"), background_color=manifest.get("background_color"))
@@ -88,13 +91,14 @@ async def get_recent_games(
     first: int = Query(default=5, ge=1, le=20),
     cursor: str | None = Query(default=None),
     user: AuthUser = Depends(get_current_user),
+    deps: ApiDeps = Depends(get_deps),
 ) -> GamesPage:
     """Games the current user has most recently chatted in, newest-first."""
-    recent = await _deps.data_layer.list_recent_game_ids(
+    recent = await deps.data_layer.list_recent_game_ids(
         user_id=user.uid,
         pagination=Pagination(first=first, cursor=cursor),
     )
-    games = await _deps.game_service.get_games_by_ids(recent.data)
+    games = await deps.game_service.get_games_by_ids(recent.data)
     return GamesPage(
         pageInfo=PageInfo(hasNextPage=recent.pageInfo.hasNextPage, startCursor=recent.pageInfo.startCursor, endCursor=recent.pageInfo.endCursor),
         data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary"), emoji=g.get("emoji"), background_color=g.get("background_color")) for g in games],
@@ -121,10 +125,11 @@ async def list_game_chats(
     first: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
     user: AuthUser = Depends(get_current_user),
+    deps: ApiDeps = Depends(get_deps),
 ) -> ChatsPage:
     """Return chats for a game belonging to the authenticated user, newest first."""
     from meeplemate.db.datalayer import Pagination
-    result = await _deps.data_layer.list_chats(game_id, user.uid, Pagination(first=first, cursor=cursor))
+    result = await deps.data_layer.list_chats(game_id, user.uid, Pagination(first=first, cursor=cursor))
     return ChatsPage(
         pageInfo=PageInfo(
             hasNextPage=result.pageInfo.hasNextPage,
@@ -143,16 +148,17 @@ class CreateChatResponse(BaseModel):
 async def create_chat(
     game_id: str,
     user: AuthUser = Depends(get_current_user),
+    deps: ApiDeps = Depends(get_deps),
 ) -> CreateChatResponse:
     """
     Create a new chat for a game scoped to the authenticated user.
     Only called when the user actually sends their first message.
     """
-    manifest = await _deps.game_service.get_manifest(game_id)
+    manifest = await deps.game_service.get_manifest(game_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Game '{game_id}' not found")
 
-    chat_id = await _deps.data_layer.create_chat(game_id, user.uid)
+    chat_id = await deps.data_layer.create_chat(game_id, user.uid)
     return CreateChatResponse(chat_id=str(chat_id))
 
 
@@ -171,13 +177,14 @@ class ChatMessageOut(BaseModel):
 async def get_chat_messages(
     chat_id: str,
     user: AuthUser = Depends(get_current_user),
+    deps: ApiDeps = Depends(get_deps),
 ) -> list[ChatMessageOut]:
     """Return all messages for a chat in chronological order."""
     chat_uuid = UUID(chat_id)
-    chat = await _deps.data_layer.get_chat(chat_uuid)
+    chat = await deps.data_layer.get_chat(chat_uuid)
     if chat is None or chat["user_id"] != user.uid:
         raise HTTPException(status_code=404, detail="Chat not found")
-    messages = await _deps.data_layer.get_messages(chat_uuid)
+    messages = await deps.data_layer.get_messages(chat_uuid)
     return [ChatMessageOut.model_validate(m) for m in messages]
 
 
@@ -195,22 +202,24 @@ async def stream_chat(
     chat_id: str,
     request: StreamChatRequest,
     user: AuthUser = Depends(get_current_user),
+    rate_state: RateLimitState = Depends(check_rate_limit),
+    deps: ApiDeps = Depends(get_deps),
 ):
     """
     Stream an assistant response using the Vercel AI UI message stream protocol.
     https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
     """
-    manifest = await _deps.game_service.get_manifest(request.game_id)
+    manifest = await deps.game_service.get_manifest(request.game_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Game '{request.game_id}' not found")
 
     chat_uuid = UUID(chat_id)
-    chat = await _deps.data_layer.get_chat(chat_uuid)
+    chat = await deps.data_layer.get_chat(chat_uuid)
     if chat is None or chat["user_id"] != user.uid:
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    chatloop_service = _deps.chatloop_service
-    data_layer = _deps.data_layer
+    chatloop_service = deps.chatloop_service
+    data_layer = deps.data_layer
 
     # Persist the user message
     await data_layer.save_message(
@@ -239,6 +248,11 @@ async def stream_chat(
         "manifest": manifest,
         "thread_id": chat_id,
     }
+
+    token_callback = TokenCountingCallback(
+        estimated=deps.rate_limiter.config.estimated_tokens_per_request,
+        output_token_multiplier=deps.rate_limiter.config.output_token_multiplier,
+    )
 
     async def sse_generator():
         # https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
@@ -270,7 +284,13 @@ async def stream_chat(
 
         final_answer = ""
 
-        async for _, _, event in chatloop_service.astream(service_input, subgraphs=True, stream_mode=["custom"]):
+        from langchain_core.runnables import RunnableConfig
+        async for _, _, event in chatloop_service.astream(
+            service_input,
+            subgraphs=True,
+            stream_mode=["custom"],
+            config=RunnableConfig(callbacks=[token_callback]),
+        ):
             match event:
                 case {"type": "mm_step", "description": description}:
                     for e in open_step(description):
@@ -297,11 +317,18 @@ async def stream_chat(
             parts=[{"type": "text", "id": text_id, "text": final_answer}],
         )
 
+        try:
+            estimated = deps.rate_limiter.config.estimated_tokens_per_request
+            await data_layer.record_token_usage(user.uid, token_callback.tokens - estimated)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("Failed to record token usage", exc_info=True)
+
         yield f'data: {json.dumps({"type": "finish"})}\n\n'
         yield 'data: [DONE]\n\n'
 
     return StreamingResponse(
         sse_generator(),
         media_type="text/event-stream",
-        headers={"x-vercel-ai-ui-message-stream": "v1"},
+        headers={"x-vercel-ai-ui-message-stream": "v1", **rate_state.headers()},
     )
