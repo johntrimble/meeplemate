@@ -40,14 +40,14 @@ WINDOWS: list[tuple[str, int]] = [
 class RateLimitConfig(BaseModel):
     """Token-based rate limiting configuration (loaded from MM_RATE_LIMIT__* env vars)."""
 
-    app_8h: int = Field(default=10_000_000, description="App-wide 8-hour token limit")
-    app_7d: int = Field(default=50_000_000, description="App-wide 7-day token limit")
-    app_30d: int = Field(default=150_000_000, description="App-wide 30-day token limit")
-    user_8h: int = Field(default=50_000, description="Per-user 8-hour token limit")
-    user_7d: int = Field(default=200_000, description="Per-user 7-day token limit")
-    user_30d: int = Field(default=500_000, description="Per-user 30-day token limit")
+    app_8h: int = Field(default=20_000_000, description="App-wide 8-hour token limit")
+    app_7d: int = Field(default=125_000_000, description="App-wide 7-day token limit")
+    app_30d: int = Field(default=500_000_000, description="App-wide 30-day token limit")
+    user_8h: int = Field(default=400_000, description="Per-user 8-hour token limit")
+    user_7d: int = Field(default=2_500_000, description="Per-user 7-day token limit")
+    user_30d: int = Field(default=10_000_000, description="Per-user 30-day token limit")
     estimated_tokens_per_request: int = Field(
-        default=2_000,
+        default=60_775,
         description="Estimated tokens per request used for pre-flight limit check",
     )
     output_token_multiplier: int = Field(
