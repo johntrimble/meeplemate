@@ -1,4 +1,4 @@
-"""API unit tests for the POST /api/messages/{id}/retry endpoint."""
+"""API unit tests for regeneration via POST /api/chats/{id}/stream with retry_message_id."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
@@ -9,7 +9,8 @@ from fastapi.testclient import TestClient
 
 MSG_ID = "00000000-0000-0000-0000-000000000002"
 CHAT_ID = "00000000-0000-0000-0000-000000000001"
-RETRY_URL = f"/api/messages/{MSG_ID}/retry"
+STREAM_URL = f"/api/chats/{CHAT_ID}/stream"
+RETRY_BODY = {"message": "", "game_id": "test-game", "retry_message_id": MSG_ID}
 
 
 async def _empty_astream(*args, **kwargs):
@@ -32,25 +33,10 @@ def test_retry_success(api_client: TestClient, mock_data_layer: AsyncMock):
     """A valid retry deactivates the old message and streams back a new answer."""
     from meeplemate.server import api
 
-    api.app.state  # ensure app is set up via the TestClient fixture
-
-    # Configure chatloop to yield one answer event
-    mock_chatloop = api.app.state.deps.chatloop_service if hasattr(api.app.state, "deps") else None
-
-    # Access the mock chatloop via the client fixture's internal mock_deps
-    # The api_client fixture sets up mock_deps; we need to configure the chatloop mock.
-    # We configure it via the fixture's mock_data_layer as a proxy — instead, we
-    # look up the chatloop from the fixture's setup. Since we can't access it directly,
-    # we patch the astream on the mock provided by the fixture.
-    #
-    # The conftest fixture creates mock_chatloop = MagicMock() inside api_client.
-    # We need to reach it. The cleanest way: configure it via the app.state.deps
-    # which is set by the mock_lifespan in conftest.
-    # However that's set inside the TestClient context. We can access it here:
     deps = api.app.state.deps
     deps.chatloop_service.astream = _answer_astream
 
-    resp = api_client.post(RETRY_URL)
+    resp = api_client.post(STREAM_URL, json=RETRY_BODY)
 
     assert resp.status_code == 200
     mock_data_layer.get_message_owner.assert_called_once_with(UUID(MSG_ID))
@@ -59,6 +45,11 @@ def test_retry_success(api_client: TestClient, mock_data_layer: AsyncMock):
         UUID(CHAT_ID), UUID(MSG_ID)
     )
     mock_data_layer.save_message.assert_called()
+    # User message must NOT be saved for a retry
+    save_calls = mock_data_layer.save_message.call_args_list
+    assert all(
+        call.kwargs.get("role") == "assistant" for call in save_calls
+    ), "save_message should only be called for the new assistant message, not a user message"
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +60,7 @@ def test_retry_success(api_client: TestClient, mock_data_layer: AsyncMock):
 def test_retry_wrong_owner(api_client: TestClient, mock_data_layer: AsyncMock):
     """Returns 404 when the message belongs to a different user."""
     mock_data_layer.get_message_owner.return_value = "other-uid"
-    resp = api_client.post(RETRY_URL)
+    resp = api_client.post(STREAM_URL, json=RETRY_BODY)
     assert resp.status_code == 404
     mock_data_layer.deactivate_messages_from.assert_not_called()
 
@@ -77,7 +68,7 @@ def test_retry_wrong_owner(api_client: TestClient, mock_data_layer: AsyncMock):
 def test_retry_message_not_found(api_client: TestClient, mock_data_layer: AsyncMock):
     """Returns 404 when the message does not exist."""
     mock_data_layer.get_message_owner.return_value = None
-    resp = api_client.post(RETRY_URL)
+    resp = api_client.post(STREAM_URL, json=RETRY_BODY)
     assert resp.status_code == 404
     mock_data_layer.deactivate_messages_from.assert_not_called()
 
@@ -94,7 +85,7 @@ def test_retry_user_message(api_client: TestClient, mock_data_layer: AsyncMock):
         "chat_id": CHAT_ID,
         "role": "user",
     }
-    resp = api_client.post(RETRY_URL)
+    resp = api_client.post(STREAM_URL, json=RETRY_BODY)
     assert resp.status_code == 400
     mock_data_layer.deactivate_messages_from.assert_not_called()
 
@@ -111,7 +102,7 @@ def test_retry_game_not_found(api_client: TestClient, mock_data_layer: AsyncMock
     deps = api_module.app.state.deps
     deps.game_service.get_manifest.return_value = None
     try:
-        resp = api_client.post(RETRY_URL)
+        resp = api_client.post(STREAM_URL, json=RETRY_BODY)
     finally:
         deps.game_service.get_manifest.return_value = {
             "game_id": "test-game",
