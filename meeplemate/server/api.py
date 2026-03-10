@@ -373,3 +373,148 @@ async def stream_chat(
         media_type="text/event-stream",
         headers={"x-vercel-ai-ui-message-stream": "v1", **rate_state.headers()},
     )
+
+
+# ---------------------------------------------------------------------------
+# Retry (regenerate) an assistant message
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/messages/{message_id}/retry")
+async def retry_message(
+    message_id: str,
+    user: AuthUser = Depends(get_current_user),
+    rate_state: RateLimitState = Depends(check_rate_limit),
+    deps: ApiDeps = Depends(get_deps),
+):
+    """
+    Regenerate an assistant response.
+
+    Deactivates the specified assistant message and all subsequent messages in
+    the same chat, then re-runs the QA pipeline on the remaining conversation
+    history and streams back a new response using the Vercel AI UI message
+    stream protocol.
+    """
+    msg_uuid = UUID(message_id)
+
+    owner = await deps.data_layer.get_message_owner(msg_uuid)
+    if owner is None or owner != user.uid:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    msg_info = await deps.data_layer.get_message(msg_uuid)
+    if msg_info is None or msg_info["role"] != "assistant":
+        raise HTTPException(status_code=400, detail="Can only retry assistant messages")
+
+    chat_uuid = UUID(msg_info["chat_id"])
+    chat = await deps.data_layer.get_chat(chat_uuid)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    manifest = await deps.game_service.get_manifest(chat["game_id"])
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    # Soft-delete the target message and all subsequent messages
+    await deps.data_layer.deactivate_messages_from(chat_uuid, msg_uuid)
+
+    # Fetch trimmed history (only active messages remain)
+    messages = await deps.data_layer.get_messages(chat_uuid)
+
+    langchain_messages: list[AnyMessage] = []
+    for message in messages:
+        text_parts = [p for p in message["parts"] if p["type"] == "text"]
+        content = cast(TextMessagePart, text_parts[-1])["text"] if text_parts else ""
+        if message["role"] == "user":
+            langchain_messages.append(HumanMessage(content=content))
+        else:
+            langchain_messages.append(AIMessage(content=content))
+
+    service_input: ChatLoopServiceInput = {
+        "messages": langchain_messages,
+        "manifest": manifest,
+        "thread_id": str(chat_uuid),
+    }
+
+    token_callback = TokenCountingCallback(
+        estimated=deps.rate_limiter.config.estimated_tokens_per_request,
+        output_token_multiplier=deps.rate_limiter.config.output_token_multiplier,
+    )
+
+    chatloop_service = deps.chatloop_service
+    data_layer = deps.data_layer
+
+    async def sse_generator():
+        msg_id = uuid4()
+        text_id = str(uuid4())
+
+        yield f'data: {json.dumps({"type": "start", "messageId": str(msg_id)})}\n\n'
+
+        step_is_open: bool = False
+
+        def maybe_close_step():
+            nonlocal step_is_open
+            if step_is_open:
+                step_is_open = False
+                yield f'data: {json.dumps({"type": "finish-step"})}\n\n'
+
+        def open_step(description: str):
+            nonlocal step_is_open
+            for e in maybe_close_step():
+                yield e
+            step_is_open = True
+            reasoning_uuid = str(uuid4())
+            yield f'data: {json.dumps({"type": "start-step"})}\n\n'
+            yield f'data: {json.dumps({"type": "reasoning-start", "id": reasoning_uuid})}\n\n'
+            yield f'data: {json.dumps({"type": "reasoning-delta", "id": reasoning_uuid, "delta": description})}\n\n'
+            yield f'data: {json.dumps({"type": "reasoning-end", "id": reasoning_uuid})}\n\n'
+
+        final_answer = ""
+
+        from langchain_core.runnables import RunnableConfig
+        async for _, _, event in chatloop_service.astream(
+            service_input,
+            subgraphs=True,
+            stream_mode=["custom"],
+            config=RunnableConfig(callbacks=[token_callback]),
+        ):
+            match event:
+                case {"type": "mm_step", "description": description}:
+                    for e in open_step(description):
+                        yield e
+                case {"type": "mm_refined_user_query", "refined_query": refined_query}:
+                    description = f"Refined user query: {refined_query}"
+                    reasoning_uuid = str(uuid4())
+                    yield f'data: {json.dumps({"type": "reasoning-start", "id": reasoning_uuid})}\n\n'
+                    yield f'data: {json.dumps({"type": "reasoning-delta", "id": reasoning_uuid, "delta": description})}\n\n'
+                    yield f'data: {json.dumps({"type": "reasoning-end", "id": reasoning_uuid})}\n\n'
+                case {"type": "mm_user_query_answered", "answer": answer}:
+                    reasoning_uuid = str(uuid4())
+                    final_answer = answer
+                    yield f'data: {json.dumps({"type": "text-start", "id": reasoning_uuid})}\n\n'
+                    yield f'data: {json.dumps({"type": "text-delta", "id": reasoning_uuid, "delta": answer})}\n\n'
+                    yield f'data: {json.dumps({"type": "text-end", "id": reasoning_uuid})}\n\n'
+                    for e in maybe_close_step():
+                        yield e
+
+        await data_layer.save_message(
+            message_id=msg_id,
+            chat_id=chat_uuid,
+            role="assistant",
+            parts=[{"type": "text", "id": text_id, "text": final_answer}],
+        )
+
+        try:
+            estimated = deps.rate_limiter.config.estimated_tokens_per_request
+            await data_layer.record_token_usage(user.uid, token_callback.tokens - estimated)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("Failed to record token usage", exc_info=True)
+
+        yield f'data: {json.dumps({"type": "finish"})}\n\n'
+        yield 'data: [DONE]\n\n'
+
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={"x-vercel-ai-ui-message-stream": "v1", **rate_state.headers()},
+    )

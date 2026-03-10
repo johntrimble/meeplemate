@@ -189,13 +189,17 @@ function UserMsg({ message }: { message: UIMessage }) {
 function AssistantMsg({
   message,
   isStreaming,
+  isRetrying,
   feedback,
   onFeedback,
+  onRegenerate,
 }: {
   message: UIMessage
   isStreaming: boolean
+  isRetrying: boolean
   feedback: 0 | 1 | null
   onFeedback: (v: 0 | 1 | null) => void
+  onRegenerate: () => void
 }) {
   const authFetch = useAuthFetch()
   const reasoningParts = message.parts.filter(isReasoningUIPart)
@@ -256,8 +260,12 @@ function AssistantMsg({
           >
             <ThumbsDownIcon className="size-4" fill={feedback === 0 ? 'currentColor' : 'none'} />
           </MessageAction>
-          <MessageAction tooltip="Regenerate">
-            <RefreshCwIcon className="size-4" />
+          <MessageAction
+            tooltip="Regenerate"
+            onClick={onRegenerate}
+            disabled={isStreaming || isRetrying}
+          >
+            <RefreshCwIcon className={cn('size-4', isRetrying && 'animate-spin')} />
           </MessageAction>
         </MessageActions>
       )}
@@ -505,15 +513,21 @@ function ExistingChat({
   const location = useLocation()
   const authFetch = useAuthFetch()
   const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  const onReload = useCallback(() => {
+    setInitialMessages(null)
+    setReloadKey((k) => k + 1)
+  }, [])
 
   useEffect(() => {
     authFetch(`/api/chats/${chatId}/messages`)
       .then((r) => r.json())
       .then((msgs: UIMessage[]) => setInitialMessages(msgs))
       .catch(() => setInitialMessages([]))
-  // authFetch identity is stable within a session; chatId is the real dep.
+  // authFetch identity is stable within a session; chatId and reloadKey are the real deps.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId])
+  }, [chatId, reloadKey])
 
   if (initialMessages === null) {
     // Loading history — show minimal chrome so the page doesn't flash blank
@@ -536,6 +550,7 @@ function ExistingChat({
       game={game}
       initialMessages={initialMessages}
       pendingMessage={pendingMessage}
+      onReload={onReload}
     />
   )
 }
@@ -550,18 +565,21 @@ function ChatView({
   game,
   initialMessages,
   pendingMessage,
+  onReload,
 }: {
   gameId: string
   chatId: string
   game: Game
   initialMessages: UIMessage[]
   pendingMessage: string | null
+  onReload: () => void
 }) {
   const navigate = useNavigate()
   const location = useLocation()
   const { getIdToken } = useAuth()
   const bottomRef = useRef<HTMLDivElement>(null)
   const pendingSent = useRef(false)
+  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 0 | 1 | null>>(() => {
     const map: Record<string, 0 | 1 | null> = {}
     for (const msg of initialMessages) {
@@ -616,6 +634,35 @@ function ChatView({
     sendMessage({ text })
   }
 
+  const handleRegenerate = useCallback(
+    async (messageId: string) => {
+      if (isStreaming || retryingMessageId) return
+      setRetryingMessageId(messageId)
+      try {
+        const token = await getIdToken()
+        const resp = await fetch(`/api/messages/${messageId}/retry`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!resp.ok) throw new Error('Retry failed')
+        // Drain the stream so the server finishes saving the new message
+        const reader = resp.body?.getReader()
+        if (reader) {
+          while (true) {
+            const { done } = await reader.read()
+            if (done) break
+          }
+        }
+        onReload()
+      } catch (err) {
+        console.error('Retry failed', err)
+      } finally {
+        setRetryingMessageId(null)
+      }
+    },
+    [isStreaming, retryingMessageId, getIdToken, onReload],
+  )
+
   return (
     <PageChrome game={game} gameId={gameId} chatId={chatId}>
       <div className="flex-1 min-h-0 overflow-y-auto">
@@ -631,8 +678,10 @@ function ChatView({
                   key={msg.id}
                   message={msg}
                   isStreaming={isStreaming && i === displayMessages.length - 1}
+                  isRetrying={retryingMessageId === msg.id}
                   feedback={feedbackMap[msg.id] ?? null}
                   onFeedback={(v) => setFeedbackMap((prev) => ({ ...prev, [msg.id]: v }))}
+                  onRegenerate={() => handleRegenerate(msg.id)}
                 />
               ),
             )}
