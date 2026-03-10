@@ -522,7 +522,7 @@ function ExistingChat({
 
   useEffect(() => {
     authFetch(`/api/chats/${chatId}/messages`)
-      .then((r) => r.json())
+      .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() })
       .then((msgs: UIMessage[]) => setInitialMessages(msgs))
       .catch(() => setInitialMessages([]))
   // authFetch identity is stable within a session; chatId and reloadKey are the real deps.
@@ -580,6 +580,7 @@ function ChatView({
   const bottomRef = useRef<HTMLDivElement>(null)
   const pendingSent = useRef(false)
   const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null)
+  const [retryStream, setRetryStream] = useState<Array<{ type: 'reasoning' | 'text'; text: string }> | null>(null)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 0 | 1 | null>>(() => {
     const map: Record<string, 0 | 1 | null> = {}
     for (const msg of initialMessages) {
@@ -589,7 +590,7 @@ function ChatView({
     return map
   })
 
-  const { messages: chatMessages, sendMessage, status } = useChat({
+  const { messages: chatMessages, setMessages, sendMessage, status } = useChat({
     messages: initialMessages,
     transport: new DefaultChatTransport({
       api: `/api/chats/${chatId}/stream`,
@@ -619,16 +620,27 @@ function ChatView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Scroll to bottom on new messages (smooth) or streaming content growth (instant).
-  const prevLengthRef = useRef(chatMessages.length)
-  useEffect(() => {
-    const lengthChanged = chatMessages.length !== prevLengthRef.current
-    prevLengthRef.current = chatMessages.length
-    bottomRef.current?.scrollIntoView({ behavior: lengthChanged ? 'smooth' : 'instant' })
-  }, [chatMessages])
-
   const isStreaming = status === 'streaming' || status === 'submitted'
-  const displayMessages = chatMessages.filter((m) => m.role === 'user' || m.role === 'assistant')
+
+  const retryIdx = retryingMessageId
+    ? chatMessages.findIndex((m) => m.id === retryingMessageId)
+    : -1
+  const trimmedMessages = retryIdx >= 0 ? chatMessages.slice(0, retryIdx) : chatMessages
+  const displayMessages = trimmedMessages
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .concat(
+      retryStream !== null
+        ? [{ id: 'retry-stream', role: 'assistant' as const, parts: retryStream }]
+        : [],
+    )
+
+  // Scroll to bottom on new messages (smooth) or streaming content growth (instant).
+  const prevLengthRef = useRef(displayMessages.length)
+  useEffect(() => {
+    const lengthChanged = displayMessages.length !== prevLengthRef.current
+    prevLengthRef.current = displayMessages.length
+    bottomRef.current?.scrollIntoView({ behavior: lengthChanged ? 'smooth' : 'instant' })
+  }, [displayMessages])
 
   const handleSubmit = (text: string) => {
     sendMessage({ text })
@@ -638,6 +650,12 @@ function ChatView({
     async (messageId: string) => {
       if (isStreaming || retryingMessageId) return
       setRetryingMessageId(messageId)
+      setRetryStream([])
+
+      // Snapshot messages before the retry point (stable during the stream)
+      const retryIdx = chatMessages.findIndex((m) => m.id === messageId)
+      const baseMessages = retryIdx >= 0 ? chatMessages.slice(0, retryIdx) : chatMessages
+
       try {
         const token = await getIdToken()
         const resp = await fetch(`/api/messages/${messageId}/retry`, {
@@ -645,22 +663,75 @@ function ChatView({
           headers: { Authorization: `Bearer ${token}` },
         })
         if (!resp.ok) throw new Error('Retry failed')
-        // Drain the stream so the server finishes saving the new message
-        const reader = resp.body?.getReader()
-        if (reader) {
-          while (true) {
-            const { done } = await reader.read()
-            if (done) break
+
+        const reader = resp.body!.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let parts: Array<{ type: 'reasoning' | 'text'; text: string }> = []
+        let newMsgId = 'retry-' + Date.now()
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const raw = line.slice(6).trim()
+            if (raw === '[DONE]') continue
+            let event: Record<string, unknown>
+            try { event = JSON.parse(raw) } catch { continue }
+
+            switch (event.type) {
+              case 'start':
+                if (event.messageId) newMsgId = String(event.messageId)
+                break
+              case 'reasoning-start':
+                parts = [...parts, { type: 'reasoning', text: '' }]
+                break
+              case 'reasoning-delta': {
+                const last = parts.at(-1)
+                if (last?.type === 'reasoning') {
+                  parts = [...parts.slice(0, -1), { ...last, text: last.text + String(event.delta ?? '') }]
+                }
+                break
+              }
+              case 'text-start':
+                parts = [...parts, { type: 'text', text: '' }]
+                break
+              case 'text-delta': {
+                const last = parts.at(-1)
+                if (last?.type === 'text') {
+                  parts = [...parts.slice(0, -1), { ...last, text: last.text + String(event.delta ?? '') }]
+                }
+                break
+              }
+            }
+            setRetryStream([...parts])
           }
         }
-        onReload()
+
+        // Commit the full message (with reasoning) directly into useChat state.
+        // This avoids a reload that would strip reasoning (not persisted server-side).
+        const finalText = parts.filter((p) => p.type === 'text').map((p) => p.text).join('')
+        const newMsg: UIMessage = {
+          id: newMsgId,
+          role: 'assistant',
+          content: finalText,
+          parts: parts as UIMessage['parts'],
+        }
+        setMessages([...baseMessages, newMsg])
       } catch (err) {
         console.error('Retry failed', err)
       } finally {
+        setRetryStream(null)
         setRetryingMessageId(null)
       }
     },
-    [isStreaming, retryingMessageId, getIdToken, onReload],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isStreaming, retryingMessageId, getIdToken, setMessages],
   )
 
   return (
@@ -676,8 +747,12 @@ function ChatView({
               ) : (
                 <AssistantMsg
                   key={msg.id}
-                  message={msg}
-                  isStreaming={isStreaming && i === displayMessages.length - 1}
+                  message={msg as UIMessage}
+                  isStreaming={
+                    msg.id === 'retry-stream'
+                      ? true
+                      : isStreaming && i === displayMessages.length - 1
+                  }
                   isRetrying={retryingMessageId === msg.id}
                   feedback={feedbackMap[msg.id] ?? null}
                   onFeedback={(v) => setFeedbackMap((prev) => ({ ...prev, [msg.id]: v }))}
