@@ -144,6 +144,96 @@ def test_find_quote_with_gaps_near_end_of_long_document():
     assert result.score >= 85
 
 
+def test_multiple_part_match_candidates():
+    # The key property exercised here is that one sentence — "Roll 2 dice and
+    # consult the Resolve table." — appears verbatim in multiple paragraphs of
+    # the document, giving the matcher several candidate positions for that
+    # quote part and forcing it to pick the correct one.
+    quote = (
+        "A fortress that fails a Garrison check must immediately discard one Support token. "
+        "If no Support tokens remain the fortress is considered Broken and its garrison surrenders. "
+        "Roll 2 dice and consult the Resolve table. "
+        "Each defending player with units inside the fortress walls must also check morale separately.\n\n"
+        "To resolve a Garrison check, the active player first counts the number of Siege tokens on the fortress card. "
+        "Each Siege token reduces the fortress Resolve score by one. "
+        "If the modified Resolve score falls below the current Threat level, the check fails. "
+        "Roll 2 dice and consult the Resolve table. "
+        "Apply any terrain or weather modifiers shown on the active Condition card before comparing the result.\n\n"
+        "## REINFORCEMENTS\n\n"
+        "When a Garrison check is failed and the fortress becomes Broken, the besieging player may immediately "
+        "move up to two of their units from an adjacent territory into the fortress hex at no movement cost. "
+        "These units are treated as having entered through the breach and do not trigger Gate checks.\n\n"
+        "## SURRENDER TERMS\n\n"
+        "A Broken fortress must accept Surrender Terms at the start of the next round unless it is relieved. "
+        "The controlling player draws one Term card and applies its effect immediately. "
+        "Surrender Terms may include resource penalties, unit losses, or forced allegiance shifts. "
+        "Once Surrender Terms are accepted the fortress token is flipped to its Occupied side.\n\n"
+        "## RELIEF ATTEMPTS\n\n"
+        "A Broken fortress may be saved if a friendly army enters its hex before Surrender Terms are applied. "
+        "The relieving army must win a field battle against any besieging units present. "
+        "If the battle is won, remove all Siege tokens from the fortress and flip it back to its Garrisoned side. "
+        "The fortress is no longer considered Broken and resumes normal Garrison checks next round.\n\n"
+        "<center>The northern fortress falls — the eastern road lies open! </center>"
+    )
+    document = (
+        "## GARRISON CHECKS\n\n"
+        "A fortress that fails a Garrison check must immediately discard one Support token. "
+        "If no Support tokens remain the fortress is considered Broken and its garrison surrenders. "
+        "Roll 2 dice and consult the Resolve table. "
+        "Each defending player with units inside the fortress walls must also check morale separately.\n\n"
+        "To resolve a Garrison check, the active player first counts the number of Siege tokens on the fortress card. "
+        "Each Siege token reduces the fortress Resolve score by one. "
+        "If the modified Resolve score falls below the current Threat level, the check fails. "
+        "Roll 2 dice and consult the Resolve table. "
+        "Apply any terrain or weather modifiers shown on the active Condition card before comparing the result.\n\n"
+        "## REINFORCEMENTS\n\n"
+        "When a Garrison check is failed and the fortress becomes Broken, the besieging player may immediately "
+        "move up to two of their units from an adjacent territory into the fortress hex at no movement cost. "
+        "These units are treated as having entered through the breach and do not trigger Gate checks.\n\n"
+        "## SURRENDER TERMS\n\n"
+        "A Broken fortress must accept Surrender Terms at the start of the next round unless it is relieved. "
+        "The controlling player draws one Term card and applies its effect immediately. "
+        "Surrender Terms may include resource penalties, unit losses, or forced allegiance shifts. "
+        "Once Surrender Terms are accepted the fortress token is flipped to its Occupied side.\n\n"
+        "## RELIEF ATTEMPTS\n\n"
+        "A Broken fortress may be saved if a friendly army enters its hex before Surrender Terms are applied. "
+        "The relieving army must win a field battle against any besieging units present. "
+        "If the battle is won, remove all Siege tokens from the fortress and flip it back to its Garrisoned side. "
+        "The fortress is no longer considered Broken and resumes normal Garrison checks next round.\n\n"
+        "<center>The northern fortress falls — the eastern road lies open! </center>"
+    )
+    result = find_quote_with_gaps(document, quote)
+    assert result is not None
+
+
+def test_find_quote_with_html_escapes():
+    # Key property: the quote contains HTML-escaped table markup (&lt;table&gt;, &lt;tr&gt;, &lt;td&gt;)
+    # while the document contains the same markup unescaped (<table>, <tr>, <td>).
+    # The matcher must unescape the quote before comparing so it can find the match.
+    quote = (
+        '## TURN SEQUENCE\n\n'
+        '&lt;table&gt;&lt;tr&gt;&lt;td colspan="2"&gt;TURN SEQUENCE&lt;/td&gt;&lt;/tr&gt;'
+        '&lt;tr&gt;&lt;td&gt;1&lt;/td&gt;&lt;td&gt;Draw Phase Each player draws two cards from the top of the deck and adds them to their hand.&lt;/td&gt;&lt;/tr&gt;'
+        '&lt;tr&gt;&lt;td&gt;2&lt;/td&gt;&lt;td&gt;Play Phase Each player may play any number of cards from their hand by paying their cost in resources.&lt;/td&gt;&lt;/tr&gt;'
+        '&lt;tr&gt;&lt;td&gt;3&lt;/td&gt;&lt;td&gt;Attack Phase The active player may declare attacks with any ready units they control.&lt;/td&gt;&lt;/tr&gt;'
+        '&lt;tr&gt;&lt;td&gt;4&lt;/td&gt;&lt;td&gt;Block Phase The defending player may assign any number of ready units to block each incoming attacker.&lt;/td&gt;&lt;/tr&gt;'
+        '&lt;tr&gt;&lt;td&gt;5&lt;/td&gt;&lt;td&gt;Resolve Phase Deal damage equal to each unit\'s power and remove units that have taken lethal damage.&lt;/td&gt;&lt;/tr&gt;'
+        '&lt;tr&gt;&lt;td&gt;6&lt;/td&gt;&lt;td&gt;End Phase Discard down to the hand limit and pass the turn to the next player.&lt;/td&gt;&lt;/tr&gt;'
+        '&lt;/table&gt;'
+    )
+    document = (
+        'TURN SEQUENCE</td></tr>'
+        '<tr><td>1</td><td>Draw Phase Each player draws two cards from the top of the deck and adds them to their hand.</td></tr>'
+        '<tr><td>2</td><td>Play Phase Each player may play any number of cards from their hand by paying their cost in resources.</td></tr>'
+        '<tr><td>3</td><td>Attack Phase The active player may declare attacks with any ready units they control.</td></tr>'
+        '<tr><td>4</td><td>Block Phase The defending player may assign any number of ready units to block each incoming attacker.</td></tr>'
+        '<tr><td>5</td><td>Resolve Phase Deal damage equal to each unit\'s power and remove units that have taken lethal damage.</td></tr>'
+        '<tr><td>6</td><td>End Phase Discard down to the hand limit and pass the turn to the next player.</td></tr>'
+        '</table>'
+    )
+    result = find_quote_with_gaps(document, quote)
+    assert result is not None
+
 def test_expand_to_full_paragraphs_with_heading_blank_line():
     """Test expansion includes heading when followed by blank line."""
     doc = inspect.cleandoc("""
