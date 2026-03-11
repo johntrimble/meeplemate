@@ -518,6 +518,8 @@ def find_quote_with_gaps(
     if "&lt;table&gt;" in quote:
         # Unescape html
         quote = html.unescape(quote)
+    if "<table>" in quote:
+        quote = strip_html_tags(quote)
 
     html_stripped, html_map = strip_html_tags_with_map(doc)
     latex_stripped, latex_map = strip_latex_with_map(html_stripped)
