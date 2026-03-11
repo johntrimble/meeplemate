@@ -168,7 +168,7 @@ class PostgresDataLayer(BaseDataLayer):
                 (
                     await session.execute(
                         select(ChatMessage)
-                        .where(ChatMessage.chat_id == chat_id)
+                        .where(ChatMessage.chat_id == chat_id, ChatMessage.is_active == True)
                         .order_by(ChatMessage.created_at)
                         .options(selectinload(ChatMessage.parts))
                     )
@@ -185,6 +185,46 @@ class PostgresDataLayer(BaseDataLayer):
                 )
                 for msg in messages
             ]
+
+    async def get_message(self, message_id: UUID) -> Optional[dict]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(ChatMessage.message_id, ChatMessage.chat_id, ChatMessage.role)
+                .where(ChatMessage.message_id == message_id)
+            )
+            row = result.one_or_none()
+            if row is None:
+                return None
+            return {
+                "message_id": str(row.message_id),
+                "chat_id": str(row.chat_id),
+                "role": str(row.role),
+            }
+
+    async def deactivate_messages_from(self, chat_id: UUID, from_message_id: UUID) -> None:
+        async with self._session_factory() as session:
+            # Find the created_at of the target message (scoped to this chat for safety)
+            result = await session.execute(
+                select(ChatMessage.created_at)
+                .where(
+                    ChatMessage.message_id == from_message_id,
+                    ChatMessage.chat_id == chat_id,
+                )
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return
+            threshold = row
+            await session.execute(
+                ChatMessage.__table__.update()
+                .where(
+                    ChatMessage.chat_id == chat_id,
+                    ChatMessage.created_at >= threshold,
+                    ChatMessage.is_active == True,
+                )
+                .values(is_active=False)
+            )
+            await session.commit()
 
     async def save_message(
         self,

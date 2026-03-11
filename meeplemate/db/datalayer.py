@@ -230,7 +230,15 @@ class BaseDataLayer(ABC):
 
     @abstractmethod
     async def get_messages(self, chat_id: UUID) -> list[MessageDict]:
-        """All messages for a chat, ordered chronologically. Includes ``feedback`` (0/1/None)."""
+        """Active messages for a chat, ordered chronologically. Includes ``feedback`` (0/1/None)."""
+
+    @abstractmethod
+    async def get_message(self, message_id: UUID) -> Optional[dict]:
+        """Return minimal message info dict with keys 'message_id', 'chat_id', 'role', or None if not found."""
+
+    @abstractmethod
+    async def deactivate_messages_from(self, chat_id: UUID, from_message_id: UUID) -> None:
+        """Mark from_message_id and all subsequent messages in chat_id as is_active=false."""
 
     @abstractmethod
     async def save_message(

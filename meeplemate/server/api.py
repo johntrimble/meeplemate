@@ -236,6 +236,7 @@ async def delete_message_feedback(
 class StreamChatRequest(BaseModel):
     message: str
     game_id: str
+    retry_message_id: str | None = None
 
 
 @app.post("/api/chats/{chat_id}/stream")
@@ -262,15 +263,26 @@ async def stream_chat(
     chatloop_service = deps.chatloop_service
     data_layer = deps.data_layer
 
-    # Persist the user message
-    await data_layer.save_message(
-        message_id=uuid4(),
-        chat_id=chat_uuid,
-        role="user",
-        parts=[{"type": "text", "text": request.message}],
-    )
+    if request.retry_message_id is not None:
+        # Regenerate path: validate the target message, then deactivate it and everything after.
+        msg_uuid = UUID(request.retry_message_id)
+        owner = await data_layer.get_message_owner(msg_uuid)
+        if owner is None or owner != user.uid:
+            raise HTTPException(status_code=404, detail="Message not found")
+        msg_info = await data_layer.get_message(msg_uuid)
+        if msg_info is None or msg_info["role"] != "assistant":
+            raise HTTPException(status_code=400, detail="Can only retry assistant messages")
+        await data_layer.deactivate_messages_from(chat_uuid, msg_uuid)
+    else:
+        # Normal path: persist the new user message.
+        await data_layer.save_message(
+            message_id=uuid4(),
+            chat_id=chat_uuid,
+            role="user",
+            parts=[{"type": "text", "text": request.message}],
+        )
 
-    # Get all messages for this chat so far
+    # Get all active messages for this chat (trimmed history for regenerate, full for normal).
     messages = await data_layer.get_messages(chat_uuid)
 
     # Convert messages to LangChain format for the service input

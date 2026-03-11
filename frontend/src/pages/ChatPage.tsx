@@ -191,11 +191,13 @@ function AssistantMsg({
   isStreaming,
   feedback,
   onFeedback,
+  onRegenerate,
 }: {
   message: UIMessage
   isStreaming: boolean
   feedback: 0 | 1 | null
   onFeedback: (v: 0 | 1 | null) => void
+  onRegenerate: () => void
 }) {
   const authFetch = useAuthFetch()
   const reasoningParts = message.parts.filter(isReasoningUIPart)
@@ -256,7 +258,11 @@ function AssistantMsg({
           >
             <ThumbsDownIcon className="size-4" fill={feedback === 0 ? 'currentColor' : 'none'} />
           </MessageAction>
-          <MessageAction tooltip="Regenerate">
+          <MessageAction
+            tooltip="Regenerate"
+            onClick={onRegenerate}
+            disabled={isStreaming}
+          >
             <RefreshCwIcon className="size-4" />
           </MessageAction>
         </MessageActions>
@@ -508,7 +514,7 @@ function ExistingChat({
 
   useEffect(() => {
     authFetch(`/api/chats/${chatId}/messages`)
-      .then((r) => r.json())
+      .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() })
       .then((msgs: UIMessage[]) => setInitialMessages(msgs))
       .catch(() => setInitialMessages([]))
   // authFetch identity is stable within a session; chatId is the real dep.
@@ -571,11 +577,11 @@ function ChatView({
     return map
   })
 
-  const { messages: chatMessages, sendMessage, status } = useChat({
+  const { messages: chatMessages, sendMessage, regenerate, status } = useChat({
     messages: initialMessages,
     transport: new DefaultChatTransport({
       api: `/api/chats/${chatId}/stream`,
-      prepareSendMessagesRequest: async ({ messages }) => {
+      prepareSendMessagesRequest: async ({ messages, trigger, messageId }) => {
         const last = messages[messages.length - 1]
         const text =
           last?.parts
@@ -584,7 +590,11 @@ function ChatView({
             .join('') ?? ''
         const token = await getIdToken()
         return {
-          body: { message: text, game_id: gameId },
+          body: {
+            message: text,
+            game_id: gameId,
+            ...(trigger === 'regenerate-message' && messageId ? { retry_message_id: messageId } : {}),
+          },
           headers: { Authorization: `Bearer ${token}` },
         }
       },
@@ -601,16 +611,17 @@ function ChatView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Scroll to bottom on new messages (smooth) or streaming content growth (instant).
-  const prevLengthRef = useRef(chatMessages.length)
-  useEffect(() => {
-    const lengthChanged = chatMessages.length !== prevLengthRef.current
-    prevLengthRef.current = chatMessages.length
-    bottomRef.current?.scrollIntoView({ behavior: lengthChanged ? 'smooth' : 'instant' })
-  }, [chatMessages])
-
   const isStreaming = status === 'streaming' || status === 'submitted'
+
   const displayMessages = chatMessages.filter((m) => m.role === 'user' || m.role === 'assistant')
+
+  // Scroll to bottom on new messages (smooth) or streaming content growth (instant).
+  const prevLengthRef = useRef(displayMessages.length)
+  useEffect(() => {
+    const lengthChanged = displayMessages.length !== prevLengthRef.current
+    prevLengthRef.current = displayMessages.length
+    bottomRef.current?.scrollIntoView({ behavior: lengthChanged ? 'smooth' : 'instant' })
+  }, [displayMessages])
 
   const handleSubmit = (text: string) => {
     sendMessage({ text })
@@ -629,10 +640,11 @@ function ChatView({
               ) : (
                 <AssistantMsg
                   key={msg.id}
-                  message={msg}
+                  message={msg as UIMessage}
                   isStreaming={isStreaming && i === displayMessages.length - 1}
                   feedback={feedbackMap[msg.id] ?? null}
                   onFeedback={(v) => setFeedbackMap((prev) => ({ ...prev, [msg.id]: v }))}
+                  onRegenerate={() => regenerate({ messageId: msg.id })}
                 />
               ),
             )}
@@ -642,7 +654,7 @@ function ChatView({
       </div>
 
       <div className="shrink-0">
-        <ChatInput onSubmit={handleSubmit} />
+        <ChatInput onSubmit={handleSubmit} disabled={isStreaming} />
       </div>
     </PageChrome>
   )
