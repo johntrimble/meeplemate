@@ -39,7 +39,7 @@ dependencies = [
     "pydantic-settings>=2.0,<3.0",
     "pyyaml",
     "clingo",
-    "rapidfuzz",
+    "CyDifflib",
     "asyncpg",
     "sqlalchemy[asyncio]",
     "alembic",

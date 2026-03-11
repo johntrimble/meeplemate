@@ -1,10 +1,11 @@
+import html
 import re
 import sys
 import unicodedata
 from dataclasses import dataclass
 from typing import List, Tuple, TypedDict, Literal
 
-from rapidfuzz import fuzz
+from cydifflib import SequenceMatcher
 
 
 BLOCKQUOTE_PATTERN = re.compile(r'(?:^>.*(?:\n^>.*)*)(?:\n^>.*$)?', re.MULTILINE)
@@ -507,109 +508,50 @@ def find_quote_with_gaps(
     doc: str,
     quote: str,
     *,
-    min_part_score: int = 85,
-    max_gap_norm_chars: int = 1500,
-    # Candidate gen knobs (docs are small, so windowing is fine)
-    window_size: int = 1200,
-    window_step: int = 200,
-    top_k_windows: int = 8,
+    min_score: float = 85.0,
 ) -> MatchResult | None:
     # Strip markup (HTML tags, LaTeX math) before normalizing so that tag
     # names and LaTeX commands don't introduce spurious alphanumeric tokens
     # (e.g. "td", "prime") that break fuzzy matching against the LLM's
     # plain-text quotes.
+
+    if "&lt;table&gt;" in quote:
+        # Unescape html
+        quote = html.unescape(quote)
+    if "<table>" in quote:
+        quote = strip_html_tags(quote)
+
     html_stripped, html_map = strip_html_tags_with_map(doc)
     latex_stripped, latex_map = strip_latex_with_map(html_stripped)
     norm_doc, norm_to_latex = normalize_with_map(latex_stripped)
     norm_to_orig = [html_map[latex_map[i]] for i in norm_to_latex]
 
     cleaned_quote = strip_html_tags(strip_latex(quote))
-    parts = split_quote_parts(cleaned_quote)
-    norm_parts = [normalize_no_map(p) for p in parts if p.strip()]
-    if not norm_parts:
+    norm_quote = normalize_no_map(cleaned_quote)
+    if not norm_quote or not norm_doc:
         return None
 
-    first = norm_parts[0]
-    if not norm_doc:
+    s = SequenceMatcher(None, norm_quote, norm_doc, autojunk=False)
+    blocks = [b for b in s.get_matching_blocks() if b.size > 0]
+    if not blocks:
         return None
 
-    # --- 1) Candidate generation: scan overlapping windows and keep top K ---
-    candidates: list[tuple[float, int, int]] = []  # (score, win_start, win_end)
-    n = len(norm_doc)
-    if window_size >= n:
-        candidates = [(fuzz.partial_ratio(first, norm_doc), 0, n)]
-    else:
-        for ws in range(0, n - window_size + 1, window_step):
-            we = ws + window_size
-            score = fuzz.partial_ratio(first, norm_doc[ws:we])
-            candidates.append((score, ws, we))
-        # Always include a window covering the tail of the document,
-        # otherwise up to window_step-1 trailing chars can be missed.
-        last_ws = n - window_size
-        if not candidates or candidates[-1][1] != last_ws:
-            score = fuzz.partial_ratio(first, norm_doc[last_ws:n])
-            candidates.append((score, last_ws, n))
-        candidates.sort(reverse=True, key=lambda x: x[0])
-        candidates = candidates[:top_k_windows]
-
-    best: tuple[float, int, int, list[float]] | None = None  # score, norm_start, norm_end, part_scores
-
-    # --- 2) For each candidate window, do precise alignment + chain the remaining parts in order ---
-    for _, ws, we in candidates:
-        window = norm_doc[ws:we]
-        a0 = fuzz.partial_ratio_alignment(first, window)
-        assert a0 is not None
-        if a0.score < min_part_score:
-            continue
-
-        norm_start = ws + a0.dest_start
-        prev_end = ws + a0.dest_end
-        part_scores = [float(a0.score)]
-        ok = True
-
-        for part in norm_parts[1:]:
-            seg_start = prev_end
-            seg_end = min(len(norm_doc), prev_end + max_gap_norm_chars)
-            if seg_start >= seg_end:
-                ok = False
-                break
-
-            seg = norm_doc[seg_start:seg_end]
-            a = fuzz.partial_ratio_alignment(part, seg)
-            if a.score < min_part_score:
-                ok = False
-                break
-
-            prev_end = seg_start + a.dest_end
-            part_scores.append(float(a.score))
-
-        if not ok:
-            continue
-
-        norm_end = prev_end
-        score = sum(part_scores) / len(part_scores)
-
-        if best is None or score > best[0]:
-            best = (score, norm_start, norm_end, part_scores)
-
-    if best is None:
+    matched = sum(b.size for b in blocks)
+    score = matched / len(norm_quote) * 100
+    if score < min_score:
         return None
 
-    score, norm_start, norm_end, part_scores = best
+    norm_start = blocks[0].b
+    norm_end = blocks[-1].b + blocks[-1].size
 
-    # --- 3) Map normalized span back to original indices ---
     orig_start = norm_to_orig[norm_start]
     orig_end = norm_to_orig[norm_end - 1] + 1  # exclusive
 
     # Extend orig_end to complete the current word and include trailing punctuation
-    # that was normalized away. This handles two cases:
-    # 1. Fuzzy match may end mid-word (e.g., "her" when it should be "here")
-    # 2. Trailing punctuation gets normalized to spaces and trimmed
+    # that was normalized away.
     while orig_end < len(doc):
-        ch = doc[orig_end]
-        if ch.isspace():
-            break  # Stop at whitespace
-        # Continue through alphanumeric (complete the word) and punctuation
+        if doc[orig_end].isspace():
+            break
         orig_end += 1
 
     return MatchResult(
@@ -617,7 +559,7 @@ def find_quote_with_gaps(
         start=orig_start,
         end=orig_end,
         matched_text=doc[orig_start:orig_end],
-        part_scores=part_scores,
+        part_scores=[score],
     )
 
 
