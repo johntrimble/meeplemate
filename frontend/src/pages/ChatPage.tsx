@@ -189,14 +189,12 @@ function UserMsg({ message }: { message: UIMessage }) {
 function AssistantMsg({
   message,
   isStreaming,
-  isRetrying,
   feedback,
   onFeedback,
   onRegenerate,
 }: {
   message: UIMessage
   isStreaming: boolean
-  isRetrying: boolean
   feedback: 0 | 1 | null
   onFeedback: (v: 0 | 1 | null) => void
   onRegenerate: () => void
@@ -263,9 +261,9 @@ function AssistantMsg({
           <MessageAction
             tooltip="Regenerate"
             onClick={onRegenerate}
-            disabled={isStreaming || isRetrying}
+            disabled={isStreaming}
           >
-            <RefreshCwIcon className={cn('size-4', isRetrying && 'animate-spin')} />
+            <RefreshCwIcon className="size-4" />
           </MessageAction>
         </MessageActions>
       )}
@@ -644,7 +642,6 @@ function ChatView({
                   key={msg.id}
                   message={msg as UIMessage}
                   isStreaming={isStreaming && i === displayMessages.length - 1}
-                  isRetrying={false}
                   feedback={feedbackMap[msg.id] ?? null}
                   onFeedback={(v) => setFeedbackMap((prev) => ({ ...prev, [msg.id]: v }))}
                   onRegenerate={() => regenerate({ messageId: msg.id })}
