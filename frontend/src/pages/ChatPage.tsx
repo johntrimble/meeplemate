@@ -654,7 +654,7 @@ function ChatView({
       </div>
 
       <div className="shrink-0">
-        <ChatInput onSubmit={handleSubmit} />
+        <ChatInput onSubmit={handleSubmit} disabled={isStreaming} />
       </div>
     </PageChrome>
   )
