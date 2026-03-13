@@ -94,6 +94,9 @@ services:
     # Claude CLI data
     - claude_data:/home/vscode/.claude:cached
 
+    environment:
+    - FASTEMBED_CACHE_PATH=/workspace/data/fastembed_cache
+
     # Set the working directory to where the workspace folder is mounted.
     working_dir: /workspace
 
