@@ -2,6 +2,7 @@ from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator, Literal, Optional, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
 import os
+from langchain_classic.embeddings import FastEmbedEmbeddings
 from langchain_postgres import PGEngine
 from meeplemate.postgres.vectorstore import PartitionedPGVectorStore
 from langchain_postgres.v2.hybrid_search_config import HybridSearchConfig, reciprocal_rank_fusion
@@ -121,6 +122,7 @@ class EmbeddingServiceConfig(BaseModel):
     model: str = Field(description="Name/path of the embedding model")
     endpoint: str = Field(description="Embedding service endpoint URL")
     api_key: SecretStr = Field(description="API key for embedding service")
+    parallel: Optional[int] = Field(default=None, description="If >1, use parallel encoding with specified number of workers. If 0, use all cores. If None, don't use data-parallel processing.")
     query_instruction: str = Field(default="", description="Instruction prefix for query embeddings")
     embed_instruction: str = Field(default="", description="Instruction prefix for document embeddings")
 
@@ -433,24 +435,20 @@ def create_app_system(cfg: Config) -> System[AppServices]:
 
     system = System[AppServices](
         {
-            # "db_cluster": (
-            #     factory(Cluster)(
-            #         contact_points=cfg.db.contact_points,
-            #         load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=cfg.db.dc)
+            # "_embedding_model": (
+            #     factory(OpenAIEmbeddings)(
+            #         model=cfg.embedding.model,
+            #         base_url=cfg.embedding.endpoint,
+            #         api_key=cfg.embedding.api_key.get_secret_value(),
+            #         tiktoken_enabled=False,
+            #         chunk_size=10,
             #     ),
             #     []
             # ),
-            # "db_session": (
-            #     create_session,
-            #     ["db_cluster"]
-            # ),
             "_embedding_model": (
-                factory(OpenAIEmbeddings)(
-                    model=cfg.embedding.model,
-                    base_url=cfg.embedding.endpoint,
-                    api_key=cfg.embedding.api_key.get_secret_value(),
-                    tiktoken_enabled=False,
-                    chunk_size=10,
+                factory(FastEmbedEmbeddings)(
+                    model_name=cfg.embedding.model,
+                    parallel=cfg.embedding.parallel,
                 ),
                 []
             ),

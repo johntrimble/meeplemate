@@ -44,6 +44,7 @@ dependencies = [
     "sqlalchemy[asyncio]",
     "alembic",
     "firebase-admin",
+    "fastembed",
 #    "glmocr @ git+https://github.com/zai-org/GLM-OCR.git@main"
 ]
 
