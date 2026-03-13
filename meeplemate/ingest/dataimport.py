@@ -110,6 +110,23 @@ def add_game_metadata_to_document(document: Document, gp: GamePackage) -> Docume
         "game_version": gp.get("game_version", ""),
     }
     document.metadata.update(game_metadata)
+
+    # We need to fix the doc_id reference for child chunks to their parent
+    if "doc_id" in document.metadata:
+        parent_doc_id = document.metadata["doc_id"]
+        # The parent doc ID will be the chunk ID which includes the page number, we need to replace that with the game version
+        parts = parent_doc_id.split("#")
+        if len(parts) > 1:
+            parts[1] = gp.get("game_version", "")
+            document.metadata["doc_id"] = "#".join(parts)
+
+    # We also need to fix the ID for chunks as that includes the version number
+    assert document.id and isinstance(document.id, str), "Document must have a string ID"
+    parts = document.id.split("#")
+    if len(parts) > 1:
+        parts[1] = gp.get("game_version", "")
+        document.id = "#".join(parts)
+
     return document
 
 

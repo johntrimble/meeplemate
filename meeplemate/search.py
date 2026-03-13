@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 from operator import itemgetter
 from typing import Annotated, Any, Literal, NotRequired, Optional, Sequence, TypedDict, List, cast
@@ -520,6 +521,17 @@ def build_chunk_search_service_2(
     tokenizer: Any,
     default_token_budget: int = 13000,
 ):
+    # If the vectorstore has a HybridSearchConfig, we grab it once here so we
+    # can create a fresh per-query copy on each call.  This avoids two bugs in
+    # the langchain-postgres library:
+    #   1. asimilarity_search_with_relevance_scores applies a "1 - score"
+    #      cosine transform to RRF scores, reversing their order and breaking
+    #      the descending-order assertion in find_cutoff_adaptive_k.
+    #   2. The library mutates hybrid_search_config.fts_query on the first
+    #      call; subsequent calls then re-use the stale first-query FTS string
+    #      regardless of the actual query.
+    _base_hybrid_config = getattr(getattr(vectorstore, '_vs', None), 'hybrid_search_config', None)
+
     @chain
     async def chain_func(input: ChunkSearchServiceInput) -> ChunkSearchOutputState:
         budget = input.get("token_budget", default_token_budget)
@@ -543,11 +555,20 @@ def build_chunk_search_service_2(
         for q in query:
             # Step 1: Retrieve a large set of potentially relevant chunks using
             # the vectorstore
-            docs_and_scores = await vectorstore.asimilarity_search_with_relevance_scores(
+            extra: dict = {}
+            if _base_hybrid_config is not None:
+                # Build a fresh per-query config so fts_query is always current
+                # and the shared instance config object is never mutated.
+                extra['hybrid_search_config'] = dataclasses.replace(_base_hybrid_config, fts_query=q)
+            docs_and_scores = await vectorstore.asimilarity_search_with_score(
                 q,
                 filter=filter,
-                k=50
+                k=50,
+                **extra
             )
+            # RRF scores (higher = better) are already sorted descending by the
+            # fusion function, but sort explicitly to be safe.
+            docs_and_scores.sort(key=lambda x: x[1], reverse=True)
             logger.info("Vectorstore returned", query=q, result_count=len(docs_and_scores))
 
             # Step 2: Use the adaptive k algorithm to find the cutoff point in

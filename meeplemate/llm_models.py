@@ -1,5 +1,5 @@
 from types import MethodType
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Dict, List, Optional, Union, cast, override
 import inspect
 from langchain_core.outputs import Generation, GenerationChunk, LLMResult, RunInfo
 from langchain_core.callbacks import (
@@ -21,13 +21,61 @@ from transformers import (
 # import langchain_huggingface.chat_models as hfcm
 from sentence_transformers import SentenceTransformer
 from langchain_core.embeddings import Embeddings
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict, Any
 from sentence_transformers import SentenceTransformer
 # from text_generation.types import Details
 
 import requests
 from urllib.parse import urljoin
+
+
+class EmbeddingInstructionsWrapper(BaseModel, Embeddings):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    embeddings: Embeddings
+    query_instruction: str = Field(default="")
+    embed_instruction: str = Field(default="")
+
+    @override
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        texts = [f"{self.embed_instruction}{text}" for text in texts]
+        result = self.embeddings.embed_documents(texts)
+        return result
+
+    @override
+    def embed_query(self, text: str) -> list[float]:
+        text = f"{self.query_instruction}{text}"
+        result = self.embeddings.embed_query(text)
+        return result
+
+    @override
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        texts = [f"{self.embed_instruction}{text}" for text in texts]
+        result = await self.embeddings.aembed_documents(texts)
+        return result
+
+    @override
+    async def aembed_query(self, text: str) -> list[float]:
+        text = f"{self.query_instruction}{text}"
+        result = await self.embeddings.aembed_query(text)
+        return result
+
+
+def wrap_embeddings_with_instructions(embeddings: Embeddings, query_instruction:str = "", embed_instruction:str = "") -> Embeddings:
+    """
+    Wrap the given embeddings with instructions for the query and embed methods.
+
+    This is useful for models that require special instructions to be prepended to the input text in order to produce good embeddings. For example, some models may require a prefix like "Query: " for query embeddings and "Document: " for document embeddings.
+
+    By using this wrapper, you can keep the instruction logic separate from the core embedding logic, and easily apply it to any existing Embeddings implementation.
+    """
+    return EmbeddingInstructionsWrapper(
+        embeddings=embeddings,
+        query_instruction=query_instruction,
+        embed_instruction=embed_instruction,
+    )
+
 
 class HuggingFaceChatModelLocal(ChatHuggingFace):
     """

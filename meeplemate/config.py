@@ -4,6 +4,7 @@ from typing import Any, AsyncIterator, Callable, Iterator, Literal, Optional, Se
 import os
 from langchain_postgres import PGEngine
 from meeplemate.postgres.vectorstore import PartitionedPGVectorStore
+from langchain_postgres.v2.hybrid_search_config import HybridSearchConfig, reciprocal_rank_fusion
 from langchain_postgres.v2.indexes import DistanceStrategy
 import yaml
 from dataclasses import dataclass
@@ -45,7 +46,7 @@ from meeplemate.game_service import GameService
 from meeplemate.postgres.store import PostgresJSONStore, PostgresSerializableStore
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.retrievers import build_retriever
-from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings
+from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings, wrap_embeddings_with_instructions
 from meeplemate.pdf import parse_pdf
 from meeplemate.qa import build_qa_chain
 from chainlit.data.base import BaseDataLayer
@@ -120,6 +121,8 @@ class EmbeddingServiceConfig(BaseModel):
     model: str = Field(description="Name/path of the embedding model")
     endpoint: str = Field(description="Embedding service endpoint URL")
     api_key: SecretStr = Field(description="API key for embedding service")
+    query_instruction: str = Field(default="", description="Instruction prefix for query embeddings")
+    embed_instruction: str = Field(default="", description="Instruction prefix for document embeddings")
 
     @field_validator('endpoint')
     @classmethod
@@ -441,7 +444,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
             #     create_session,
             #     ["db_cluster"]
             # ),
-            "embedding_model": (
+            "_embedding_model": (
                 factory(OpenAIEmbeddings)(
                     model=cfg.embedding.model,
                     base_url=cfg.embedding.endpoint,
@@ -450,6 +453,15 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     chunk_size=10,
                 ),
                 []
+            ),
+            "embedding_model": (
+                factory(wrap_embeddings_with_instructions)(
+                    query_instruction=cfg.embedding.query_instruction,
+                    embed_instruction=cfg.embedding.embed_instruction,
+                ),
+                {
+                    "embeddings": "_embedding_model",
+                }
             ),
             "vector_store": (
                 afactory(PartitionedPGVectorStore.create)(
@@ -461,6 +473,14 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     metadata_columns=["game_version", "game_id"],
                     metadata_json_column="langchain_metadata",
                     distance_strategy=DistanceStrategy.COSINE_DISTANCE,
+                    hybrid_search_config=HybridSearchConfig(
+                        tsv_column="content_tsv",
+                        tsv_lang="pg_catalog.english",
+                        fusion_function=reciprocal_rank_fusion,
+                        fusion_function_parameters={"rrf_k": 60},
+                        primary_top_k=50,
+                        secondary_top_k=50,
+                    ),
                 ),
                 {
                     "embedding_service": "embedding_model",

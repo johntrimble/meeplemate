@@ -290,9 +290,10 @@ services:
       - --max-concurrent-requests
       - "5"
       - "--model-id"
-      - "jinaai/jina-embeddings-v2-base-en"
-      - "--pooling"
-      - "mean"
+      - BAAI/bge-small-en-v1.5
+      # - "jinaai/jina-embeddings-v2-base-en"
+      # - "--pooling"
+      # - "mean"
 
     volumes:
       # Cache model weights so they aren't re-downloaded each start
