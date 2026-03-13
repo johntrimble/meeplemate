@@ -23,8 +23,9 @@ chat:
 
 # Embedding Service Configuration
 embedding:
-  model: "jinaai/jina-embeddings-v2-base-en"
+  model: "BAAI/bge-small-en-v1.5"
   endpoint: "http://tei:80/v1"
+  query_instruction: "Represent this sentence for searching relevant passages: "
 
 # Data API Configuration
 data_api:
