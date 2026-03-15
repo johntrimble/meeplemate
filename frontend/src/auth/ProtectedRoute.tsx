@@ -12,7 +12,7 @@ function LoginPage() {
         <h1 className="text-xl font-semibold text-foreground">Boardbarian</h1>
         <p className="text-sm text-muted-foreground">Sign in to ask rules questions</p>
       </div>
-      <Button onClick={login}>Sign in with Google</Button>
+      <Button onClick={() => login()}>Sign in with Google</Button>
       {loginError && <p className="text-sm text-destructive">{loginError}</p>}
     </div>
   )
