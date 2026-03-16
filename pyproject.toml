@@ -20,9 +20,6 @@ dependencies = [
     "blingfire",
     "sentence-transformers",
     "transformers",
-    "accelerate",
-    "peft",
-    "bitsandbytes",
     "datasets",
     "chainlit",
     "structlog",
@@ -81,13 +78,13 @@ build-backend = "uv_build"
 module-root = ""
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 
 [project.scripts]
 meeplemate-cli = "meeplemate.cli:cli"

@@ -1,7 +1,7 @@
 # --- Stage 1: Build virtual environment and install dependencies ---
 # ARG BASE_IMAGE=pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
 ARG PYTHON_VERSION=3.12
-ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+ARG BASE_IMAGE=ubuntu:24.04
 
 FROM ${BASE_IMAGE} AS builder
 
