@@ -4,8 +4,9 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
+from meeplemate.config import PGSettings
 from meeplemate.db.base import Base
 import meeplemate.db.models  # ensure models import so metadata is populated
 
@@ -18,7 +19,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
+    url = str(PGSettings().pg.build_url())
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -45,11 +46,9 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section) or {},
-        prefix="sqlalchemy.",
+    connectable = create_async_engine(
+        PGSettings().pg.build_url(),
         poolclass=pool.NullPool,
-        future=True,
     )
 
     async with connectable.connect() as connection:

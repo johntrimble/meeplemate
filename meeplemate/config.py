@@ -2,15 +2,15 @@ from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator, Literal, Optional, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
 import os
-from langchain_classic.embeddings import FastEmbedEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_postgres import PGEngine
 from meeplemate.postgres.vectorstore import PartitionedPGVectorStore
 from langchain_postgres.v2.hybrid_search_config import HybridSearchConfig, reciprocal_rank_fusion
 from langchain_postgres.v2.indexes import DistanceStrategy
 import yaml
-from dataclasses import dataclass
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.engine import URL, make_url
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -42,12 +42,11 @@ from chainlit_cassandra_data_layer.data import CassandraDataLayer
 from meeplemate.cassandra_util import AstraDBSerializableStore
 from meeplemate.chatloop import ChatLoopService, build_chatloop_service
 from meeplemate.component_system import System, afactory, factory
-from meeplemate.ingest.gamepackage import GamePackage
 from meeplemate.game_service import GameService
 from meeplemate.postgres.store import PostgresJSONStore, PostgresSerializableStore
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.retrievers import build_retriever
-from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, sentence_transformer_to_hf_embeddings, wrap_embeddings_with_instructions
+from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, wrap_embeddings_with_instructions
 from meeplemate.pdf import parse_pdf
 from meeplemate.qa import build_qa_chain
 from chainlit.data.base import BaseDataLayer
@@ -85,6 +84,84 @@ class DBConfig(BaseModel):
         return v
 
 
+class PGConfig(BaseModel):
+    """Configuration for PostgreSQL connection.
+
+    Provide either `url` (a full connection string), individual components, or both.
+    Individual components override the corresponding parts of `url` when both are given.
+    """
+    url: Optional[str] = Field(default=None, description="Full PostgreSQL connection URL (without password)")
+    username: Optional[str] = Field(default=None)
+    password: Optional[SecretStr] = Field(default=None)
+    host: Optional[str] = Field(default=None)
+    port: Optional[int] = Field(default=None)
+    database: Optional[str] = Field(default=None)
+    query: dict[str, str] = Field(default_factory=dict, description="Query parameters, e.g. {'ssl': 'require'}")
+    pool_size: int = Field(default=10, ge=1, description="SQLAlchemy connection pool size")
+    max_overflow: int = Field(default=20, ge=0, description="SQLAlchemy max overflow connections beyond pool_size")
+    pool_pre_ping: Optional[bool] = Field(default=None, description="Whether to enable SQLAlchemy pool_pre_ping")
+    pool_recycle: Optional[int] = Field(default=None, ge=0, description="SQLAlchemy pool_recycle timeout in seconds")
+
+    def build_url(self) -> URL:
+        if self.url is not None:
+            base = make_url(self.url) if isinstance(self.url, str) else self.url
+            overrides = {
+                k: v for k, v in {
+                    "username": self.username,
+                    "password": self.password.get_secret_value() if self.password else None,
+                    "host": self.host,
+                    "port": self.port,
+                    "database": self.database,
+                }.items() if v is not None
+            }
+            merged_query = {**base.query, **self.query}
+            if merged_query:
+                overrides["query"] = merged_query
+            return base.set(**overrides) if overrides else base
+        # No URL provided — build from parts
+        return URL.create(
+            "postgresql+asyncpg",
+            username=self.username,
+            password=self.password.get_secret_value() if self.password else None,
+            host=self.host,
+            port=self.port,
+            database=self.database,
+            query=self.query,
+        )
+
+
+class PGSettings(BaseSettings):
+    """Minimal settings for loading only PG config — used by alembic and other DB-only contexts.
+
+    Supports the same MM_PG__* environment variables, .env file, and MM_CONFIG_FILE YAML as the
+    full Config class, but does not require chat/embedding/model_name to be set.
+    Extra keys from YAML or environment are silently ignored.
+    """
+    model_config = SettingsConfigDict(
+        env_prefix='MM_',
+        env_nested_delimiter='__',
+        env_file='.env',
+        env_file_encoding='utf-8',
+        case_sensitive=False,
+        extra='ignore',
+        env_ignore_empty=True,
+    )
+
+    pg: PGConfig = Field(default_factory=PGConfig)
+
+    def __init__(self, **kwargs):
+        config_file = os.environ.get('MM_CONFIG_FILE')
+        yaml_config = {}
+        if config_file:
+            config_path = Path(config_file)
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    yaml_config = yaml.safe_load(f) or {}
+            else:
+                raise FileNotFoundError(f"Config file not found: {config_file}")
+        super().__init__(**{**yaml_config, **kwargs})
+
+
 class DataAPIConfig(BaseModel):
     """Configuration for Stargate Data API access."""
     token: SecretStr = Field(description="Data API authentication token")
@@ -120,7 +197,7 @@ class ChatServiceConfig(BaseModel):
 class EmbeddingServiceConfig(BaseModel):
     """Configuration for embedding service."""
     model: str = Field(description="Name/path of the embedding model")
-    endpoint: str = Field(description="Embedding service endpoint URL")
+    endpoint: Optional[str] = Field(default=None,description="Embedding service endpoint URL")
     api_key: SecretStr = Field(description="API key for embedding service")
     parallel: Optional[int] = Field(default=None, description="If >1, use parallel encoding with specified number of workers. If 0, use all cores. If None, don't use data-parallel processing.")
     query_instruction: str = Field(default="", description="Instruction prefix for query embeddings")
@@ -181,7 +258,8 @@ class Config(BaseSettings):
         env_ignore_empty=True,
     )
 
-    db: DBConfig = Field(default_factory=DBConfig)
+    # db: DBConfig = Field(default_factory=DBConfig)
+    pg: PGConfig = Field(default_factory=PGConfig)
     ingest: IngestConfig = Field(default_factory=IngestConfig)
     # data_api: DataAPIConfig
     chat: ChatServiceConfig
@@ -614,9 +692,9 @@ def create_app_system(cfg: Config) -> System[AppServices]:
             ),
             "async_engine": (
                 factory(create_async_engine)(
-                    "postgresql+asyncpg://postgres:password@postgres:5432/postgres",
-                    pool_size=10,
-                    max_overflow=20
+                    cfg.pg.build_url(),
+                    pool_size=cfg.pg.pool_size,
+                    max_overflow=cfg.pg.max_overflow
                 ),
                 {}
             ),
@@ -674,155 +752,155 @@ def keyspace_creator(keyspaces_and_replication: Sequence[Tuple[str, int]], data_
     return _keyspace_creator
 
 
-class Services:
-    db_cluster: Cluster | None = None
-    db_session: Session | None = None
-    embedding_model: Embeddings | None = None
-    vector_store: VectorStore | None = None
-    docstore: BaseStore | None = None
-    data_layer: BaseDataLayer | None = None
-    tokenizer: Any = None
-    chain: Runnable | None = None
-    checkpointer: BaseCheckpointSaver | None = None
-    _agent_graph: CompiledStateGraph[GameRulesAgentState, None, GameRulesAgentState, GameRulesAgentState] | None = None
-    cfg: Config
-    stack: AsyncExitStack
+# class Services:
+#     db_cluster: Cluster | None = None
+#     db_session: Session | None = None
+#     embedding_model: Embeddings | None = None
+#     vector_store: VectorStore | None = None
+#     docstore: BaseStore | None = None
+#     data_layer: BaseDataLayer | None = None
+#     tokenizer: Any = None
+#     chain: Runnable | None = None
+#     checkpointer: BaseCheckpointSaver | None = None
+#     _agent_graph: CompiledStateGraph[GameRulesAgentState, None, GameRulesAgentState, GameRulesAgentState] | None = None
+#     cfg: Config
+#     stack: AsyncExitStack
 
-    @property
-    def agent_graph(self) -> CompiledStateGraph[GameRulesAgentState, None, GameRulesAgentState, GameRulesAgentState]:
-        # We do this one lazily to ensure the chainlit contextvar has been
-        # populated as the LangchainTracer depends on it.
-        if self._agent_graph is not None:
-            return self._agent_graph
-        assert self.chain is not None
-        assert self.checkpointer is not None
+#     @property
+#     def agent_graph(self) -> CompiledStateGraph[GameRulesAgentState, None, GameRulesAgentState, GameRulesAgentState]:
+#         # We do this one lazily to ensure the chainlit contextvar has been
+#         # populated as the LangchainTracer depends on it.
+#         if self._agent_graph is not None:
+#             return self._agent_graph
+#         assert self.chain is not None
+#         assert self.checkpointer is not None
 
-        chain = self.chain
-        self._agent_graph = build_graph(
-            checkpoint_saver=self.checkpointer,
-            chain=chain,
-        )
+#         chain = self.chain
+#         self._agent_graph = build_graph(
+#             checkpoint_saver=self.checkpointer,
+#             chain=chain,
+#         )
 
-        return self._agent_graph
+#         return self._agent_graph
 
-    def __init__(self, cfg: Config):
-        self.cfg = cfg
-        self.stack = AsyncExitStack()
+#     def __init__(self, cfg: Config):
+#         self.cfg = cfg
+#         self.stack = AsyncExitStack()
 
-    async def start(self):
-        # Create the db cluster and session
-        self.db_cluster = Cluster(
-            contact_points=self.cfg.db.contact_points,
-            load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=self.cfg.db.dc),
-        )
-        self.db_session = self.stack.enter_context(self.db_cluster.connect())
-        self.stack.callback(self.db_session.shutdown)
+#     async def start(self):
+#         # Create the db cluster and session
+#         self.db_cluster = Cluster(
+#             contact_points=self.cfg.db.contact_points,
+#             load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=self.cfg.db.dc),
+#         )
+#         self.db_session = self.stack.enter_context(self.db_cluster.connect())
+#         self.stack.callback(self.db_session.shutdown)
 
-        # Setup chainlit datalayer
-        data_layer = CassandraDataLayer(session=self.db_session, storage_client=None, keyspace=self.cfg.db.chainlit_keyspace)
-        data_layer.setup(replication_factor=self.cfg.db.replication_factor)
-        self.stack.push_async_callback(data_layer.close)
-        self.data_layer = data_layer
+#         # Setup chainlit datalayer
+#         data_layer = CassandraDataLayer(session=self.db_session, storage_client=None, keyspace=self.cfg.db.chainlit_keyspace)
+#         data_layer.setup(replication_factor=self.cfg.db.replication_factor)
+#         self.stack.push_async_callback(data_layer.close)
+#         self.data_layer = data_layer
 
-        # Setup the checkpointer
-        checkpointer = CassandraSaver(
-            thread_id_type="uuid",
-            keyspace=self.cfg.db.langgraph_keyspace,
-            session=self.db_session,
-        )
-        checkpointer.setup()
-        self.checkpointer = checkpointer
+#         # Setup the checkpointer
+#         checkpointer = CassandraSaver(
+#             thread_id_type="uuid",
+#             keyspace=self.cfg.db.langgraph_keyspace,
+#             session=self.db_session,
+#         )
+#         checkpointer.setup()
+#         self.checkpointer = checkpointer
 
-        # Create keyspaces for document stores and vector stores
-        if self.cfg.db.create_keyspaces:
-            create_keyspace(
-                data_api_endpoint=self.cfg.data_api.endpoint,
-                data_api_token=self.cfg.data_api.token.get_secret_value(),
-                keyspace=self.cfg.db.chainlit_keyspace,
-                replication_factor=self.cfg.db.replication_factor,
-            )
-            create_keyspace(
-                data_api_endpoint=self.cfg.data_api.endpoint,
-                data_api_token=self.cfg.data_api.token.get_secret_value(),
-                keyspace=self.cfg.db.langgraph_keyspace,
-                replication_factor=self.cfg.db.replication_factor,
-            )
+#         # Create keyspaces for document stores and vector stores
+#         if self.cfg.db.create_keyspaces:
+#             create_keyspace(
+#                 data_api_endpoint=self.cfg.data_api.endpoint,
+#                 data_api_token=self.cfg.data_api.token.get_secret_value(),
+#                 keyspace=self.cfg.db.chainlit_keyspace,
+#                 replication_factor=self.cfg.db.replication_factor,
+#             )
+#             create_keyspace(
+#                 data_api_endpoint=self.cfg.data_api.endpoint,
+#                 data_api_token=self.cfg.data_api.token.get_secret_value(),
+#                 keyspace=self.cfg.db.langgraph_keyspace,
+#                 replication_factor=self.cfg.db.replication_factor,
+#             )
 
-        # Load the embedding
-        self.embedding_model = OpenAIEmbeddings(
-            model=self.cfg.embedding.model,
-            base_url=self.cfg.embedding.endpoint,
-            api_key=self.cfg.embedding.api_key.get_secret_value(),
-            tiktoken_enabled=False
-        )
+#         # Load the embedding
+#         self.embedding_model = OpenAIEmbeddings(
+#             model=self.cfg.embedding.model,
+#             base_url=self.cfg.embedding.endpoint,
+#             api_key=self.cfg.embedding.api_key.get_secret_value(),
+#             tiktoken_enabled=False
+#         )
         
-        # Setup vector store
-        self.vector_store = build_vectorstore_cassandra(
-            embedding_model=self.embedding_model,
-            api_endpoint=self.cfg.data_api.endpoint,
-            token=self.cfg.data_api.token.get_secret_value(),
-            namespace=self.cfg.data_api.namespace,
-        )
+#         # Setup vector store
+#         self.vector_store = build_vectorstore_cassandra(
+#             embedding_model=self.embedding_model,
+#             api_endpoint=self.cfg.data_api.endpoint,
+#             token=self.cfg.data_api.token.get_secret_value(),
+#             namespace=self.cfg.data_api.namespace,
+#         )
 
-        # Setup doc store
-        self.docstore = build_docstore_cassandra(
-            api_endpoint=self.cfg.data_api.endpoint,
-            token=self.cfg.data_api.token.get_secret_value(),
-            namespace=self.cfg.data_api.namespace,
-        )
+#         # Setup doc store
+#         self.docstore = build_docstore_cassandra(
+#             api_endpoint=self.cfg.data_api.endpoint,
+#             token=self.cfg.data_api.token.get_secret_value(),
+#             namespace=self.cfg.data_api.namespace,
+#         )
 
-        # Load the tokenizer
-        self.tokenizer = load_tokenizer(self.cfg.model_name)
+#         # Load the tokenizer
+#         self.tokenizer = load_tokenizer(self.cfg.model_name)
 
-        # Build the retriever
-        retriever = build_retriever(self.tokenizer, self.vector_store, docstore=self.docstore)
+#         # Build the retriever
+#         retriever = build_retriever(self.tokenizer, self.vector_store, docstore=self.docstore)
 
-        # Optionally load documents
-        if self.cfg.load_docs:
-            rule_docs = load_docs(self.cfg.rules_path)
-            retriever.add_documents(rule_docs)
+#         # Optionally load documents
+#         if self.cfg.load_docs:
+#             rule_docs = load_docs(self.cfg.rules_path)
+#             retriever.add_documents(rule_docs)
 
-        # Build the chat model
-        if self.cfg.chat.endpoint_type == "tgi":
-            chat_model = load_tgi_chat_model(
-                tokenizer=self.tokenizer,
-                endpoint_url=self.cfg.chat.endpoint,
-                max_new_tokens=self.cfg.chat.max_new_tokens,
-                timeout=self.cfg.chat.timeout,
-                do_sample=False,
-                temperature=0.01,
-            )
-        elif self.cfg.chat.endpoint_type == "openai":
-            # For OpenAI-compatible endpoints, api_key is required even if not used for auth
-            api_key = self.cfg.chat.api_key.get_secret_value() if self.cfg.chat.api_key else "not-needed"
-            chat_model = ChatOpenAI(
-                model=self.cfg.model_name,
-                max_tokens=self.cfg.chat.max_new_tokens,
-                temperature=0.0,
-                timeout=self.cfg.chat.timeout,
-                base_url=self.cfg.chat.endpoint,
-                api_key=api_key,
-                extra_body={
-                    "top_k": 20,
-                    "min_p": 0.0,
-                    "repetition_penalty": 1.1,
-                    **({
-                        "chat_template_kwargs": {
-                            "enable_thinking": False,
-                        }
-                    } if self.cfg.chat.explicit_disable_thinking else {})
-                }
-            )
-        else:
-            raise ValueError(f"Unsupported chat endpoint type: {self.cfg.chat.endpoint_type}")
+#         # Build the chat model
+#         if self.cfg.chat.endpoint_type == "tgi":
+#             chat_model = load_tgi_chat_model(
+#                 tokenizer=self.tokenizer,
+#                 endpoint_url=self.cfg.chat.endpoint,
+#                 max_new_tokens=self.cfg.chat.max_new_tokens,
+#                 timeout=self.cfg.chat.timeout,
+#                 do_sample=False,
+#                 temperature=0.01,
+#             )
+#         elif self.cfg.chat.endpoint_type == "openai":
+#             # For OpenAI-compatible endpoints, api_key is required even if not used for auth
+#             api_key = self.cfg.chat.api_key.get_secret_value() if self.cfg.chat.api_key else "not-needed"
+#             chat_model = ChatOpenAI(
+#                 model=self.cfg.model_name,
+#                 max_tokens=self.cfg.chat.max_new_tokens,
+#                 temperature=0.0,
+#                 timeout=self.cfg.chat.timeout,
+#                 base_url=self.cfg.chat.endpoint,
+#                 api_key=api_key,
+#                 extra_body={
+#                     "top_k": 20,
+#                     "min_p": 0.0,
+#                     "repetition_penalty": 1.1,
+#                     **({
+#                         "chat_template_kwargs": {
+#                             "enable_thinking": False,
+#                         }
+#                     } if self.cfg.chat.explicit_disable_thinking else {})
+#                 }
+#             )
+#         else:
+#             raise ValueError(f"Unsupported chat endpoint type: {self.cfg.chat.endpoint_type}")
 
-        # Build the qa chain
-        self.chain = build_qa_chain(
-            chat_model=chat_model,
-            retriever=retriever,
-            embedding_model=self.embedding_model,
-            **self.cfg.qa_chain_config.model_dump()
-        )
+#         # Build the qa chain
+#         self.chain = build_qa_chain(
+#             chat_model=chat_model,
+#             retriever=retriever,
+#             embedding_model=self.embedding_model,
+#             **self.cfg.qa_chain_config.model_dump()
+#         )
 
-    async def stop(self):
-        await self.stack.aclose()
+#     async def stop(self):
+#         await self.stack.aclose()

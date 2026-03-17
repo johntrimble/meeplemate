@@ -8,6 +8,11 @@ model_name: "Qwen/Qwen3-30B-A3B-Instruct-2507"
 # model_name: "NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4"
 # model_name: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
 
+pg:
+  url: "postgresql+asyncpg://postgres:password@postgres:5432/postgres"
+  pool_size: 10
+  max_overflow: 20
+
 # Chat/LLM Service Configuration
 chat:
   # model_name: "Qwen/Qwen3-32B"
@@ -24,23 +29,8 @@ chat:
 # Embedding Service Configuration
 embedding:
   model: "BAAI/bge-small-en-v1.5"
-  endpoint: "http://tei:80/v1"
+  # endpoint: "http://tei:80/v1"
   query_instruction: "Represent this sentence for searching relevant passages: "
-
-# Data API Configuration
-data_api:
-  endpoint: "http://data-api:8181"
-  namespace: "meeplemate"
-
-# Database Configuration
-db:
-  dc: "datacenter1"
-  contact_points:
-    - "cassandra"
-  replication_factor: 1
-  chainlit_keyspace: "chainlit_meeplemate"
-  langgraph_keyspace: "meeplemate_checkpoints"
-  create_keyspaces: true
 
 # Application Settings
 rules_path: "./data/rules/munchkin_rules/"
