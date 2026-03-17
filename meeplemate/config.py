@@ -183,7 +183,7 @@ class Config(BaseSettings):
 
     db: DBConfig = Field(default_factory=DBConfig)
     ingest: IngestConfig = Field(default_factory=IngestConfig)
-    data_api: DataAPIConfig
+    # data_api: DataAPIConfig
     chat: ChatServiceConfig
     embedding: EmbeddingServiceConfig
     rules_path: Path = Field(default=Path("./data/rules/munchkin_rules/"))
