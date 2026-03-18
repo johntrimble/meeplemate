@@ -102,6 +102,15 @@ class PGConfig(BaseModel):
     pool_pre_ping: Optional[bool] = Field(default=None, description="Whether to enable SQLAlchemy pool_pre_ping")
     pool_recycle: Optional[int] = Field(default=None, ge=0, description="SQLAlchemy pool_recycle timeout in seconds")
 
+    @staticmethod
+    def _normalize_query(query: dict[str, str], drivername: str) -> dict[str, str]:
+        """Translate psycopg2-style sslmode to asyncpg-style ssl when using asyncpg driver."""
+        if "asyncpg" not in drivername or "sslmode" not in query:
+            return query
+        q = dict(query)
+        q["ssl"] = q.pop("sslmode")
+        return q
+
     def build_url(self) -> URL:
         if self.url is not None:
             base = make_url(self.url) if isinstance(self.url, str) else self.url
@@ -114,7 +123,7 @@ class PGConfig(BaseModel):
                     "database": self.database,
                 }.items() if v is not None
             }
-            merged_query = {**base.query, **self.query}
+            merged_query = self._normalize_query({**base.query, **self.query}, base.drivername)
             if merged_query:
                 overrides["query"] = merged_query
             return base.set(**overrides) if overrides else base
@@ -126,7 +135,7 @@ class PGConfig(BaseModel):
             host=self.host,
             port=self.port,
             database=self.database,
-            query=self.query,
+            query=self._normalize_query(self.query, "postgresql+asyncpg"),
         )
 
 
