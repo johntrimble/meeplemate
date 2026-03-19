@@ -1,7 +1,22 @@
 import asyncio
+import logging
 from contextlib import AbstractAsyncContextManager, ExitStack, AsyncExitStack, asynccontextmanager, contextmanager
 from functools import partial
 from typing import AsyncIterator, Awaitable, Callable, Collection, ContextManager, Iterator, Mapping, Self, Sequence, TypedDict, Tuple, Any, TypeVar, Type, Generic, cast, get_args
+
+logger = logging.getLogger(__name__)
+
+
+def _get_rss_mb() -> float:
+    """Read current RSS from /proc/self/status (Linux). Returns 0 on other platforms."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    return 0.0
 
 
 type ServiceDescriptor = Tuple[
@@ -71,11 +86,13 @@ class System(Generic[SystemMapT]):
         async with AsyncExitStack() as stack:
             start_order = topological_sort(self._normalized_components)
             system_map: dict[str, Any] = {}
+            logger.info("system_startup_begin rss_mb=%.1f components=%s", _get_rss_mb(), start_order)
             for name in start_order:
                 descriptor = self._normalized_components[name]
                 factory = descriptor["factory"]
                 args = [system_map[arg] for arg in descriptor["args"]]
                 kwargs = {k: system_map[v] for k, v in descriptor["kwargs"].items()}
+                before = _get_rss_mb()
                 component_cm = factory(*args, **kwargs)
                 if is_async_context_manager(component_cm):
                     component = await stack.enter_async_context(component_cm)  # type: ignore[arg-type]
@@ -83,6 +100,8 @@ class System(Generic[SystemMapT]):
                     component = stack.enter_context(component_cm)  # type: ignore[arg-type]
                 else:
                     component = component_cm
+                after = _get_rss_mb()
+                logger.info("component_started name=%-30s rss_mb=%6.1f delta_mb=%+.1f", name, after, after - before)
                 # Remove system map entry on exit
                 def _pop_entry(n: str) -> None:
                     system_map.pop(n, None)

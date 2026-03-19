@@ -32,6 +32,10 @@ embedding:
   # endpoint: "http://tei:80/v1"
   query_instruction: "Represent this sentence for searching relevant passages: "
 
+# Tokenizer
+# use_lightweight_tokenizer: true
+# use_approximate_tokenizer: true
+
 # Application Settings
 rules_path: "./data/rules/munchkin_rules/"
 load_docs: false

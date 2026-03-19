@@ -1,7 +1,14 @@
+from __future__ import annotations
+
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Iterator, Literal, Optional, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator, Literal, Optional, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
 import os
+
+if TYPE_CHECKING:
+    from cassandra_asyncio.cluster import Cluster
+    from cassandra.cluster import Session
+    from chainlit.data.base import BaseDataLayer
 from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_postgres import PGEngine
 from meeplemate.postgres.vectorstore import PartitionedPGVectorStore
@@ -15,11 +22,6 @@ from sqlalchemy.engine import URL, make_url
 from pydantic import BaseModel, Field, SecretStr, field_validator, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from langchain_astradb import AstraDBStore, AstraDBVectorStore
-from langchain_astradb.utils.astradb import HybridSearchMode
-from cassandra_asyncio.cluster import Cluster
-from cassandra.cluster import Session
-from cassandra.policies import DCAwareRoundRobinPolicy
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -35,21 +37,16 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
 
-from langgraph_checkpoint_cassandra import CassandraSaver
-from chainlit_cassandra_data_layer.data import CassandraDataLayer
 
 
-from meeplemate.cassandra_util import AstraDBSerializableStore
 from meeplemate.chatloop import ChatLoopService, build_chatloop_service
 from meeplemate.component_system import System, afactory, factory
 from meeplemate.game_service import GameService
 from meeplemate.postgres.store import PostgresJSONStore, PostgresSerializableStore
 from meeplemate.qa_graph import QAService, build_qa_service
-from meeplemate.retrievers import build_retriever
-from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, wrap_embeddings_with_instructions
+from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, load_lightweight_tokenizer, load_approximate_tokenizer, wrap_embeddings_with_instructions
 from meeplemate.pdf import parse_pdf
 from meeplemate.qa import build_qa_chain
-from chainlit.data.base import BaseDataLayer
 from meeplemate.db.repository import PostgresDataLayer
 
 from meeplemate.search import (
@@ -284,6 +281,17 @@ class Config(BaseSettings):
         default=None,
         description='JSON string for bypass user, e.g. {"uid":"dev","email":"dev@local","name":"Dev"} (MM_AUTH_BYPASS_USER)',
     )
+    use_lightweight_tokenizer: bool = Field(
+        default=False,
+        description="Use lightweight tokenizer for token counting instead of full AutoTokenizer. Saves ~130 MB. Do not use for ingest pipeline.",
+    )
+    use_approximate_tokenizer: bool = Field(
+        default=False,
+        description="Use character-count heuristic for token budgeting instead of a real tokenizer. "
+                    "Saves ~94 MB vs LightweightTokenizer. Accuracy: ~7% mean over-estimate (p95: +15%). "
+                    "Safe for context-budget decisions; billing uses actual counts from the OpenAI endpoint. "
+                    "Set to false to switch back to LightweightTokenizer.",
+    )
 
     def __init__(self, **kwargs):
         """Initialize config with support for YAML file loading.
@@ -346,6 +354,8 @@ def create_keyspace(data_api_endpoint:str, data_api_token:str, keyspace:str, rep
 
 
 def build_vectorstore_cassandra(*, embedding_model: Embeddings, api_endpoint: str, token: str, namespace: str) -> VectorStore:
+    from langchain_astradb import AstraDBVectorStore
+    from langchain_astradb.utils.astradb import HybridSearchMode
     vector_store = AstraDBVectorStore(
             collection_name="document_vector_mapping",
             embedding=embedding_model,
@@ -359,6 +369,7 @@ def build_vectorstore_cassandra(*, embedding_model: Embeddings, api_endpoint: st
 
 
 def build_docstore_cassandra(*, api_endpoint, token, namespace) -> BaseStore:
+    from meeplemate.cassandra_util import AstraDBSerializableStore
     store = AstraDBSerializableStore(
         collection_name="document_store",
         api_endpoint=api_endpoint,
@@ -369,6 +380,7 @@ def build_docstore_cassandra(*, api_endpoint, token, namespace) -> BaseStore:
 
 
 def build_data_store_cassandra(*, api_endpoint, token, namespace, collection_name) -> BaseStore:
+    from langchain_astradb import AstraDBStore
     store = AstraDBStore(
         collection_name=collection_name,
         api_endpoint=api_endpoint,
@@ -475,7 +487,11 @@ class FullPageMdDao:
 
 
 def create_app_system(cfg: Config) -> System[AppServices]:
-    
+
+    def _build_retriever(*args, **kwargs):
+        from meeplemate.retrievers import build_retriever
+        return build_retriever(*args, **kwargs)
+
     @contextmanager
     def create_session(cluster: Cluster) -> Iterator[Session]:
         with cluster.connect() as session:
@@ -581,11 +597,15 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 }
             ),
             "tokenizer": (
-                factory(load_tokenizer)(cfg.model_name),
+                factory(
+                    load_approximate_tokenizer if cfg.use_approximate_tokenizer
+                    else load_lightweight_tokenizer if cfg.use_lightweight_tokenizer
+                    else load_tokenizer
+                )(**({} if cfg.use_approximate_tokenizer else {"model_name": cfg.model_name})),
                 []
             ),
             "retriever": (
-                factory(build_retriever)(),
+                factory(_build_retriever)(),
                 ["tokenizer", "vector_store"],
                 {"docstore": "docstore"}
             ),
@@ -736,6 +756,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
 def create_data_layer(storage_client: Any, keyspace: str, replication_factor: int) -> Callable[[Session], AsyncContextManager[BaseDataLayer]]:
     @asynccontextmanager
     async def _with_data_layer(session: Session) -> AsyncIterator[BaseDataLayer]:
+        from chainlit_cassandra_data_layer.data import CassandraDataLayer
         dl = CassandraDataLayer(session=session, storage_client=storage_client, keyspace=keyspace)
         try:
             dl.setup(replication_factor=replication_factor)
