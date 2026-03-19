@@ -121,6 +121,7 @@ jobs:
             -e MM_CHAT__ENDPOINT_TYPE=openai \
             -e MM_CHAT__MODEL_NAME=dummy \
             -e MM_MODEL_NAME=dummy \
+            -e MM_EMBEDDING__MODEL=BAAI/bge-small-en-v1.5 \
             -e MM_EMBEDDING__API_KEY=dummy \
             "$IMAGE"
 
