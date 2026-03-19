@@ -134,9 +134,14 @@ jobs:
           docker logs api-test 2>&1 | grep -q "Application startup complete" \
             || { echo "ERROR: API did not start within 60s"; docker logs api-test; exit 1; }
 
-          MEM_BYTES=$(docker stats --no-stream --format "{{.MemUsage}}" api-test \
-            | awk '{print $1}' | numfmt --from=iec)
-          MEM_MB=$(( MEM_BYTES / 1024 / 1024 ))
+          MEM_MB=$(docker stats --no-stream --format "{{.MemUsage}}" api-test \
+            | awk '{
+                v=$1
+                if (sub(/GiB$/, "", v)) v = int(v * 1024)
+                else if (sub(/MiB$/, "", v)) v = int(v)
+                else if (sub(/kB$/, "", v)) v = int(v / 1024)
+                print int(v)
+              }')
           echo "Container memory: ${MEM_MB} MB"
 
           LIMIT=400
