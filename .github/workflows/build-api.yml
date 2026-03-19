@@ -19,21 +19,29 @@ env:
   IMAGE_NAME: ${{ github.repository }}/api
 
 jobs:
-  build-and-push:
+  build-test-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    outputs:
-      short_sha: ${{ steps.sha.outputs.short }}
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Get short SHA
-        id: sha
-        run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -62,58 +70,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push
+      - name: Build (local)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.api
-          push: true
+          load: true
+          push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
-  memory-test:
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    permissions:
-      packages: read
-
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull image
-        run: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ needs.build-and-push.outputs.short_sha }}
-
       - name: Run alembic migrations
         run: |
           docker run --rm --network host \
             -e MM_PG__URL=postgresql+asyncpg://postgres:password@localhost:5432/postgres \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ needs.build-and-push.outputs.short_sha }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$(git rev-parse --short HEAD) \
             alembic upgrade head
 
-      - name: Start API and check memory
+      - name: Memory test
         run: |
-          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ needs.build-and-push.outputs.short_sha }}
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$(git rev-parse --short HEAD)
           docker run -d --name api-test --network host \
             -e MM_AUTH_BYPASS=true \
             -e MM_PG__URL=postgresql+asyncpg://postgres:password@localhost:5432/postgres \
@@ -151,3 +129,15 @@ jobs:
             exit 1
           fi
           echo "PASS: ${MEM_MB} MB is within limit of ${LIMIT} MB"
+
+      - name: Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.api
+          load: false
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
