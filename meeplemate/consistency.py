@@ -7,10 +7,6 @@ from typing import Literal
 import structlog
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
-from sklearn.preprocessing import normalize
-from sklearn.cluster import KMeans
-from sklearn.metrics.pairwise import cosine_similarity
 from langchain_core.callbacks.manager import CallbackManagerForChainRun
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, format_document
 from langchain_core.runnables import Runnable

@@ -5,8 +5,6 @@ description = "Board Game AI Assistant"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "torch",
-    "torchvision",
     "scipy",
     "matplotlib",
     "tqdm",
@@ -18,11 +16,8 @@ dependencies = [
     "langchain-classic",
     "langchain-postgres",
     "blingfire",
-    "sentence-transformers",
     "transformers",
-    "accelerate",
-    "peft",
-    "bitsandbytes",
+    "tokenizers>=0.19",
     "datasets",
     "chainlit",
     "structlog",
@@ -80,14 +75,7 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-root = ""
 
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
 
 [project.scripts]
 meeplemate-cli = "meeplemate.cli:cli"

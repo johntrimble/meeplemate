@@ -1,0 +1,143 @@
+name: Build API Image
+
+on:
+  push:
+    branches:
+    - dev
+    - main
+    - "25-add-api-image"
+    paths:
+      - "docker/Dockerfile.api"
+      - "meeplemate/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/build-api.yml"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/api
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: johntrimble
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            johntrimble/meeplemate-api
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/dev' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (local)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.api
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+      - name: Run alembic migrations
+        run: |
+          docker run --rm --network host \
+            -e MM_PG__URL=postgresql+asyncpg://postgres:password@localhost:5432/postgres \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$(git rev-parse --short HEAD) \
+            alembic upgrade head
+
+      - name: Memory test
+        run: |
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$(git rev-parse --short HEAD)
+          docker run -d --name api-test --network host \
+            -e MM_AUTH_BYPASS=true \
+            -e MM_PG__URL=postgresql+asyncpg://postgres:password@localhost:5432/postgres \
+            -e MM_CHAT__ENDPOINT=http://localhost:9999/v1 \
+            -e MM_CHAT__ENDPOINT_TYPE=openai \
+            -e MM_CHAT__MODEL_NAME=dummy \
+            -e MM_MODEL_NAME=dummy \
+            -e MM_EMBEDDING__MODEL=BAAI/bge-small-en-v1.5 \
+            -e MM_EMBEDDING__API_KEY=dummy \
+            "$IMAGE"
+
+          echo "Waiting for startup..."
+          for i in $(seq 1 60); do
+            docker logs api-test 2>&1 | grep -q "Application startup complete" && break
+            sleep 1
+          done
+
+          docker logs api-test 2>&1 | grep -q "Application startup complete" \
+            || { echo "ERROR: API did not start within 60s"; docker logs api-test; exit 1; }
+
+          MEM_MB=$(docker stats --no-stream --format "{{.MemUsage}}" api-test \
+            | awk '{
+                v=$1
+                if (sub(/GiB$/, "", v)) v = int(v * 1024)
+                else if (sub(/MiB$/, "", v)) v = int(v)
+                else if (sub(/kB$/, "", v)) v = int(v / 1024)
+                print int(v)
+              }')
+          echo "Container memory: ${MEM_MB} MB"
+
+          LIMIT=400
+          if [ "$MEM_MB" -gt "$LIMIT" ]; then
+            echo "FAIL: ${MEM_MB} MB exceeds limit of ${LIMIT} MB"
+            docker logs api-test
+            exit 1
+          fi
+          echo "PASS: ${MEM_MB} MB is within limit of ${LIMIT} MB"
+
+      - name: Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.api
+          load: false
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max

@@ -18,10 +18,13 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
 
+import structlog
 import firebase_admin
 import firebase_admin.auth
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # User dataclass returned by get_current_user
@@ -89,6 +92,7 @@ async def get_current_user(
 
     # --- Normal mode: validate Firebase ID token ---
     if credentials is None or not credentials.credentials:
+        log.warning("auth.missing_token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing authentication token",
@@ -105,18 +109,21 @@ async def get_current_user(
 
         decoded = firebase_admin.auth.verify_id_token(token, app=app)
     except firebase_admin.auth.InvalidIdTokenError as exc:
+        log.warning("auth.invalid_token", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {exc}",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     except firebase_admin.auth.ExpiredIdTokenError as exc:
+        log.warning("auth.token_expired", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token expired",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     except Exception as exc:
+        log.exception("auth.token_validation_failed", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token validation failed",

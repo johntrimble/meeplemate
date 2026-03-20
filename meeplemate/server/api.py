@@ -1,4 +1,17 @@
+import sys
+
+# Block transformers from loading via langchain_core.language_models.base.
+# That module does `from transformers import GPT2TokenizerFast` at import time
+# (inside try/except ImportError) as a GPT-2 fallback tokenizer. We never use
+# this fallback: ChatOpenAI uses tiktoken and we use LightweightTokenizer.
+# sys.modules[name] = None causes any import of that name to raise
+# ModuleNotFoundError, which langchain_core catches and sets _HAS_TRANSFORMERS=False.
+# Safe for the API process only — ingest runs separately and is unaffected.
+if "transformers" not in sys.modules:
+    sys.modules["transformers"] = None  # type: ignore[assignment]
+
 import json
+import logging
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict
@@ -6,6 +19,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from typing import Literal
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 
 from meeplemate.chatloop import ChatLoopServiceInput, cast
 from meeplemate.component_system import subsystem
@@ -19,6 +34,8 @@ from meeplemate.server.rate_limit import RateLimitState, TokenCountingCallback, 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Config = Config()
+    settings.use_lightweight_tokenizer = True
+    settings.use_approximate_tokenizer = True
     app_system: System = create_app_system(settings)
     system = subsystem(app_system, names=["api_deps"])
 

@@ -1,11 +1,11 @@
+from __future__ import annotations
+
 import dataclasses
 from dataclasses import dataclass
 from operator import itemgetter
 from typing import Annotated, Any, Literal, NotRequired, Optional, Sequence, TypedDict, List, cast
 from langchain.messages import AIMessage
-from langchain_classic.retrievers import MultiVectorRetriever
 from langchain_classic.schema.runnable import ConfigurableField
-from langchain_classic.schema.vectorstore import VectorStoreRetriever
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
