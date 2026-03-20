@@ -76,7 +76,11 @@ COPY --from=builder /app /app
 ENV PATH="/opt/venv/bin:$PATH" \
     FASTEMBED_CACHE_PATH=/opt/fastembed_cache \
     HF_HOME=/opt/hf_cache \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HUB_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    DO_NOT_TRACK=1
 
 WORKDIR /app
 EXPOSE 8000

@@ -45,7 +45,6 @@ from meeplemate.game_service import GameService
 from meeplemate.postgres.store import PostgresJSONStore, PostgresSerializableStore
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, load_lightweight_tokenizer, load_approximate_tokenizer, wrap_embeddings_with_instructions
-from meeplemate.pdf import parse_pdf
 from meeplemate.qa import build_qa_chain
 from meeplemate.db.repository import PostgresDataLayer
 
@@ -391,6 +390,7 @@ def build_data_store_cassandra(*, api_endpoint, token, namespace, collection_nam
 
 
 def load_docs(rules_path: Path) -> list[Document]:
+    from meeplemate.pdf import parse_pdf  # lazy: only used during ingest, not API startup
     rule_docs = []
     for filename in rules_path.glob("*.pdf"):
         print(f"Processing {filename}")
