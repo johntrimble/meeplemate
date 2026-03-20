@@ -723,7 +723,9 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 factory(create_async_engine)(
                     cfg.pg.build_url(),
                     pool_size=cfg.pg.pool_size,
-                    max_overflow=cfg.pg.max_overflow
+                    max_overflow=cfg.pg.max_overflow,
+                    pool_pre_ping=cfg.pg.pool_pre_ping,
+                    pool_recycle=cfg.pg.pool_recycle,
                 ),
                 {}
             ),
