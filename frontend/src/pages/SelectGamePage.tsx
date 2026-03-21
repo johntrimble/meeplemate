@@ -38,7 +38,7 @@ export default function SelectGamePage() {
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !isLoading) {
+        if (entries[0].isIntersecting && hasMore) {
           loadMore()
         }
       },
@@ -47,7 +47,7 @@ export default function SelectGamePage() {
 
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasMore, isLoading, loadMore])
+  }, [hasMore, loadMore])
 
   return (
     <div className="h-full bg-background flex flex-col">

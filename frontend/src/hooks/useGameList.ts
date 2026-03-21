@@ -41,6 +41,7 @@ export function useGameList(): UseGameListResult {
       })
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : 'Failed to load games')
+        setHasMore(false)
       })
       .finally(() => {
         loadingRef.current = false
