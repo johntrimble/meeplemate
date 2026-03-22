@@ -1,6 +1,8 @@
 import { useCallback } from 'react'
 import { useAuth } from './useAuth'
 
+const BASE_URL = import.meta.env.VITE_API_URL ?? ''
+
 /**
  * Returns an async fetch wrapper that injects `Authorization: Bearer <id_token>`
  * on every request. Drop-in replacement for the global `fetch`.
@@ -10,7 +12,7 @@ export function useAuthFetch() {
 
   return useCallback(async (url: string, options: RequestInit = {}): Promise<Response> => {
     const token = await getIdToken()
-    return fetch(url, {
+    return fetch(`${BASE_URL}${url}`, {
       ...options,
       headers: {
         ...options.headers,
