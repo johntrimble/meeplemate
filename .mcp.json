@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp", "--headless", "--browser", "chromium"],
+      "command": "playwright-mcp",
+      "args": ["--headless", "--browser", "chromium"],
       "env": {
         "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright"
       }

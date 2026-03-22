@@ -22,6 +22,7 @@ import { type Game } from '@/data/games'
 import { useGame } from '@/hooks/useGame'
 import { cn } from '@/lib/utils'
 import {
+  CheckIcon,
   CopyIcon,
   MenuIcon,
   RefreshCwIcon,
@@ -206,8 +207,29 @@ function AssistantMsg({
   const combinedText = textParts.map((p) => p.text).join('')
   const isReasoningStreaming = isStreaming && combinedText.length === 0
 
+  const [isCopied, setIsCopied] = useState(false)
+
   const handleCopy = () => {
-    navigator.clipboard.writeText(combinedText).catch(() => {})
+    const fallback = () => {
+      const el = document.createElement('textarea')
+      el.value = combinedText
+      document.body.appendChild(el)
+      el.select()
+      document.execCommand('copy')
+      document.body.removeChild(el)
+    }
+
+    const finish = () => {
+      setIsCopied(true)
+      setTimeout(() => setIsCopied(false), 2000)
+    }
+
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(combinedText).catch(fallback).finally(finish)
+    } else {
+      fallback()
+      finish()
+    }
   }
 
   const handleFeedback = async (clicked: 0 | 1) => {
@@ -241,8 +263,8 @@ function AssistantMsg({
 
       {combinedText && (
         <MessageActions>
-          <MessageAction tooltip="Copy" onClick={handleCopy}>
-            <CopyIcon className="size-4" />
+          <MessageAction tooltip={isCopied ? 'Copied!' : 'Copy'} onClick={handleCopy}>
+            {isCopied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
           </MessageAction>
           <MessageAction
             tooltip="Good response"
