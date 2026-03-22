@@ -31,10 +31,7 @@ async def _answer_astream(*args, **kwargs):
 
 def test_retry_success(api_client: TestClient, mock_data_layer: AsyncMock):
     """A valid retry deactivates the old message and streams back a new answer."""
-    from meeplemate.server import api
-
-    deps = api.app.state.deps
-    deps.chatloop_service.astream = _answer_astream
+    api_client.app.state.deps.chatloop_service.astream = _answer_astream
 
     resp = api_client.post(STREAM_URL, json=RETRY_BODY)
 
@@ -97,14 +94,11 @@ def test_retry_user_message(api_client: TestClient, mock_data_layer: AsyncMock):
 
 def test_retry_game_not_found(api_client: TestClient, mock_data_layer: AsyncMock):
     """Returns 404 when the game manifest is missing."""
-    from meeplemate.server import api as api_module
-
-    deps = api_module.app.state.deps
-    deps.game_service.get_manifest.return_value = None
+    api_client.app.state.deps.game_service.get_manifest.return_value = None
     try:
         resp = api_client.post(STREAM_URL, json=RETRY_BODY)
     finally:
-        deps.game_service.get_manifest.return_value = {
+        api_client.app.state.deps.game_service.get_manifest.return_value = {
             "game_id": "test-game",
             "name": "Test Game",
             "rulebooks": [],

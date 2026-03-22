@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.engine import URL, make_url
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, ConfigDict
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource
 
 
 from langchain_core.documents import Document
@@ -51,8 +51,33 @@ from meeplemate.db.repository import PostgresDataLayer
 from meeplemate.search import (
     ChunkSearchService, build_chunk_search_service, build_chunk_search_service_2
 )
-from meeplemate.server.deps import ApiDeps
+from meeplemate.server.deps import ApiDeps, CorsConfig
 from meeplemate.server.rate_limit import RateLimitConfig, RateLimiter
+
+
+class YamlConfigSettingsSource(PydanticBaseSettingsSource):
+    """Loads settings from a YAML file pointed to by MM_CONFIG_FILE.
+
+    Slotted below env vars / .env in the priority chain so that environment
+    variables always win over YAML values.
+    """
+
+    def __init__(self, settings_cls: type[BaseSettings]):
+        super().__init__(settings_cls)
+        config_file = os.environ.get('MM_CONFIG_FILE')
+        self._data: dict[str, Any] = {}
+        if config_file:
+            config_path = Path(config_file)
+            if not config_path.exists():
+                raise FileNotFoundError(f"Config file not found: {config_file}")
+            with open(config_path, 'r') as f:
+                self._data = yaml.safe_load(f) or {}
+
+    def get_field_value(self, field, field_name):
+        return self._data.get(field_name), field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        return self._data
 
 
 class IngestConfig(BaseModel):
@@ -154,17 +179,9 @@ class PGSettings(BaseSettings):
 
     pg: PGConfig = Field(default_factory=PGConfig)
 
-    def __init__(self, **kwargs):
-        config_file = os.environ.get('MM_CONFIG_FILE')
-        yaml_config = {}
-        if config_file:
-            config_path = Path(config_file)
-            if config_path.exists():
-                with open(config_path, 'r') as f:
-                    yaml_config = yaml.safe_load(f) or {}
-            else:
-                raise FileNotFoundError(f"Config file not found: {config_file}")
-        super().__init__(**{**yaml_config, **kwargs})
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, **kwargs):
+        return (init_settings, env_settings, dotenv_settings, YamlConfigSettingsSource(settings_cls))
 
 
 class DataAPIConfig(BaseModel):
@@ -275,6 +292,7 @@ class Config(BaseSettings):
     qa_chain_config: QAChainConfig = Field(default_factory=QAChainConfig)
     firebase: FirebaseConfig = Field(default_factory=FirebaseConfig)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
+    cors: CorsConfig = Field(default_factory=CorsConfig)
     auth_bypass: bool = Field(default=False, description="Skip token validation and use a hardcoded user (MM_AUTH_BYPASS)")
     auth_bypass_user: Optional[str] = Field(
         default=None,
@@ -292,30 +310,9 @@ class Config(BaseSettings):
                     "Set to false to switch back to LightweightTokenizer.",
     )
 
-    def __init__(self, **kwargs):
-        """Initialize config with support for YAML file loading.
-
-        Checks MM_CONFIG_FILE environment variable for YAML config path.
-        YAML values are used as defaults, with environment variables taking precedence.
-        """
-        # Load YAML config if specified
-        config_file = os.environ.get('MM_CONFIG_FILE')
-        print(f"Loading configuration from: {config_file}" if config_file else "No YAML config file specified.")
-        yaml_config = {}
-
-        if config_file:
-            config_path = Path(config_file)
-            if config_path.exists():
-                with open(config_path, 'r') as f:
-                    yaml_config = yaml.safe_load(f) or {}
-            else:
-                raise FileNotFoundError(f"Config file not found: {config_file}")
-
-        # Merge YAML config with explicit kwargs (kwargs take precedence)
-        # This creates the base that environment variables will override
-        merged_config = {**yaml_config, **kwargs}
-
-        super().__init__(**merged_config)
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, **kwargs):
+        return (init_settings, env_settings, dotenv_settings, YamlConfigSettingsSource(settings_cls))
 
     @field_validator('rules_path', mode='before')
     @classmethod
@@ -742,7 +739,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 ["pg_data_layer"],
             ),
             "api_deps": (
-                factory(ApiDeps)(),
+                factory(ApiDeps)(cors_config=cfg.cors),
                 {
                     "chatloop_service": "chatloop_service",
                     "game_service": "game_service",

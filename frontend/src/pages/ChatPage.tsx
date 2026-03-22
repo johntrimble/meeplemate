@@ -580,7 +580,7 @@ function ChatView({
   const { messages: chatMessages, sendMessage, regenerate, status } = useChat({
     messages: initialMessages,
     transport: new DefaultChatTransport({
-      api: `/api/chats/${chatId}/stream`,
+      api: `${import.meta.env.VITE_API_URL ?? ''}/api/chats/${chatId}/stream`,
       prepareSendMessagesRequest: async ({ messages, trigger, messageId }) => {
         const last = messages[messages.length - 1]
         const text =
