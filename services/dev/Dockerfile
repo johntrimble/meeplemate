@@ -89,8 +89,13 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Playwright Chromium for browser automation (@playwright/mcp)
+# We install @playwright/mcp globally first, then use its bundled playwright to
+# install chromium — this guarantees the browser version always matches the MCP
+# server, avoiding "browser not installed" errors after package updates.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-RUN npx playwright install chromium --with-deps && \
+RUN npm install -g @playwright/mcp && \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+        "$(npm root -g)/@playwright/mcp/node_modules/.bin/playwright" install chromium --with-deps && \
     chmod -R 777 /opt/ms-playwright
 
 # User and group IDs for the non-root user
