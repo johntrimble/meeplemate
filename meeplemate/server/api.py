@@ -15,7 +15,8 @@ import logging
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Literal
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
@@ -31,24 +32,53 @@ from meeplemate.server.deps import ApiDeps
 from meeplemate.server.rate_limit import RateLimitState, TokenCountingCallback, check_rate_limit
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    settings: Config = Config()
-    settings.use_lightweight_tokenizer = True
-    settings.use_approximate_tokenizer = True
-    app_system: System = create_app_system(settings)
-    system = subsystem(app_system, names=["api_deps"])
-
-    async with system.astart() as started_system:
-        app.state.deps = started_system["api_deps"]
-        yield
-
-
 def get_deps(request: Request) -> ApiDeps:
     return request.app.state.deps
 
 
-app = FastAPI(lifespan=lifespan)
+router = APIRouter()
+
+
+def create_app(api_deps: ApiDeps | None = None) -> FastAPI:
+    """Create and configure the FastAPI application.
+
+    In production (api_deps=None), loads Config and starts the full component
+    system. In tests, pass a pre-built ApiDeps to skip system startup entirely.
+    """
+    settings: Config | None = None
+    if api_deps is None:
+        settings = Config()
+        settings.use_lightweight_tokenizer = True
+        settings.use_approximate_tokenizer = True
+
+    cors_origins = (
+        api_deps.cors_config.allowed_origins
+        if api_deps is not None
+        else settings.cors.allowed_origins  # type: ignore[union-attr]
+    )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if api_deps is not None:
+            app.state.deps = api_deps
+            yield
+        else:
+            app_system: System = create_app_system(settings)  # type: ignore[arg-type]
+            system = subsystem(app_system, names=["api_deps"])
+            async with system.astart() as started_system:
+                app.state.deps = started_system["api_deps"]
+                yield
+
+    new_app = FastAPI(lifespan=lifespan)
+    new_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    new_app.include_router(router)
+    return new_app
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +104,7 @@ class GamesPage(BaseModel):
     data: list[GameInfo]
 
 
-@app.get("/api/games")
+@router.get("/api/games")
 async def get_games(
     first: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
@@ -91,7 +121,7 @@ async def get_games(
     )
 
 
-@app.get("/api/games/{game_id}")
+@router.get("/api/games/{game_id}")
 async def get_game(
     game_id: str,
     user: AuthUser = Depends(get_current_user),
@@ -104,7 +134,7 @@ async def get_game(
     return GameInfo(id=manifest["game_id"], name=manifest["name"], summary=manifest.get("summary"), emoji=manifest.get("emoji"), background_color=manifest.get("background_color"))
 
 
-@app.get("/api/recent-games")
+@router.get("/api/recent-games")
 async def get_recent_games(
     first: int = Query(default=5, ge=1, le=20),
     cursor: str | None = Query(default=None),
@@ -137,7 +167,7 @@ class ChatsPage(BaseModel):
     data: list[ChatSummary]
 
 
-@app.get("/api/games/{game_id}/chats")
+@router.get("/api/games/{game_id}/chats")
 async def list_game_chats(
     game_id: str,
     first: int = Query(default=20, ge=1, le=100),
@@ -162,7 +192,7 @@ class CreateChatResponse(BaseModel):
     chat_id: str
 
 
-@app.post("/api/games/{game_id}/chats")
+@router.post("/api/games/{game_id}/chats")
 async def create_chat(
     game_id: str,
     user: AuthUser = Depends(get_current_user),
@@ -192,7 +222,7 @@ class ChatMessageOut(BaseModel):
     feedback: int | None = None
 
 
-@app.get("/api/chats/{chat_id}/messages")
+@router.get("/api/chats/{chat_id}/messages")
 async def get_chat_messages(
     chat_id: str,
     user: AuthUser = Depends(get_current_user),
@@ -215,7 +245,7 @@ class FeedbackRequest(BaseModel):
     value: Literal[0, 1]
 
 
-@app.put("/api/messages/{message_id}/feedback", status_code=204)
+@router.put("/api/messages/{message_id}/feedback", status_code=204)
 async def set_message_feedback(
     message_id: str,
     body: FeedbackRequest,
@@ -231,7 +261,7 @@ async def set_message_feedback(
     return Response(status_code=204)
 
 
-@app.delete("/api/messages/{message_id}/feedback", status_code=204)
+@router.delete("/api/messages/{message_id}/feedback", status_code=204)
 async def delete_message_feedback(
     message_id: str,
     user: AuthUser = Depends(get_current_user),
@@ -256,7 +286,7 @@ class StreamChatRequest(BaseModel):
     retry_message_id: str | None = None
 
 
-@app.post("/api/chats/{chat_id}/stream")
+@router.post("/api/chats/{chat_id}/stream")
 async def stream_chat(
     chat_id: str,
     request: StreamChatRequest,

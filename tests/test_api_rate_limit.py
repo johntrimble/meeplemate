@@ -34,7 +34,6 @@ def _zero_state(config: RateLimitConfig) -> RateLimitState:
 def test_stream_returns_429_when_rate_limited(api_client, rate_limit_config) -> None:
     """POST to stream returns 429 with correct JSON schema when limit exceeded."""
     from meeplemate.server.rate_limit import check_rate_limit
-    from meeplemate.server.api import app
 
     def _raise_429():
         raise HTTPException(
@@ -50,11 +49,11 @@ def test_stream_returns_429_when_rate_limited(api_client, rate_limit_config) -> 
             headers=_zero_state(rate_limit_config).headers(),
         )
 
-    app.dependency_overrides[check_rate_limit] = _raise_429
+    api_client.app.dependency_overrides[check_rate_limit] = _raise_429
     try:
         response = api_client.post(STREAM_URL, json=STREAM_BODY)
     finally:
-        app.dependency_overrides.pop(check_rate_limit, None)
+        api_client.app.dependency_overrides.pop(check_rate_limit, None)
 
     assert response.status_code == 429
     body = response.json()
@@ -66,7 +65,6 @@ def test_stream_returns_429_when_rate_limited(api_client, rate_limit_config) -> 
 def test_429_includes_rate_limit_headers(api_client, rate_limit_config) -> None:
     """429 response includes IETF ratelimit headers."""
     from meeplemate.server.rate_limit import check_rate_limit
-    from meeplemate.server.api import app
 
     headers = _zero_state(rate_limit_config).headers()
 
@@ -79,11 +77,11 @@ def test_429_includes_rate_limit_headers(api_client, rate_limit_config) -> None:
             headers=headers,
         )
 
-    app.dependency_overrides[check_rate_limit] = _raise_429
+    api_client.app.dependency_overrides[check_rate_limit] = _raise_429
     try:
         response = api_client.post(STREAM_URL, json=STREAM_BODY)
     finally:
-        app.dependency_overrides.pop(check_rate_limit, None)
+        api_client.app.dependency_overrides.pop(check_rate_limit, None)
 
     assert response.status_code == 429
     for header in ("RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "RateLimit-Policy"):
@@ -97,20 +95,19 @@ def test_429_includes_rate_limit_headers(api_client, rate_limit_config) -> None:
 def test_success_includes_rate_limit_headers(api_client, rate_limit_config) -> None:
     """Successful stream response includes all four IETF ratelimit headers."""
     from meeplemate.server.rate_limit import check_rate_limit
-    from meeplemate.server.api import app
 
     state = _zero_state(rate_limit_config)
 
     async def mock_astream(*args, **kwargs):
         yield None, None, {"type": "mm_user_query_answered", "answer": "42"}
 
-    app.dependency_overrides[check_rate_limit] = lambda: state
+    api_client.app.dependency_overrides[check_rate_limit] = lambda: state
     api_client.app.state.deps.chatloop_service.astream = mock_astream
 
     try:
         response = api_client.post(STREAM_URL, json=STREAM_BODY)
     finally:
-        app.dependency_overrides.pop(check_rate_limit, None)
+        api_client.app.dependency_overrides.pop(check_rate_limit, None)
 
     assert response.status_code == 200
     for header in ("RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "RateLimit-Policy"):
@@ -120,14 +117,13 @@ def test_success_includes_rate_limit_headers(api_client, rate_limit_config) -> N
 def test_token_usage_recorded_after_stream(api_client, mock_data_layer, rate_limit_config) -> None:
     """record_token_usage is called once after a successful stream completes."""
     from meeplemate.server.rate_limit import check_rate_limit
-    from meeplemate.server.api import app
 
     state = _zero_state(rate_limit_config)
 
     async def mock_astream(*args, **kwargs):
         yield None, None, {"type": "mm_user_query_answered", "answer": "test answer"}
 
-    app.dependency_overrides[check_rate_limit] = lambda: state
+    api_client.app.dependency_overrides[check_rate_limit] = lambda: state
     api_client.app.state.deps.chatloop_service.astream = mock_astream
 
     mock_data_layer.record_token_usage.reset_mock()
@@ -135,7 +131,7 @@ def test_token_usage_recorded_after_stream(api_client, mock_data_layer, rate_lim
     try:
         api_client.post(STREAM_URL, json=STREAM_BODY)
     finally:
-        app.dependency_overrides.pop(check_rate_limit, None)
+        api_client.app.dependency_overrides.pop(check_rate_limit, None)
 
     mock_data_layer.record_token_usage.assert_called_once()
     call_args = mock_data_layer.record_token_usage.call_args
@@ -147,7 +143,6 @@ def test_token_usage_recorded_after_stream(api_client, mock_data_layer, rate_lim
 def test_token_usage_not_recorded_on_429(api_client, mock_data_layer, rate_limit_config) -> None:
     """record_token_usage is NOT called when the request is rejected pre-stream."""
     from meeplemate.server.rate_limit import check_rate_limit
-    from meeplemate.server.api import app
 
     def _raise_429():
         raise HTTPException(status_code=429, detail={"error": "rate_limit_exceeded",
@@ -155,12 +150,12 @@ def test_token_usage_not_recorded_on_429(api_client, mock_data_layer, rate_limit
                                                       "used": 2, "message": "x",
                                                       "resets_at": "2026-01-01T00:00:00+00:00"})
 
-    app.dependency_overrides[check_rate_limit] = _raise_429
+    api_client.app.dependency_overrides[check_rate_limit] = _raise_429
     mock_data_layer.record_token_usage.reset_mock()
 
     try:
         api_client.post(STREAM_URL, json=STREAM_BODY)
     finally:
-        app.dependency_overrides.pop(check_rate_limit, None)
+        api_client.app.dependency_overrides.pop(check_rate_limit, None)
 
     mock_data_layer.record_token_usage.assert_not_called()

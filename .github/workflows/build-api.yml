@@ -5,7 +5,7 @@ on:
     branches:
     - dev
     - main
-    - "25-add-api-image"
+    - "30-cors-api"
     paths:
       - "docker/Dockerfile.api"
       - "meeplemate/**"

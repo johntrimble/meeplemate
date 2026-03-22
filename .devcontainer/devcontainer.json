@@ -1,6 +1,6 @@
 {
   // Name for the dev container, which appears in the VS Code UI.
-  "name": "PyTorch Devcontainer",
+  "name": "Meeplemate",
 
   // Points to the Docker Compose file that defines the services.
   "dockerComposeFile": "../compose.yaml",

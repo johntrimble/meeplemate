@@ -1,16 +1,15 @@
 """Shared pytest fixtures for the MeepleMate test suite."""
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from meeplemate.db.datalayer import UserRecord, WindowStats
 from meeplemate.server.auth import AuthUser
+from meeplemate.server.deps import ApiDeps, CorsConfig
 from meeplemate.server.rate_limit import RateLimitConfig, RateLimiter, RateLimitState, WINDOWS, WindowState
 
 
@@ -75,15 +74,13 @@ def _zero_rate_limit_state(config: RateLimitConfig) -> RateLimitState:
 
 @pytest.fixture
 def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
-    """TestClient with auth and rate-limit dependencies overridden."""
-    from meeplemate.server import api
+    """TestClient with a fresh app instance and auth/rate-limit dependencies overridden."""
+    from meeplemate.server.api import create_app
     from meeplemate.server.auth import get_current_user
     from meeplemate.server.rate_limit import get_db_user
-    from meeplemate.server.deps import ApiDeps
 
     rate_limiter = RateLimiter(config=rate_limit_config, data_layer=mock_data_layer)
 
-    # Build a minimal _deps mock
     mock_chatloop = MagicMock()
     mock_game_service = AsyncMock()
     mock_game_service.get_manifest.return_value = {
@@ -114,15 +111,10 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
         game_service=mock_game_service,
         data_layer=mock_data_layer,
         rate_limiter=rate_limiter,
+        cors_config=CorsConfig(),
     )
 
-    @asynccontextmanager
-    async def mock_lifespan(app):
-        app.state.deps = mock_deps
-        yield
-
-    # Override auth — always return test user
-    app = api.app
+    app = create_app(api_deps=mock_deps)
     app.dependency_overrides[get_current_user] = lambda: AuthUser(
         uid="test-uid", email="test@example.com", name="Test User"
     )
@@ -130,8 +122,5 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
         uid="test-uid", email="test@example.com", name="Test User", metadata={}
     )
 
-    with patch.object(app.router, "lifespan_context", mock_lifespan):
-        with TestClient(app, raise_server_exceptions=False) as client:
-            yield client
-
-    app.dependency_overrides.clear()
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client
