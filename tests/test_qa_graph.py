@@ -315,8 +315,8 @@ def test_validation_citation_on_separate_line():
     # Should have no invalid quotes
     assert len(result.invalid_quotes) == 0, f"Expected 0 invalid quotes, got {len(result.invalid_quotes)}"
 
-    # Citation should be moved to end of blockquote line
-    expected = '> "One-shot Items with a Gold Piece value may be sold for levels, just like other Items." (Game Rules, p. 5)'
+    # Citation should be on its own blockquote line after a blank separator
+    expected = '> "One-shot Items with a Gold Piece value may be sold for levels, just like other Items."\n> \n> (Game Rules, p. 5)'
     assert result.revised_response['final_answer'] == expected, f"Expected:\n{expected}\n\nGot:\n{result.revised_response['final_answer']}"
 
 
@@ -353,9 +353,9 @@ def test_validation_multiline_blockquote_separate_citation():
     # Should have no invalid quotes
     assert len(result.invalid_quotes) == 0
 
-    # Citation should be on last blockquote line
-    assert '> continues here with more text." (Test Book, p. 3)' in result.revised_response['final_answer']
-    # Should not have citation on separate line
+    # Citation should be on its own blockquote line after a blank separator
+    assert '> continues here with more text."\n> \n> (Test Book, p. 3)' in result.revised_response['final_answer']
+    # Should not have citation on completely separate paragraph
     assert not result.revised_response['final_answer'].endswith('\n\n(Test Book, p. 3)')
 
 
@@ -392,8 +392,8 @@ def test_validation_blockquote_citation_already_inline():
     # Should have no invalid quotes
     assert len(result.invalid_quotes) == 0
 
-    # Should remain unchanged
-    assert result.revised_response['final_answer'] == '> "Items can be sold for levels." (Rules, p. 1)'
+    # Should be reformatted with citation on its own blockquote line
+    assert result.revised_response['final_answer'] == '> "Items can be sold for levels."\n> \n> (Rules, p. 1)'
 
 
 def test_validation_mixed_quote_types():
@@ -436,8 +436,8 @@ def test_validation_mixed_quote_types():
     # Should have no invalid quotes
     assert len(result.invalid_quotes) == 0
 
-    # Blockquote should have inline citation
-    assert '> "Blockquote text here." (Book A, p. 1)' in result.revised_response['final_answer']
+    # Blockquote should have citation on its own blockquote line
+    assert '> "Blockquote text here."\n> \n> (Book A, p. 1)' in result.revised_response['final_answer']
     # Inline quote should remain unchanged
     assert '"Inline quote text here." (Book B, p. 2)' in result.revised_response['final_answer']
 
@@ -518,9 +518,9 @@ def test_validation_multiple_blockquotes_separate_citations():
     # Should have no invalid quotes
     assert len(result.invalid_quotes) == 0
 
-    # Both blockquotes should have inline citations
-    assert '> "First rule text." (Book, p. 1)' in result.revised_response['final_answer']
-    assert '> "Second rule text." (Book, p. 2)' in result.revised_response['final_answer']
+    # Both blockquotes should have citation on its own blockquote line
+    assert '> "First rule text."\n> \n> (Book, p. 1)' in result.revised_response['final_answer']
+    assert '> "Second rule text."\n> \n> (Book, p. 2)' in result.revised_response['final_answer']
 
 def test_multiline_blockquote_citation_next_line():
     warpstorm_scroll = inspect.cleandoc(
@@ -579,15 +579,19 @@ def test_multiline_blockquote_citation_next_line():
     expected = inspect.cleandoc(
         '''\
         Yes, you can use the Warpstorm Scroll against a model that is flying high. According to the definition of the Warpstorm Scroll:
-        
+
         > "## WARPSTORM SCROLL
-        > Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re- entering the table on their own side's table edge in their following turn." (Warhammer Magic, p. 44)
-        
+        > Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re- entering the table on their own side's table edge in their following turn."
+        >\x20
+        > (Warhammer Magic, p. 44)
+
         The rule explicitly states that the scroll affects "creatures flying high," which aligns with the definition of flying high:
-        
+
         > "## FLYING HIGH
-        > A flyer may choose to fly high during his turn instead of making a normal flying move. This represents a flyer ascending far into the air above the battlefield..." (Warhammer Rulebook, p. 74)
-        
+        > A flyer may choose to fly high during his turn instead of making a normal flying move. This represents a flyer ascending far into the air above the battlefield..."
+        >\x20
+        > (Warhammer Rulebook, p. 74)
+
         Thus, the effect of the Warpstorm Scroll applies to models in the flying high status.
         '''
     )
@@ -659,17 +663,23 @@ def test_fix_quote_citations_in_text():
         '''\
         According to the rules:
 
-        > "Some rulebook text. It goes on and on. For some sentences." (Some Rulebook, p. 44)
+        > "Some rulebook text. It goes on and on. For some sentences."
+        >\x20
+        > (Some Rulebook, p. 44)
 
         This indicates that the rule has multiple paragraphs.
 
         > "Look, it has paragraphs too!"
+        >
+        >\x20
         > (Some Rulebook, p. 44)
 
         Finally, we see:
 
         > "Here is another one too!"
         >
+        >
+        >\x20
         > (Some Rulebook, p. 44)
 
         Some concluding text.
@@ -746,19 +756,25 @@ def test_fix_quote_citations_in_text_2():
 
         The rulebook clearly states that losing combat triggers a Break test:
 
-        > The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away This is called a Break test. (Warhammer Rulebook, p. 42)
+        > The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away This is called a Break test.
+        >\x20
+        > (Warhammer Rulebook, p. 42)
 
         This means that regardless of the enemy type or unit abilities, any unit that loses a combat must perform a Break test.
 
         However, the Grail Knights have a special immunity that protects them from psychological effects:
 
-        > The unit never needs test for any of the psychology rules, whether panic, fear, terror or whatever. The Knights are unaffected by any psychology. (Bretonnia Army Book, p. 49)
+        > The unit never needs test for any of the psychology rules, whether panic, fear, terror or whatever. The Knights are unaffected by any psychology.
+        >\x20
+        > (Bretonnia Army Book, p. 49)
 
         This protection applies specifically to psychology-related tests, including those caused by Fear, Panic, or similar effects.
 
         But the Break test is explicitly not a psychology test:
 
-        > However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests. (Warhammer Rulebook, p. 47)
+        > However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.
+        >\x20
+        > (Warhammer Rulebook, p. 47)
 
         Since the Break test is functionally distinct from psychology tests, and the Grail Knights’ immunity only applies to psychology rules, their protection does not extend to Break tests.
 
@@ -800,7 +816,7 @@ def test_fix_quote_citations_in_text_3():
 
     before = '**Yes, Grail Knights must take a Break test when they lose combat, despite their immunity to psychological effects.**\n\nThe general rule for losing combat requires a Break test:\n\n> The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test. You need to take a separate Break test for every unit involved in the combat.\n\n(Warhammer Rulebook, p. 42)\n\nThis means that any unit which loses a combat must attempt a Break test, regardless of other traits.\n\nHowever, Grail Knights possess the Grail Virtue, which grants immunity to psychological effects:\n\n> Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.\n\n(Bretonnia Army Book, p. 44)\n\nThe key distinction lies in the categorization of Break tests:\n\n> However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.\n\n(Warhammer Rulebook, p. 47)\n\nSince Break tests are explicitly stated to be *not* psychology tests, and the Grail Virtue only applies to "psychology rules" and "such tests" — which refer exclusively to Panic, Fear, Terror, and Stupidity — the immunity does not extend to Break tests.\n\nTherefore, even though Grail Knights are immune to psychological effects, they are still required to take a Break test when they lose combat, as the rule for Break tests is not overridden by the Grail Virtue.'
 
-    fixed = '**Yes, Grail Knights must take a Break test when they lose combat, despite their immunity to psychological effects.**\n\nThe general rule for losing combat requires a Break test:\n\n> The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test. You need to take a separate Break test for every unit involved in the combat. (Warhammer Rulebook, p. 42)\n\nThis means that any unit which loses a combat must attempt a Break test, regardless of other traits.\n\nHowever, Grail Knights possess the Grail Virtue, which grants immunity to psychological effects:\n\n> Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery. (Bretonnia Army Book, p. 44)\n\nThe key distinction lies in the categorization of Break tests:\n\n> However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests. (Warhammer Rulebook, p. 47)\n\nSince Break tests are explicitly stated to be *not* psychology tests, and the Grail Virtue only applies to "psychology rules" and "such tests" — which refer exclusively to Panic, Fear, Terror, and Stupidity — the immunity does not extend to Break tests.\n\nTherefore, even though Grail Knights are immune to psychological effects, they are still required to take a Break test when they lose combat, as the rule for Break tests is not overridden by the Grail Virtue.'
+    fixed = '**Yes, Grail Knights must take a Break test when they lose combat, despite their immunity to psychological effects.**\n\nThe general rule for losing combat requires a Break test:\n\n> The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test. You need to take a separate Break test for every unit involved in the combat.\n> \n> (Warhammer Rulebook, p. 42)\n\nThis means that any unit which loses a combat must attempt a Break test, regardless of other traits.\n\nHowever, Grail Knights possess the Grail Virtue, which grants immunity to psychological effects:\n\n> Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.\n> \n> (Bretonnia Army Book, p. 44)\n\nThe key distinction lies in the categorization of Break tests:\n\n> However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.\n> \n> (Warhammer Rulebook, p. 47)\n\nSince Break tests are explicitly stated to be *not* psychology tests, and the Grail Virtue only applies to "psychology rules" and "such tests" — which refer exclusively to Panic, Fear, Terror, and Stupidity — the immunity does not extend to Break tests.\n\nTherefore, even though Grail Knights are immune to psychological effects, they are still required to take a Break test when they lose combat, as the rule for Break tests is not overridden by the Grail Virtue.'
 
     result = fix_quote_citations_in_text(before, chunks)
     print(result.fixed_text)
@@ -833,7 +849,9 @@ def test_fix_quote_citations_duplicate_chunks():
         '''\
         According to the rules:
 
-        > Some quote text here matching chunk content. (Some Rulebook, p. 42)
+        > Some quote text here matching chunk content.
+        >\x20
+        > (Some Rulebook, p. 42)
 
         This is the text after the quote.
         '''
@@ -870,7 +888,9 @@ def test_fix_quote_separated_citation():
         '''\
         Yes, the encounter ends immediately when the last HP die is removed, even if other reactions were supposed to be drawn first.
 
-        > A. No, the encounter ends immediately and you do not have to kill all the minions either. (Encounter Rule Book, p. 35)
+        > A. No, the encounter ends immediately and you do not have to kill all the minions either.
+        >\x20
+        > (Encounter Rule Book, p. 35)
 
         This rule explicitly states that the encounter ends immediately upon removing the last HP die, with no requirement to resolve further actions such as drawing reactions or killing remaining minions. The rulebook clarifies that no additional steps are needed after the last die is broken.
         '''
@@ -1171,3 +1191,51 @@ async def test_validate_and_fix_response_fix_via_llm():
     for expected_entry in expected_quote_entries:
         assert expected_entry in quote_entries, f"Expected quote entry not found in result: {expected_entry}"
     assert len(quote_entries) == len(expected_quote_entries), f"Expected {len(expected_quote_entries)} quote entries, but found {len(quote_entries)}. Quote entries found: {quote_entries}"
+
+
+def test_quote_spanning_multiple_chunks():
+    # Tests that a valid quote is recognised when its text spans two adjacent
+    # chunks (by start_index).  Adjacent chunks can cross page boundaries, so
+    # chunk 5 is on page 5 and chunk 6 is on page 6.  The "Battle Rounds"
+    # quote in the response covers the tail of chunk 5 and the head of chunk 6.
+    documents: list[Chunk] = [
+        {'rulebook_name': 'Crystal Knights Rule Book', 'page': '5', 'start_index': 1000, 'end_index': 1120,  'content': '## ACTION PHASE\n\nThe Action Phase consists of two steps performed in the following order: 1. Draw Event Card 2. Move Enemies'},
+        {'rulebook_name': 'Crystal Knights Rule Book', 'page': '5', 'start_index': 1122, 'end_index': 1480,  'content': '## Draw Event Card\n\nDraw the top card of the Event Deck and resolve its effects. Event Cards have numbered steps that are performed in order. If for any reason a step cannot be completed, skip it. If the card has a lasting effect, keep it visible to all players. Otherwise, place it face up in the Event Card discard pile.'},
+        {'rulebook_name': 'Crystal Knights Rule Book', 'page': '5', 'start_index': 1900, 'end_index': 2180,  'content': '## Special Triggers\n\nSome Event Cards have Special Triggers printed in bold (such as Stun or Sweep). Each Special Trigger is described alphabetically in Appendix A.\n\n## Special Powers\n\nSome Event Cards have a Special Power listed in italics. When you see this, consult the Power Reference Sheet and follow the listed instructions.'},
+        {'rulebook_name': 'Crystal Knights Rule Book', 'page': '5', 'start_index': 2182, 'end_index': 2440,  'content': 'After resolving an Event Card, reveal the top card of the Event Deck and place it face up. If the Event Deck is empty, reshuffle the discard pile to form a new Event Deck.'},
+        {'rulebook_name': 'Crystal Knights Rule Book', 'page': '5', 'start_index': 2442, 'end_index': 2560,  'content': '## Battle Rounds\n\nA game is divided into 3 Battle Rounds, representing escalating enemy aggression as the battle progresses.'},
+        {'rulebook_name': 'Crystal Knights Rule Book', 'page': '6', 'start_index': 2562, 'end_index': 3100,  'content': "Round transitions occur in two ways.\n\nFirst, a new Round begins automatically after 4 Event Cards have been drawn from the current Round.\n\nSecondly, the Scenario Sheet describes an alternate way to trigger a Round transition. If a Round changes and there are still Event Cards remaining from the old Round, discard those cards until the new Round's cards are on top of the deck. Reveal the top card and place it face up on the Event Deck."},
+        {'rulebook_name': 'Crystal Knights Rule Book', 'page': '2', 'start_index':  200, 'end_index':  520,  'content': 'Setup: Take the Event Cards listed in the Scenario Sheet. Shuffle the Round 3 cards and place them face down. Shuffle the Round 2 cards and place them face down on top. Shuffle the Round 1 cards and place them face down on top of those. Turn the top Round 1 card face up.'},
+    ]
+    response = (
+        'Yes, enemy actions are resolved through the Event Card system during the Action Phase.\n\n'
+        'The Action Phase consists of two steps:\n\n'
+        '> ## ACTION PHASE\n'
+        '> The Action Phase consists of two steps performed in the following order: 1. Draw Event Card 2. Move Enemies\n'
+        '>\n'
+        '> (Crystal Knights Rule Book, p. 5)\n\n'
+        "Enemy actions are defined by each card's numbered steps:\n\n"
+        '> ## Draw Event Card\n'
+        '> Draw the top card of the Event Deck and resolve its effects. Event Cards have numbered steps that are performed in order. If for any reason a step cannot be completed, skip it. If the card has a lasting effect, keep it visible to all players. Otherwise, place it face up in the Event Card discard pile.\n'
+        '>\n'
+        '> (Crystal Knights Rule Book, p. 5)\n\n'
+        'The progression of enemy behaviour across rounds is governed by the Battle Rounds system:\n\n'
+        '> ## Battle Rounds\n'
+        '> \n'
+        '> A game is divided into 3 Battle Rounds, representing escalating enemy aggression as the battle progresses.\n'
+        '> \n'
+        '> Round transitions occur in two ways.\n'
+        '> \n'
+        '> First, a new Round begins automatically after 4 Event Cards have been drawn from the current Round.\n'
+        '> \n'
+        "> Secondly, the Scenario Sheet describes an alternate way to trigger a Round transition. If a Round changes and there are still Event Cards remaining from the old Round, discard those cards until the new Round's cards are on top of the deck. Reveal the top card and place it face up on the Event Deck.\n"
+        '> \n'
+        '> (Crystal Knights Rule Book, p. 5)\n\n'
+        'After resolving an Event Card, the next card is always revealed:\n\n'
+        '> After resolving an Event Card, reveal the top card of the Event Deck and place it face up. If the Event Deck is empty, reshuffle the discard pile to form a new Event Deck.\n'
+        '>\n'
+        '> (Crystal Knights Rule Book, p. 5)\n\n'
+        'In conclusion, enemy actions are resolved exclusively through the Event Card system.'
+    )
+    result = fix_quote_citations_in_text(response, documents)
+    assert len(result.unfixable_quotes) == 0, f"Expected all quotes to be fixable, but found unfixable quotes: {result.unfixable_quotes}"

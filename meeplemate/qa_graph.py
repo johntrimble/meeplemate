@@ -1,4 +1,5 @@
 import asyncio
+import bisect
 import copy
 from dataclasses import dataclass
 import re
@@ -532,6 +533,33 @@ class FixQuoteCitationsResult:
     referenced_chunks: list[Chunk]
 
 
+@dataclass
+class RulebookIndex:
+    combined: str        # all chunk contents joined with "\n\n"
+    chunks: list[Chunk]  # ordered by start_index (unindexed appended last)
+    offsets: list[int]   # combined-string start offset for each chunk
+
+
+def build_rulebook_index(chunks: list[Chunk]) -> RulebookIndex:
+    indexed = sorted([c for c in chunks if c["start_index"] >= 0], key=lambda c: c["start_index"])
+    unindexed = [c for c in chunks if c["start_index"] < 0]
+    ordered = indexed + unindexed
+
+    combined = ""
+    offsets: list[int] = []
+    for chunk in ordered:
+        offsets.append(len(combined))
+        combined += chunk["content"] + "\n\n"
+
+    return RulebookIndex(combined=combined, chunks=ordered, offsets=offsets)
+
+
+def find_chunk_for_offset(offset: int, index: RulebookIndex) -> Chunk:
+    """Return the chunk that owns the given character offset in the combined string."""
+    idx = bisect.bisect_right(index.offsets, offset) - 1
+    return index.chunks[max(0, idx)]
+
+
 def get_chunks_by_rulebook_and_page(chunks: list[Chunk]) -> dict[tuple[str, str], list[Chunk]]:
     chunks_by_rulebook_and_page: dict[tuple[str, str], list[Chunk]] = {}
     for chunk in chunks:
@@ -611,7 +639,7 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
         citation_text: The citation text to append (e.g., "(Book, p. 1)")
 
     Returns:
-        Formatted blockquote with citation at end of last '>' line
+        Formatted blockquote with citation on its own line after a blank blockquote separator
     """
     # Split into lines
     lines = quote_text.rstrip().split('\n')
@@ -625,7 +653,7 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
 
     if first_blockquote_idx == -1:
         # No blockquote line found, fallback to append
-        return quote_text.rstrip() + ' ' + citation_text
+        return quote_text.rstrip() + '\n> \n> ' + citation_text
 
     # Convert all lines after the first blockquote line to blockquote lines
     # (handle lazy continuation where lines don't start with >)
@@ -653,13 +681,14 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
 
     if last_content_idx == -1:
         # No content found, fallback
-        return quote_text.rstrip() + ' ' + citation_text
+        return quote_text.rstrip() + '\n> \n> ' + citation_text
 
-    # Append citation to the last non-empty line
-    formatted_lines[last_content_idx] = formatted_lines[last_content_idx].rstrip() + ' ' + citation_text
+    # Append citation on its own line after a blank blockquote separator
+    result_lines = formatted_lines[:last_content_idx + 1]
+    result_lines.append('> ')
+    result_lines.append('> ' + citation_text)
 
-    # Return all lines up to and including the last content line
-    return '\n'.join(formatted_lines[:last_content_idx + 1])
+    return '\n'.join(result_lines)
 
 
 def should_reformat_blockquote_citation(quote_text: str, citation_start_index: int) -> bool:
@@ -686,8 +715,14 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
     # Track referenced chunks
     referenced_chunks: list[Chunk] = []
 
-    # Make it easier to lookup chunks by rulebook and page
-    chunks_by_rulebook_and_page = get_chunks_by_rulebook_and_page(chunks)
+    # Build per-rulebook combined indices for matching quotes that span multiple chunks
+    chunks_by_rulebook: dict[str, list[Chunk]] = {}
+    for chunk in chunks:
+        chunks_by_rulebook.setdefault(chunk["rulebook_name"], []).append(chunk)
+    rulebook_indices: dict[str, RulebookIndex] = {
+        name: build_rulebook_index(rb_chunks)
+        for name, rb_chunks in chunks_by_rulebook.items()
+    }
 
     # Find the quotes in the text
     unfixable_quotes: list[quote_util.ExtractedQuote] = []
@@ -701,67 +736,57 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
     for quote_info in quotes_in_text:
         citation = quote_info["citation"]
 
-        # Maybe the citation is right?
-        citation_correct = False
-        if citation:
-            citation_key = (citation["ref_name"], citation["page"])
-            if citation_key in chunks_by_rulebook_and_page:
-                candidate_chunks = chunks_by_rulebook_and_page[citation_key]
-                for candidate_chunk in candidate_chunks:
-                    page_content = candidate_chunk["content"]
-                    m = quote_util.find_quote_with_gaps(page_content, quote_info["quote"])
-                    if m:
-                        # Citation is correct, move to next quote
-                        citation_correct = True
-                        referenced_chunks.append(candidate_chunk)
+        # Search all rulebook combined strings for the quote; map match back to originating chunk.
+        # Reject matches where the span in the combined string is much larger than the quote itself,
+        # which would indicate false positives from fragments scattered across unrelated chunks.
+        found_chunk = None
+        for index in rulebook_indices.values():
+            m = quote_util.find_quote_with_gaps(index.combined, quote_info["quote"])
+            if m and (m.end - m.start) <= len(quote_info["quote"]) * 3:
+                found_chunk = find_chunk_for_offset(m.start, index)
+                break
 
-                        # Reformat blockquotes with citations on separate lines
-                        if quote_info["quote_type"] == "blockquote" and citation and should_reformat_blockquote_citation(quote_info["text"], citation["start_index"]):
-                            # Get quote text without citation, then reformat
-                            text_before_citation = quote_info["text"][:citation["start_index"]]
-                            reformatted_quote = format_blockquote_with_inline_citation(text_before_citation, citation["text"])
+        if found_chunk:
+            correct_citation = {
+                "ref_name": found_chunk["rulebook_name"],
+                "page": found_chunk["page"],
+            }
+            referenced_chunks.append(found_chunk)
 
-                            # Replace in overall text
-                            text = text[:quote_info["start_index"]] + reformatted_quote + text[quote_info["end_index"]:]
-
-                            # Update quote_info with new indices
-                            new_cit_start = len(reformatted_quote) - len(citation["text"])
-                            valid_or_fixed_quotes.append({
-                                "text": reformatted_quote,
-                                "quote": quote_info["quote"],
-                                "quote_type": quote_info["quote_type"],
-                                "start_index": quote_info["start_index"],
-                                "end_index": quote_info["start_index"] + len(reformatted_quote),
-                                "citation": {
-                                    "text": citation["text"],
-                                    "ref_name": citation["ref_name"],
-                                    "page": citation["page"],
-                                    "start_index": new_cit_start,
-                                    "end_index": len(reformatted_quote)
-                                }
-                            })
-                        else:
-                            # Citation already inline or not a blockquote, add as-is
-                            valid_or_fixed_quotes.append(quote_info)
-                        break  # Stop after first matching chunk to avoid stale-index rewrites
+            # Check if the existing citation is already correct
+            citation_correct = (
+                citation is not None
+                and citation["ref_name"] == correct_citation["ref_name"]
+                and citation["page"] == correct_citation["page"]
+            )
+        else:
+            correct_citation = None
+            citation_correct = False
 
         if citation_correct:
-            continue
-
-        # Well, the citation is wrong. Let's try to find the right one
-        correct_citation = None
-        for (rulebook_name, page), candidate_chunks in chunks_by_rulebook_and_page.items():
-            for candidate_chunk in candidate_chunks:
-                page_content = candidate_chunk["content"]
-                m = quote_util.find_quote_with_gaps(page_content, quote_info["quote"])
-                if m:
-                    correct_citation = {
-                        "ref_name": rulebook_name,
-                        "page": page
+            # Citation is correct — reformat blockquotes with citations on separate lines if needed
+            if quote_info["quote_type"] == "blockquote" and citation and should_reformat_blockquote_citation(quote_info["text"], citation["start_index"]):
+                text_before_citation = quote_info["text"][:citation["start_index"]]
+                reformatted_quote = format_blockquote_with_inline_citation(text_before_citation, citation["text"])
+                text = text[:quote_info["start_index"]] + reformatted_quote + text[quote_info["end_index"]:]
+                new_cit_start = len(reformatted_quote) - len(citation["text"])
+                valid_or_fixed_quotes.append({
+                    "text": reformatted_quote,
+                    "quote": quote_info["quote"],
+                    "quote_type": quote_info["quote_type"],
+                    "start_index": quote_info["start_index"],
+                    "end_index": quote_info["start_index"] + len(reformatted_quote),
+                    "citation": {
+                        "text": citation["text"],
+                        "ref_name": citation["ref_name"],
+                        "page": citation["page"],
+                        "start_index": new_cit_start,
+                        "end_index": len(reformatted_quote)
                     }
-                    referenced_chunks.append(candidate_chunk)
-            if correct_citation:
-                break
+                })
+            else:
+                valid_or_fixed_quotes.append(quote_info)
+            continue
         
         # If we found the correct citation, update the text
         if correct_citation:
