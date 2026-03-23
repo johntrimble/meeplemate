@@ -825,8 +825,36 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
                     }
                 })
         else:
-            # If we couldn't find a correct citation, just report it as missing
-            unfixable_quotes.append(quote_info)
+            # If we couldn't find a correct citation but the quote is a blockquote
+            # with actual content and its citation genuinely on a separate paragraph
+            # (blank line before it), reformat it inline so the standalone-citation
+            # cleanup doesn't delete the original citation.
+            if (
+                citation
+                and quote_info["quote"]  # non-empty quote body
+                and quote_info["quote_type"] == "blockquote"
+                and '\n\n' in quote_info["text"][:citation["start_index"]]
+            ):
+                text_before_cit = quote_info["text"][:citation["start_index"]]
+                new_quote_text = format_blockquote_with_inline_citation(text_before_cit, citation["text"])
+                text = text[:quote_info["start_index"]] + new_quote_text + text[quote_info["end_index"]:]
+                new_cit_start = len(new_quote_text) - len(citation["text"])
+                valid_or_fixed_quotes.append({
+                    "text": new_quote_text,
+                    "quote": quote_info["quote"],
+                    "quote_type": quote_info["quote_type"],
+                    "start_index": quote_info["start_index"],
+                    "end_index": quote_info["start_index"] + len(new_quote_text),
+                    "citation": {
+                        "text": citation["text"],
+                        "ref_name": citation["ref_name"],
+                        "page": citation["page"],
+                        "start_index": new_cit_start,
+                        "end_index": len(new_quote_text),
+                    }
+                })
+            else:
+                unfixable_quotes.append(quote_info)
 
     # Remove standalone citations that might have been left over after fixing quotes
     # Pattern: citations on their own line(s), typically after blockquotes
@@ -846,7 +874,7 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
 
     # Find and remove standalone citations that aren't protected
     standalone_citation_pattern = re.compile(
-        r'\n\s*\n\s*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))[^\S\n]*(?=\n|$)',
+        r'\n\s*\n\s*>?\s*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))[^\S\n]*(?=\n|$)',
         re.MULTILINE
     )
 

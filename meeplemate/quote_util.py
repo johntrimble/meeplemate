@@ -508,7 +508,7 @@ def find_quote_with_gaps(
     doc: str,
     quote: str,
     *,
-    min_score: float = 85.0,
+    min_score: float = 92.0,
 ) -> MatchResult | None:
     # Strip markup (HTML tags, LaTeX math) before normalizing so that tag
     # names and LaTeX commands don't introduce spurious alphanumeric tokens

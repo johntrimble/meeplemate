@@ -843,6 +843,43 @@ def test_fix_quote_citations_duplicate_chunks():
     assert result.fixed_text == expected
 
 
+def test_fix_quote_separated_citation():
+    chunks: list[Chunk] = [
+        {
+            "content": "A. No, the encounter ends immediately and you do not have to kill all the minions either.",
+            "rulebook_name": "Encounter Rule Book",
+            "page": "35",
+            "start_index": 0,
+            "end_index": -1,
+        },
+    ]
+
+    before = inspect.cleandoc(
+        '''\
+        Yes, the encounter ends immediately when the last HP die is removed, even if other reactions were supposed to be drawn first.
+
+        > A. No, the encounter ends immediately and you do not have to kill all the minions either.
+
+        > (Encounter Rule Book, p. 33)
+
+        This rule explicitly states that the encounter ends immediately upon removing the last HP die, with no requirement to resolve further actions such as drawing reactions or killing remaining minions. The rulebook clarifies that no additional steps are needed after the last die is broken.
+        '''
+    )
+
+    expected = inspect.cleandoc(
+        '''\
+        Yes, the encounter ends immediately when the last HP die is removed, even if other reactions were supposed to be drawn first.
+
+        > A. No, the encounter ends immediately and you do not have to kill all the minions either. (Encounter Rule Book, p. 35)
+
+        This rule explicitly states that the encounter ends immediately upon removing the last HP die, with no requirement to resolve further actions such as drawing reactions or killing remaining minions. The rulebook clarifies that no additional steps are needed after the last die is broken.
+        '''
+    )
+
+    result = fix_quote_citations_in_text(before, chunks)
+    assert result.fixed_text == expected
+
+
 def test_dedupe_chunks_overlapping():
     """Overlapping indexed chunks are merged with correct content and indices."""
     chunks: list[Chunk] = [
