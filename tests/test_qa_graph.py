@@ -1,9 +1,28 @@
-from langchain.messages import AnyMessage, ToolMessage
+from langchain.messages import ToolMessage
 from langchain_core.messages.content import ToolCall
 from langchain_core.runnables import chain
 import pytest
-from meeplemate.qa_graph import Chunk, ChunkSearchResult, FixQuoteInput, FixQuotesResult, QaResponse, QuoteEntry, ValidateAndFixResponseOutput, dedupe_chunks, dedupe_chunks_in_message_history, extracted_quote_to_quote_entry, fix_quote_citations_in_text, get_chunk_id_tuple, sort_chunks, tweak_and_validate_quotes_response, ValidateAndFixResponseInput, validate_and_fix_response, validate_and_fix_response
-from langchain_core.messages import AIMessage, BaseMessage
+from meeplemate.qa_graph import (
+    Chunk,
+    ChunkSearchResult,
+    FixQuoteInput,
+    FixQuotesResult,
+    QaResponse,
+    QuoteEntry,
+    ValidateAndFixResponseOutput,
+    ValidateAndFixResponseInput,
+    dedupe_chunks,
+    dedupe_chunks_in_message_history,
+    extracted_quote_to_quote_entry,
+    fix_quote_citations_in_text,
+    get_chunk_id_tuple,
+    sort_chunks,
+    tweak_and_validate_quotes_response,
+    unescape_table_html,
+    validate_and_fix_response,
+    validate_and_fix_response
+)
+from langchain_core.messages import AIMessage
 from typing import List
 import json
 import inspect
@@ -1239,3 +1258,30 @@ def test_quote_spanning_multiple_chunks():
     )
     result = fix_quote_citations_in_text(response, documents)
     assert len(result.unfixable_quotes) == 0, f"Expected all quotes to be fixable, but found unfixable quotes: {result.unfixable_quotes}"
+
+
+def test_unescape_table_html():
+    example = inspect.cleandoc(
+        """\
+        > &lt;table&gt;
+        > &lt;tr&gt;&lt;td&gt;PROFILE&lt;/td&gt;&lt;td&gt;M&lt;/td&gt;&lt;td&gt;WS&lt;/td&gt;&lt;td&gt;BS&lt;/td&gt;&lt;td&gt;S&lt;/td&gt;&lt;td&gt;T&lt;/td&gt;&lt;td&gt;W&lt;/td&gt;&lt;td&gt;I&lt;/td&gt;&lt;td&gt;A&lt;/td&gt;&lt;td&gt;LD&lt;/td&gt;&lt;/tr&gt;
+        > &lt;tr&gt;&lt;td&gt;Grail Knight&lt;/td&gt;&lt;td&gt;4&lt;/td&gt;&lt;td&gt;5&lt;/td&gt;&lt;td&gt;3&lt;/td&gt;&lt;td&gt;4&lt;/td&gt;&lt;td&gt;3&lt;/td&gt;&lt;td&gt;1&lt;/td&gt;&lt;td&gt;4&lt;/td&gt;&lt;td&gt;1&lt;/td&gt;&lt;td&gt;9&lt;/td&gt;&lt;/tr&gt;
+        > &lt;tr&gt;&lt;td&gt;Bretonnian Warhorse&lt;/td&gt;&lt;td&gt;8&lt;/td&gt;&lt;td&gt;3&lt;/td&gt;&lt;td&gt;0&lt;/td&gt;&lt;td&gt;3&lt;/td&gt;&lt;td&gt;3&lt;/td&gt;&lt;td&gt;1&lt;/td&gt;&lt;td&gt;3&lt;/td&gt;&lt;td&gt;1&lt;/td&gt;&lt;td&gt;5&lt;/td&gt;&lt;/tr&gt;
+        > &lt;/table&gt;
+        > 
+        """
+    )
+
+    expected = inspect.cleandoc(
+        """\
+        > <table>
+        > <tr><td>PROFILE</td><td>M</td><td>WS</td><td>BS</td><td>S</td><td>T</td><td>W</td><td>I</td><td>A</td><td>LD</td></tr>
+        > <tr><td>Grail Knight</td><td>4</td><td>5</td><td>3</td><td>4</td><td>3</td><td>1</td><td>4</td><td>1</td><td>9</td></tr>
+        > <tr><td>Bretonnian Warhorse</td><td>8</td><td>3</td><td>0</td><td>3</td><td>3</td><td>1</td><td>3</td><td>1</td><td>5</td></tr>
+        > </table>
+        > 
+        """
+    )
+
+    result = unescape_table_html(example)
+    assert result == expected

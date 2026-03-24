@@ -626,6 +626,34 @@ def quote_entry_to_blockquote(quote_entry: QuoteEntry) -> str:
     return blockquote
 
 
+def build_table_htmls_regex() -> re.Pattern:
+    tags_list = ["table", "tr", "td", "th", "caption", "colgroup", "col", "tbody", "thead", "tfoot"]
+    tags = "|".join(tags_list)
+    gt = fr'{re.escape("&gt;")}|{re.escape(">")}'
+    lt = fr'{re.escape("&lt;")}|{re.escape("<")}'
+    # Match any attributes after the tag name up to the closing gt, note the closing gt can be escaped or unescaped
+    attributes = r'(?:\s+\w+(?:\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s"\'=<>`&]+))?)*'
+    elements = rf'({lt})(?P<tag_internal>/?({tags})({attributes}\s*))({gt})'
+    pattern = re.compile(
+        elements, re.DOTALL
+    )
+    return pattern
+
+
+table_htmls_regex:re.Pattern = build_table_htmls_regex()
+
+def unescape_table_html(text: str) -> str:
+    # This is a bit hacky, so only do it if there is an escaped table tag
+    if "&lt;table&gt;" not in text:
+        return text
+
+    # Replace all occurrences of table_htmls_regex with <tag_internal>, removing
+    # the escaping
+    def replacer(match):
+        return f"<{match.group('tag_internal')}>"
+    return table_htmls_regex.sub(replacer, text)
+
+
 def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) -> str:
     """Format a blockquote with citation at the end of the last blockquote line.
 
@@ -641,6 +669,10 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
     Returns:
         Formatted blockquote with citation on its own line after a blank blockquote separator
     """
+    # Unescape table HTML if present. We need to do this because the LLM will
+    # sometimes "helpfully" escape the table HTML in the documents when quoting
+    quote_text = unescape_table_html(quote_text)
+
     # Split into lines
     lines = quote_text.rstrip().split('\n')
 

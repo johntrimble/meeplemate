@@ -27,7 +27,7 @@ def cli():
 @click.argument("input", type=Path)
 @click.argument("output", type=Path)
 def init_game_package(input: Path, output: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -56,7 +56,7 @@ def init_game_package(input: Path, output: Path):
 @cli.command()
 @click.argument("path", type=Path)
 def ocr(path: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -97,7 +97,7 @@ def ocr(path: Path):
 @cli.command()
 @click.argument("path", type=Path)
 def page_number_ocr(path: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -133,7 +133,7 @@ def page_number_ocr(path: Path):
 @cli.command()
 @click.argument("path", type=Path)
 def page_number_fixup(path: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -159,7 +159,7 @@ def page_number_fixup(path: Path):
 @cli.command()
 @click.argument("path", type=Path)
 def add_metadata(path: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -185,7 +185,7 @@ def add_metadata(path: Path):
 @cli.command()
 @click.argument("path", type=Path)
 def build_chunks(path: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -218,7 +218,7 @@ def build_chunks(path: Path):
 @cli.command()
 @click.argument("path", type=Path)
 def import_documents(path: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -261,7 +261,7 @@ def update_version(path: Path):
 
 @cli.command()
 def clear_old_data():
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -293,7 +293,7 @@ def clear_old_data():
 @cli.command()
 @click.argument("path", type=Path)
 def generate_reference(path: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -324,7 +324,7 @@ def generate_reference(path: Path):
 @cli.command()
 @click.argument("path", type=Path)
 def generate_setting_summary(path: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     settings.chat.max_new_tokens = 10_000
     app_system: System = create_app_system(settings)
     system = subsystem(
@@ -356,7 +356,7 @@ def generate_setting_summary(path: Path):
 @cli.command()
 @click.argument("path", type=Path)
 def generate_presentation(path: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     settings.chat.max_new_tokens = 10_000
     app_system: System = create_app_system(settings)
     system = subsystem(
@@ -387,7 +387,7 @@ def generate_presentation(path: Path):
 @cli.command()
 @click.argument("output", type=Path)
 def extract_terminology(output: Path):
-    settings: Config = Config()
+    settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,

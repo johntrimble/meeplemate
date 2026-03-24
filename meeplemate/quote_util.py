@@ -234,6 +234,8 @@ def find_quotes_in_text(text: str) -> List[ExtractedQuote]:
         else:
             quote_without_citation = quote_text
         extracted_quotes.append(
+            # TODO: Maybe we should fix the table element escaping here instead
+            # of in the blockquote formatting function?
             ExtractedQuote(
                 text=quote_text,
                 quote=strip_blockquote_markers_and_quotes(quote_without_citation),
