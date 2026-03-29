@@ -100,6 +100,37 @@
     border-color: color-mix(in oklch, var(--muted-foreground) 60%, transparent);
 }
 
+/* Verified-source marker: an empty <div data-quote-status="verified"> emitted by the backend
+   immediately before a blockquote that was confirmed against the source documents.
+   The marker div itself is hidden; the adjacent blockquote gets a green left border and a
+   "✓ Verified" stamp in the bottom-right corner so the user can see at a glance that the
+   quote is not hallucinated. */
+div[data-quote-status="verified"] {
+    display: none;
+}
+
+div[data-quote-status="verified"] + [data-streamdown="blockquote"] {
+    border-color: color-mix(in oklch, oklch(0.55 0.17 148) 60%, transparent);
+}
+
+div[data-quote-status="verified"] + [data-streamdown="blockquote"] > p:last-child::after {
+    content: " ✓ Verified";
+    float: right;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    font-style: normal;
+    color: oklch(0.4 0.13 148);
+    margin-left: 0.5rem;
+}
+
+.dark div[data-quote-status="verified"] + [data-streamdown="blockquote"] {
+    border-color: color-mix(in oklch, oklch(0.65 0.15 148) 55%, transparent);
+}
+
+.dark div[data-quote-status="verified"] + [data-streamdown="blockquote"] > p:last-child::after {
+    color: oklch(0.76 0.14 148);
+}
+
 :root {
 
     --radius: 0.625rem;

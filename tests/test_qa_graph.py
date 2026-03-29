@@ -7,20 +7,31 @@ from meeplemate.qa_graph import (
     ChunkSearchResult,
     FixQuoteInput,
     FixQuotesResult,
+    LocatedQuote,
+    PlainText,
     QaResponse,
+    QuoteMatch,
+    QuoteReplacement,
+    QuoteSegment,
     QuoteEntry,
     ValidateAndFixResponseOutput,
     ValidateAndFixResponseInput,
+    apply_replacements,
+    are_segments_adjacent,
+    build_segments,
     dedupe_chunks,
     dedupe_chunks_in_message_history,
     extracted_quote_to_quote_entry,
     fix_quote_citations_in_text,
+    format_quote,
     get_chunk_id_tuple,
+    locate_quotes,
+    materialize,
+    remove_quote_segments,
     sort_chunks,
     tweak_and_validate_quotes_response,
     unescape_table_html,
     validate_and_fix_response,
-    validate_and_fix_response
 )
 from langchain_core.messages import AIMessage
 from typing import List
@@ -334,8 +345,8 @@ def test_validation_citation_on_separate_line():
     # Should have no invalid quotes
     assert len(result.invalid_quotes) == 0, f"Expected 0 invalid quotes, got {len(result.invalid_quotes)}"
 
-    # Citation should be on its own blockquote line after a blank separator
-    expected = '> "One-shot Items with a Gold Piece value may be sold for levels, just like other Items."\n> \n> (Game Rules, p. 5)'
+    # Citation should be on its own blockquote line, preceded by verified div marker
+    expected = '<div data-quote-status="verified"></div>\n\n> "One-shot Items with a Gold Piece value may be sold for levels, just like other Items."\n> \n> (Game Rules, p. 5)'
     assert result.revised_response['final_answer'] == expected, f"Expected:\n{expected}\n\nGot:\n{result.revised_response['final_answer']}"
 
 
@@ -411,8 +422,8 @@ def test_validation_blockquote_citation_already_inline():
     # Should have no invalid quotes
     assert len(result.invalid_quotes) == 0
 
-    # Should be reformatted with citation on its own blockquote line
-    assert result.revised_response['final_answer'] == '> "Items can be sold for levels."\n> \n> (Rules, p. 1)'
+    # Should be reformatted with citation on its own blockquote line, preceded by verified div marker
+    assert result.revised_response['final_answer'] == '<div data-quote-status="verified"></div>\n\n> "Items can be sold for levels."\n> \n> (Rules, p. 1)'
 
 
 def test_validation_mixed_quote_types():
@@ -461,8 +472,15 @@ def test_validation_mixed_quote_types():
     assert '"Inline quote text here." (Book B, p. 2)' in result.revised_response['final_answer']
 
 
-def test_validation_removes_standalone_citation():
-    """Test that citations not associated with any quote are removed"""
+def test_validation_preserves_standalone_citation():
+    """A bare citation in prose with no preceding blockquote is left unchanged.
+
+    The standalone-citation cleanup was removed. A citation like (Book, p. 99)
+    that appears in prose text without any associated blockquote is not
+    recognised as a quote and is therefore left as-is. The retry mechanism
+    (unfixable_quotes) handles genuine hallucinated quotes that do have
+    blockquotes; bare citations in prose are simply preserved.
+    """
     chunks: List[Chunk] = [
         {
             'content': 'Some rule text.',
@@ -491,10 +509,9 @@ def test_validation_removes_standalone_citation():
 
     result = tweak_and_validate_quotes_response(response, chunks)
 
-    # The standalone citation should be removed since it's not associated with any quote
-    assert '(Book, p. 99)' not in result.revised_response['final_answer']
-    assert 'Some text here.' in result.revised_response['final_answer']
-    assert 'More text.' in result.revised_response['final_answer']
+    # No blockquote precedes this citation, so it is not captured as a quote
+    # and the text is left unchanged.
+    assert result.revised_response['final_answer'] == 'Some text here.\n\n(Book, p. 99)\n\nMore text.'
 
 
 def test_validation_multiple_blockquotes_separate_citations():
@@ -599,12 +616,16 @@ def test_multiline_blockquote_citation_next_line():
         '''\
         Yes, you can use the Warpstorm Scroll against a model that is flying high. According to the definition of the Warpstorm Scroll:
 
+        <div data-quote-status="verified"></div>
+
         > "## WARPSTORM SCROLL
         > Bearer can cast spell in his magic phase. All creatures flying high's suffer D6 56 hits, and are forced down to earth, re- entering the table on their own side's table edge in their following turn."
         >\x20
         > (Warhammer Magic, p. 44)
 
         The rule explicitly states that the scroll affects "creatures flying high," which aligns with the definition of flying high:
+
+        <div data-quote-status="verified"></div>
 
         > "## FLYING HIGH
         > A flyer may choose to fly high during his turn instead of making a normal flying move. This represents a flyer ascending far into the air above the battlefield..."
@@ -707,6 +728,13 @@ def test_fix_quote_citations_in_text():
 
     result = fix_quote_citations_in_text(before, chunks)
     assert result.fixed_text == expected
+    # Segment model: three verified blockquotes → three QuoteSegments
+    quote_segs = [s for s in result.segments if isinstance(s, QuoteSegment)]
+    assert len(quote_segs) == 3
+    assert all(s.located.is_verified for s in quote_segs)
+    # materialize with wrap_verified=True produces div wrappers
+    wrapped = materialize(result.segments, wrap_verified=True)
+    assert wrapped.count('<div data-quote-status="verified"></div>') == 3
 
 
 def test_fix_quote_citations_in_text_2():
@@ -806,8 +834,6 @@ def test_fix_quote_citations_in_text_2():
     result = fix_quote_citations_in_text(before, chunks)
     assert result.fixed_text == expected
 
-    assert result.fixed_text == expected
-
 def test_fix_quote_citations_in_text_3():
     chunks: list[Chunk] = [
         {
@@ -835,11 +861,15 @@ def test_fix_quote_citations_in_text_3():
 
     before = '**Yes, Grail Knights must take a Break test when they lose combat, despite their immunity to psychological effects.**\n\nThe general rule for losing combat requires a Break test:\n\n> The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test. You need to take a separate Break test for every unit involved in the combat.\n\n(Warhammer Rulebook, p. 42)\n\nThis means that any unit which loses a combat must attempt a Break test, regardless of other traits.\n\nHowever, Grail Knights possess the Grail Virtue, which grants immunity to psychological effects:\n\n> Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.\n\n(Bretonnia Army Book, p. 44)\n\nThe key distinction lies in the categorization of Break tests:\n\n> However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.\n\n(Warhammer Rulebook, p. 47)\n\nSince Break tests are explicitly stated to be *not* psychology tests, and the Grail Virtue only applies to "psychology rules" and "such tests" — which refer exclusively to Panic, Fear, Terror, and Stupidity — the immunity does not extend to Break tests.\n\nTherefore, even though Grail Knights are immune to psychological effects, they are still required to take a Break test when they lose combat, as the rule for Break tests is not overridden by the Grail Virtue.'
 
-    fixed = '**Yes, Grail Knights must take a Break test when they lose combat, despite their immunity to psychological effects.**\n\nThe general rule for losing combat requires a Break test:\n\n> The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test. You need to take a separate Break test for every unit involved in the combat.\n> \n> (Warhammer Rulebook, p. 42)\n\nThis means that any unit which loses a combat must attempt a Break test, regardless of other traits.\n\nHowever, Grail Knights possess the Grail Virtue, which grants immunity to psychological effects:\n\n> Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.\n> \n> (Bretonnia Army Book, p. 44)\n\nThe key distinction lies in the categorization of Break tests:\n\n> However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.\n> \n> (Warhammer Rulebook, p. 47)\n\nSince Break tests are explicitly stated to be *not* psychology tests, and the Grail Virtue only applies to "psychology rules" and "such tests" — which refer exclusively to Panic, Fear, Terror, and Stupidity — the immunity does not extend to Break tests.\n\nTherefore, even though Grail Knights are immune to psychological effects, they are still required to take a Break test when they lose combat, as the rule for Break tests is not overridden by the Grail Virtue.'
+    # The first quote contains an extra fabricated sentence not present in the chunk
+    # ("You need to take a separate Break test..."), so it cannot be verified and its
+    # citation stays as-is (bare paragraph). The other two quotes match exactly and
+    # have their citations reformatted inline.
+    fixed = '**Yes, Grail Knights must take a Break test when they lose combat, despite their immunity to psychological effects.**\n\nThe general rule for losing combat requires a Break test:\n\n> The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test. You need to take a separate Break test for every unit involved in the combat.\n\n(Warhammer Rulebook, p. 42)\n\nThis means that any unit which loses a combat must attempt a Break test, regardless of other traits.\n\nHowever, Grail Knights possess the Grail Virtue, which grants immunity to psychological effects:\n\n> Grail Knights have the most noble chivalric virtue of all – the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.\n> \n> (Bretonnia Army Book, p. 44)\n\nThe key distinction lies in the categorization of Break tests:\n\n> However, a Break test is not a psychology test. The two tests are quite separate. This is important because some bonuses apply specifically to Break tests and others apply specifically to psychology tests.\n> \n> (Warhammer Rulebook, p. 47)\n\nSince Break tests are explicitly stated to be *not* psychology tests, and the Grail Virtue only applies to "psychology rules" and "such tests" — which refer exclusively to Panic, Fear, Terror, and Stupidity — the immunity does not extend to Break tests.\n\nTherefore, even though Grail Knights are immune to psychological effects, they are still required to take a Break test when they lose combat, as the rule for Break tests is not overridden by the Grail Virtue.'
 
     result = fix_quote_citations_in_text(before, chunks)
-    print(result.fixed_text)
     assert result.fixed_text == fixed
+    assert len(result.unfixable_quotes) == 1
 
 
 def test_fix_quote_citations_duplicate_chunks():
@@ -918,6 +948,482 @@ def test_fix_quote_separated_citation():
     result = fix_quote_citations_in_text(before, chunks)
     assert result.fixed_text == expected
 
+
+def test_fix_quote_citations_unverifiable_blockquote_citation():
+    """Quote not found in any document goes to unfixable_quotes and text is unchanged.
+
+    Previously, an unverifiable blockquote whose citation appeared as a separate
+    > (citation) blockquote was silently moved to valid_or_fixed as a defensive
+    measure against the standalone-citation cleanup. That edge case is removed:
+    unverifiable quotes now always land in unfixable_quotes.
+    """
+    chunks: list[Chunk] = [
+        {
+            "content": "Some completely unrelated rulebook content about goblins.",
+            "rulebook_name": "Goblin Rulebook",
+            "page": "7",
+            "start_index": 0,
+            "end_index": -1,
+        }
+    ]
+    text = inspect.cleandoc("""\
+        Here is the answer.
+
+        > This rule text does not appear anywhere in our documents whatsoever.
+
+        > (Goblin Rulebook, p. 7)
+
+        Some follow-up text.
+    """)
+    result = fix_quote_citations_in_text(text, chunks)
+    assert len(result.unfixable_quotes) == 1
+    assert result.unfixable_quotes[0]["quote"] == "This rule text does not appear anywhere in our documents whatsoever."
+    assert len(result.valid_quotes) == 0
+    assert result.fixed_text == text
+
+
+def test_fix_quote_citations_no_dangling_citation_created():
+    """Correcting a wrong citation does not leave a dangling standalone citation.
+
+    Previously, find_quotes_in_text could miss a citation that appeared on a
+    separate paragraph, causing fix_quote_citations_in_text to insert a second
+    citation and leave the original as a dangling standalone (which then required
+    its own cleanup pass). With citations now captured within the quote span,
+    the correction is made in-place and nothing is left dangling.
+    """
+    chunks: list[Chunk] = [
+        {
+            "content": "You may move up to three spaces on your turn.",
+            "rulebook_name": "Movement Rules",
+            "page": "12",
+            "start_index": 0,
+            "end_index": -1,
+        }
+    ]
+    text = inspect.cleandoc("""\
+        The movement rule states:
+
+        > You may move up to three spaces on your turn.
+
+        (Movement Rules, p. 99)
+
+        End of answer.
+    """)
+    result = fix_quote_citations_in_text(text, chunks)
+    # Citation should be corrected to the real page
+    assert '(Movement Rules, p. 12)' in result.fixed_text
+    # The wrong citation must not remain anywhere in the text
+    assert '(Movement Rules, p. 99)' not in result.fixed_text
+    # And there should be no orphaned bare citation paragraph anywhere
+    assert '\n\n(' not in result.fixed_text
+
+
+# ── locate_quotes ────────────────────────────────────────────────────────────
+
+def test_locate_quotes_found():
+    chunks: list[Chunk] = [{
+        "content": "You may move up to three spaces on your turn.",
+        "rulebook_name": "Movement Rules",
+        "page": "12",
+        "start_index": 0,
+        "end_index": -1,
+    }]
+    text = "> You may move up to three spaces on your turn.\n\n(Movement Rules, p. 12)"
+    from meeplemate import quote_util
+    quotes = quote_util.find_quotes_in_text(text)
+    located = locate_quotes(quotes, chunks)
+    assert len(located) == 1
+    lq = located[0]
+    assert lq.is_verified
+    assert lq.match is not None
+    assert lq.match.source_chunk["rulebook_name"] == "Movement Rules"
+    assert lq.match.source_chunk["page"] == "12"
+
+
+def test_locate_quotes_not_found():
+    chunks: list[Chunk] = [{
+        "content": "Completely unrelated content.",
+        "rulebook_name": "Some Book",
+        "page": "1",
+        "start_index": 0,
+        "end_index": -1,
+    }]
+    text = "> This text does not appear in any document.\n\n(Some Book, p. 1)"
+    from meeplemate import quote_util
+    quotes = quote_util.find_quotes_in_text(text)
+    located = locate_quotes(quotes, chunks)
+    assert len(located) == 1
+    assert not located[0].is_verified
+    assert located[0].match is None
+
+
+def test_locate_quotes_matched_text():
+    """match.matched_text is the literal document text, not the LLM's wording."""
+    chunk_content = "You may move up to three spaces on your turn."
+    chunks: list[Chunk] = [{
+        "content": chunk_content,
+        "rulebook_name": "Movement Rules",
+        "page": "12",
+        "start_index": 0,
+        "end_index": -1,
+    }]
+    text = "> You may move up to three spaces on your turn.\n\n(Movement Rules, p. 12)"
+    from meeplemate import quote_util
+    quotes = quote_util.find_quotes_in_text(text)
+    located = locate_quotes(quotes, chunks)
+    assert located[0].is_verified
+    assert located[0].match.matched_text == chunk_content
+
+
+def test_locate_quotes_referenced_chunks():
+    """match.referenced_chunks contains every chunk overlapping the match span."""
+    chunks: list[Chunk] = [
+        {"content": "First sentence here.", "rulebook_name": "Book", "page": "1", "start_index": 0, "end_index": 20},
+        {"content": "Second sentence here.", "rulebook_name": "Book", "page": "2", "start_index": 21, "end_index": 42},
+    ]
+    # Quote that spans both chunks
+    text = "> First sentence here. Second sentence here.\n\n(Book, p. 1)"
+    from meeplemate import quote_util
+    quotes = quote_util.find_quotes_in_text(text)
+    located = locate_quotes(quotes, chunks)
+    assert located[0].is_verified
+    assert len(located[0].match.referenced_chunks) >= 1
+
+
+def test_locate_quotes_match_ratio():
+    """match_ratio is between 0 and 1; exact match gives a ratio near 1."""
+    chunks: list[Chunk] = [{
+        "content": "You may move up to three spaces on your turn.",
+        "rulebook_name": "Movement Rules",
+        "page": "12",
+        "start_index": 0,
+        "end_index": -1,
+    }]
+    text = "> You may move up to three spaces on your turn.\n\n(Movement Rules, p. 12)"
+    from meeplemate import quote_util
+    quotes = quote_util.find_quotes_in_text(text)
+    located = locate_quotes(quotes, chunks)
+    assert located[0].is_verified
+    ratio = located[0].match.match_ratio
+    assert 0.0 <= ratio <= 1.0
+    assert ratio > 0.9  # near-exact match
+
+
+def test_locate_quotes_ellipsis_span():
+    """Quotes with ellipsis are matched despite a larger span in the combined text."""
+    chunks: list[Chunk] = [
+        {"content": "First part of the rule.", "rulebook_name": "Book", "page": "1", "start_index": 0, "end_index": 23},
+        {"content": "Some intervening text that is not quoted.", "rulebook_name": "Book", "page": "2", "start_index": 24, "end_index": 64},
+        {"content": "Last part of the rule.", "rulebook_name": "Book", "page": "3", "start_index": 65, "end_index": 87},
+    ]
+    text = "> First part of the rule...Last part of the rule.\n\n(Book, p. 1)"
+    from meeplemate import quote_util
+    quotes = quote_util.find_quotes_in_text(text)
+    located = locate_quotes(quotes, chunks)
+    assert located[0].is_verified
+
+
+# ── format_quote ─────────────────────────────────────────────────────────────
+
+def _make_chunk(rulebook: str, page: str, content: str) -> Chunk:
+    return {"content": content, "rulebook_name": rulebook, "page": page, "start_index": 0, "end_index": -1}
+
+
+def _make_located(text: str, chunk: Chunk | None) -> LocatedQuote:
+    from meeplemate import quote_util
+    quotes = quote_util.find_quotes_in_text(text)
+    assert len(quotes) == 1
+    match = None
+    if chunk is not None:
+        match = QuoteMatch(
+            matched_text=chunk["content"],
+            source_chunk=chunk,
+            referenced_chunks=[chunk],
+            match_ratio=1.0,
+            matched_span=chunk,
+        )
+    return LocatedQuote(quote=quotes[0], match=match)
+
+
+def test_format_quote_unverified():
+    chunk = _make_chunk("Book", "1", "Some rule text.")
+    text = "> Some rule text.\n\n(Book, p. 99)"
+    lq = _make_located(text, None)  # not verified
+    r = format_quote(lq)
+    assert not r.is_verified
+    assert r.replacement == lq.quote["text"]
+
+
+def test_format_quote_correct_citation_inline():
+    """Already-correct citation retains correct citation text in the replacement."""
+    chunk = _make_chunk("Book", "1", "Some rule text.")
+    text = "> Some rule text.\n> \n> (Book, p. 1)"
+    lq = _make_located(text, chunk)
+    r = format_quote(lq)
+    assert r.is_verified
+    assert '(Book, p. 1)' in r.replacement
+    assert '(Book, p. 2)' not in r.replacement
+
+
+def test_format_quote_correct_citation_reformat():
+    """Correct citation on a separate paragraph → reformatted inline in blockquote."""
+    chunk = _make_chunk("Book", "1", "Some rule text.")
+    text = "> Some rule text.\n\n(Book, p. 1)"
+    lq = _make_located(text, chunk)
+    r = format_quote(lq)
+    assert r.is_verified
+    assert '> (Book, p. 1)' in r.replacement
+    assert '\n\n(Book, p. 1)' not in r.replacement
+
+
+def test_format_quote_wrong_citation():
+    """Wrong page number → corrected to the chunk's actual page."""
+    chunk = _make_chunk("Book", "42", "Some rule text.")
+    text = "> Some rule text.\n\n(Book, p. 99)"
+    lq = _make_located(text, chunk)
+    r = format_quote(lq)
+    assert r.is_verified
+    assert '(Book, p. 42)' in r.replacement
+    assert '(Book, p. 99)' not in r.replacement
+
+
+def test_format_quote_missing_citation():
+    """No citation at all → correct citation is inserted."""
+    chunk = _make_chunk("Book", "7", "Some rule text.")
+    text = "> Some rule text."
+    lq = _make_located(text, chunk)
+    r = format_quote(lq)
+    assert r.is_verified
+    assert '(Book, p. 7)' in r.replacement
+
+
+# ── apply_replacements ───────────────────────────────────────────────────────
+
+def test_apply_replacements_single():
+    text = "Hello world!"
+    replacements = [QuoteReplacement(start_index=6, end_index=11, replacement="Python", is_verified=True, quote_type="inline")]
+    assert apply_replacements(text, replacements) == "Hello Python!"
+
+
+def test_apply_replacements_multiple():
+    text = "aaa bbb ccc"
+    replacements = [
+        QuoteReplacement(start_index=0, end_index=3, replacement="AAA", is_verified=True, quote_type="inline"),
+        QuoteReplacement(start_index=8, end_index=11, replacement="CCC", is_verified=True, quote_type="inline"),
+    ]
+    assert apply_replacements(text, replacements) == "AAA bbb CCC"
+
+
+def test_apply_replacements_empty():
+    text = "unchanged text"
+    assert apply_replacements(text, []) == text
+
+
+# ── materialize ──────────────────────────────────────────────────────────────
+
+def _make_verified_bq_seg(formatted_text: str) -> QuoteSegment:
+    from meeplemate import quote_util
+    mock_chunk: Chunk = {"content": "x", "rulebook_name": "B", "page": "1", "start_index": 0, "end_index": 1}
+    mock_match = QuoteMatch(matched_text="x", source_chunk=mock_chunk, referenced_chunks=[mock_chunk], match_ratio=1.0)
+    mock_lq = LocatedQuote(
+        quote={"text": formatted_text, "quote": "x", "quote_type": "blockquote", "citation": None, "start_index": 0, "end_index": len(formatted_text)},
+        match=mock_match,
+    )
+    return QuoteSegment(original_text=formatted_text, located=mock_lq, formatted_text=formatted_text)
+
+
+def _make_unverified_bq_seg(formatted_text: str) -> QuoteSegment:
+    mock_lq = LocatedQuote(
+        quote={"text": formatted_text, "quote": "x", "quote_type": "blockquote", "citation": None, "start_index": 0, "end_index": len(formatted_text)},
+        match=None,
+    )
+    return QuoteSegment(original_text=formatted_text, located=mock_lq, formatted_text=formatted_text)
+
+
+def _make_inline_seg(formatted_text: str) -> QuoteSegment:
+    from meeplemate import quote_util
+    mock_chunk: Chunk = {"content": "x", "rulebook_name": "B", "page": "1", "start_index": 0, "end_index": 1}
+    mock_match = QuoteMatch(matched_text="x", source_chunk=mock_chunk, referenced_chunks=[mock_chunk], match_ratio=1.0)
+    mock_lq = LocatedQuote(
+        quote={"text": formatted_text, "quote": "x", "quote_type": "inline", "citation": None, "start_index": 0, "end_index": len(formatted_text)},
+        match=mock_match,
+    )
+    return QuoteSegment(original_text=formatted_text, located=mock_lq, formatted_text=formatted_text)
+
+
+def test_materialize_plain_only():
+    segs = [PlainText("Hello world")]
+    assert materialize(segs) == "Hello world"
+
+
+def test_materialize_verified_blockquote_wrapped():
+    seg = _make_verified_bq_seg("> Some rule.\n> \n> (Book, p. 1)")
+    result = materialize([seg], wrap_verified=True)
+    assert result.startswith('<div data-quote-status="verified"></div>')
+    assert '> Some rule.' in result
+
+
+def test_materialize_unverified_not_wrapped():
+    seg = _make_unverified_bq_seg("> Some rule.")
+    result = materialize([seg], wrap_verified=True)
+    assert '<div data-quote-status="verified">' not in result
+    assert result == "> Some rule."
+
+
+def test_materialize_inline_not_wrapped():
+    seg = _make_inline_seg('"Some rule." (Book, p. 1)')
+    result = materialize([seg], wrap_verified=True)
+    assert '<div data-quote-status="verified">' not in result
+
+
+def test_materialize_wrap_verified_false():
+    seg = _make_verified_bq_seg("> Rule.\n> \n> (B, p. 1)")
+    result = materialize([seg], wrap_verified=False)
+    assert '<div data-quote-status="verified">' not in result
+    assert result == "> Rule.\n> \n> (B, p. 1)"
+
+
+def test_materialize_mixed_segments():
+    plain = PlainText("Before.\n\n")
+    verified_bq = _make_verified_bq_seg("> A rule.\n> \n> (B, p. 1)")
+    unverified_bq = _make_unverified_bq_seg("> Unknown.")
+    result = materialize([plain, verified_bq, PlainText("\n\n"), unverified_bq])
+    assert result.startswith("Before.\n\n")
+    assert '<div data-quote-status="verified">' in result
+    assert "> Unknown." in result
+    # unverified not wrapped
+    idx = result.index("> Unknown.")
+    assert '<div data-quote-status="verified">' not in result[idx:]
+
+
+# ── build_segments ────────────────────────────────────────────────────────────
+
+def test_build_segments_no_quotes():
+    text = "No quotes here at all."
+    segs = build_segments(text, [])
+    assert len(segs) == 1
+    assert isinstance(segs[0], PlainText)
+    assert segs[0].text == text
+
+
+def test_build_segments_single_quote():
+    chunk = _make_chunk("Book", "1", "Some rule text.")
+    text = "Before.\n\n> Some rule text.\n> \n> (Book, p. 1)\n\nAfter."
+    located = locate_quotes(find_quotes_in_text(text), [chunk])
+    segs = build_segments(text, located)
+    types = [type(s).__name__ for s in segs]
+    assert types == ["PlainText", "QuoteSegment", "PlainText"]
+    assert segs[0].text == "Before.\n\n"
+    assert isinstance(segs[1], QuoteSegment)
+    assert segs[2].text == "\n\nAfter."
+
+
+def test_build_segments_quote_at_start():
+    chunk = _make_chunk("Book", "1", "Some rule text.")
+    text = "> Some rule text.\n> \n> (Book, p. 1)\n\nAfter."
+    located = locate_quotes(find_quotes_in_text(text), [chunk])
+    segs = build_segments(text, located)
+    assert isinstance(segs[0], QuoteSegment)
+
+
+def test_build_segments_quote_at_end():
+    chunk = _make_chunk("Book", "1", "Some rule text.")
+    text = "Before.\n\n> Some rule text.\n> \n> (Book, p. 1)"
+    located = locate_quotes(find_quotes_in_text(text), [chunk])
+    segs = build_segments(text, located)
+    assert isinstance(segs[-1], QuoteSegment)
+
+
+def test_build_segments_plain_text_matches_gaps():
+    chunk = _make_chunk("Book", "1", "Some rule text.")
+    text = "AAA\n\n> Some rule text.\n> \n> (Book, p. 1)\n\nBBB"
+    located = locate_quotes(find_quotes_in_text(text), [chunk])
+    segs = build_segments(text, located)
+    plain_texts = [s.text for s in segs if isinstance(s, PlainText)]
+    assert plain_texts[0] == "AAA\n\n"
+    assert plain_texts[1] == "\n\nBBB"
+
+
+def test_build_segments_formatted_text_from_format_quote():
+    """QuoteSegment.formatted_text equals format_quote(lq).replacement."""
+    chunk = _make_chunk("Book", "1", "Some rule text.")
+    text = "> Some rule text.\n\n(Book, p. 99)"  # wrong page → will be fixed
+    located = locate_quotes(find_quotes_in_text(text), [chunk])
+    segs = build_segments(text, located)
+    qs = [s for s in segs if isinstance(s, QuoteSegment)]
+    assert len(qs) == 1
+    assert qs[0].formatted_text == format_quote(qs[0].located).replacement
+
+
+# ── are_segments_adjacent ─────────────────────────────────────────────────────
+
+def _make_simple_quote_seg(text: str, quote_type: str = "blockquote", verified: bool = True) -> QuoteSegment:
+    chunk: Chunk = {"content": text, "rulebook_name": "B", "page": "1", "start_index": 0, "end_index": len(text)}
+    match = QuoteMatch(matched_text=text, source_chunk=chunk, referenced_chunks=[chunk], match_ratio=1.0) if verified else None
+    lq = LocatedQuote(
+        quote={"text": text, "quote": text, "quote_type": quote_type, "citation": None, "start_index": 0, "end_index": len(text)},
+        match=match,
+    )
+    return QuoteSegment(original_text=text, located=lq, formatted_text=text)
+
+
+def test_are_segments_adjacent_whitespace_only():
+    seg_a = _make_simple_quote_seg("> Rule A.")
+    seg_b = _make_simple_quote_seg("> Rule B.")
+    segs = [seg_a, PlainText("\n\n"), seg_b]
+    assert are_segments_adjacent(segs, seg_a, seg_b) is True
+
+
+def test_are_segments_adjacent_content_between():
+    seg_a = _make_simple_quote_seg("> Rule A.")
+    seg_b = _make_simple_quote_seg("> Rule B.")
+    segs = [seg_a, PlainText("Some content here."), seg_b]
+    assert are_segments_adjacent(segs, seg_a, seg_b) is False
+
+
+def test_are_segments_adjacent_quote_between():
+    seg_a = _make_simple_quote_seg("> Rule A.")
+    seg_mid = _make_simple_quote_seg("> Rule M.")
+    seg_b = _make_simple_quote_seg("> Rule B.")
+    segs = [seg_a, PlainText("\n\n"), seg_mid, PlainText("\n\n"), seg_b]
+    assert are_segments_adjacent(segs, seg_a, seg_b) is False
+
+
+def test_are_segments_adjacent_order_independent():
+    seg_a = _make_simple_quote_seg("> Rule A.")
+    seg_b = _make_simple_quote_seg("> Rule B.")
+    segs = [seg_a, PlainText("\n\n"), seg_b]
+    assert are_segments_adjacent(segs, seg_a, seg_b) == are_segments_adjacent(segs, seg_b, seg_a)
+
+
+# ── remove_quote_segments ─────────────────────────────────────────────────────
+
+def test_remove_quote_segments_basic():
+    seg_a = _make_simple_quote_seg("> Rule A.")
+    seg_b = _make_simple_quote_seg("> Rule B.")
+    segs = [PlainText("x"), seg_a, PlainText("\n\n"), seg_b, PlainText("y")]
+    result = remove_quote_segments(segs, {seg_a})
+    assert seg_a not in result
+    assert seg_b in result
+
+
+def test_remove_quote_segments_merges_plain_text():
+    seg = _make_simple_quote_seg("> Rule.")
+    segs = [PlainText("AAA"), seg, PlainText("BBB")]
+    result = remove_quote_segments(segs, {seg})
+    assert len(result) == 1
+    assert isinstance(result[0], PlainText)
+    assert result[0].text == "AAABBB"
+
+
+def test_remove_quote_segments_empty_set():
+    seg = _make_simple_quote_seg("> Rule.")
+    segs = [PlainText("x"), seg, PlainText("y")]
+    result = remove_quote_segments(segs, set())
+    assert result == segs
+
+
+# ── dedupe_chunks ─────────────────────────────────────────────────────────────
 
 def test_dedupe_chunks_overlapping():
     """Overlapping indexed chunks are merged with correct content and indices."""
@@ -1258,6 +1764,60 @@ def test_quote_spanning_multiple_chunks():
     )
     result = fix_quote_citations_in_text(response, documents)
     assert len(result.unfixable_quotes) == 0, f"Expected all quotes to be fixable, but found unfixable quotes: {result.unfixable_quotes}"
+
+
+def test_quote_cross_chunk_ellipsis():
+    """A quote bridging two non-adjacent chunks via '...' should be valid.
+
+    Regression: the LLM combined text from two separate chunks on the same page
+    using '...' (ellipsis).  fix_quote_citations_in_text builds a combined
+    string per rulebook and rejects matches where the matched span is more than
+    3× the quote length (to suppress false positives).  When many intervening
+    chunks sit between the two relevant ones, the span easily exceeds that
+    threshold and the quote is incorrectly flagged as unfixable.
+    """
+    # A large filler chunk between the two relevant chunks creates the
+    # gap that causes the span to exceed len(quote) * 3.
+    filler = "A" * 600
+    chunks: list[Chunk] = [
+        {
+            "rulebook_name": "Game Rules",
+            "page": "4",
+            "start_index": 100,
+            "end_index": 200,
+            "content": "Players may use one-shot cards to help or harm others in combat. Some special cards may also be played into combat.",
+        },
+        {
+            "rulebook_name": "Game Rules",
+            "page": "4",
+            "start_index": 250,
+            "end_index": 850,
+            "content": filler,
+        },
+        {
+            "rulebook_name": "Game Rules",
+            "page": "4",
+            "start_index": 900,
+            "end_index": 1000,
+            "content": "You can play these either during your own combats or during someone else's combat.",
+        },
+    ]
+    # The LLM bridges chunk 1 and chunk 3 with '...' — each half is real,
+    # but the filler chunk in between inflates the combined-string span past
+    # the 3× guard, so the match is rejected and the quote flagged unfixable.
+    response = inspect.cleandoc("""\
+        Special cards can be played during combat:
+
+        > Players may use one-shot cards to help or harm others in combat. Some special cards may also be played into combat. ... You can play these either during your own combats or during someone else's combat.
+
+        > (Game Rules, p. 4)
+
+        So both halves apply.
+    """)
+    result = fix_quote_citations_in_text(response, chunks)
+    assert len(result.unfixable_quotes) == 0, (
+        f"Cross-chunk ellipsis quote should be valid, but was flagged as unfixable: {result.unfixable_quotes}"
+    )
 
 
 def test_unescape_table_html():

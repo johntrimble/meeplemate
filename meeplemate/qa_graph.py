@@ -1,10 +1,10 @@
 import asyncio
 import bisect
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 import json
-from typing import Annotated, Any, List, Literal, NotRequired, Optional, Sequence, Tuple, TypedDict, cast
+from typing import Annotated, Any, List, Literal, NotRequired, Optional, Sequence, Tuple, TypedDict, Union, cast
 from langchain_core.messages import AnyMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain.tools import ToolRuntime, tool
@@ -531,6 +531,7 @@ class FixQuoteCitationsResult:
     unfixable_quotes: list[quote_util.ExtractedQuote]
     valid_quotes: list[quote_util.ExtractedQuote]
     referenced_chunks: list[Chunk]
+    segments: list = field(default_factory=list)  # list[Segment]; default keeps old callers compiling
 
 
 @dataclass
@@ -558,6 +559,60 @@ def find_chunk_for_offset(offset: int, index: RulebookIndex) -> Chunk:
     """Return the chunk that owns the given character offset in the combined string."""
     idx = bisect.bisect_right(index.offsets, offset) - 1
     return index.chunks[max(0, idx)]
+
+
+def find_chunks_for_span(start: int, end: int, index: RulebookIndex) -> list[Chunk]:
+    """Return all chunks whose content overlaps with [start, end) in the combined string."""
+    result = []
+    for i, chunk in enumerate(index.chunks):
+        chunk_start = index.offsets[i]
+        chunk_end = chunk_start + len(chunk["content"])
+        if chunk_start < end and chunk_end > start:
+            result.append(chunk)
+    return result
+
+
+@dataclass
+class QuoteMatch:
+    matched_text: str              # literal document text at the match span
+    source_chunk: Chunk            # chunk providing citation (rulebook_name, page)
+    referenced_chunks: list[Chunk] # all chunks overlapping the match span
+    match_ratio: float             # normalised score from find_quote_with_gaps (0.0–1.0)
+    matched_span: Chunk | None = None  # exact span of match in source-document coordinates
+
+
+@dataclass
+class LocatedQuote:
+    quote: quote_util.ExtractedQuote
+    match: QuoteMatch | None       # None = could not be verified against any chunk
+
+    @property
+    def is_verified(self) -> bool:
+        return self.match is not None
+
+
+@dataclass
+class QuoteReplacement:
+    start_index: int   # position in original text
+    end_index: int     # position in original text
+    replacement: str   # text to splice in
+    is_verified: bool
+    quote_type: str    # "blockquote" or "inline" — from ExtractedQuote
+
+
+@dataclass
+class PlainText:
+    text: str
+
+
+@dataclass(eq=False)
+class QuoteSegment:
+    original_text: str    # the quote's raw text in the original response
+    located: LocatedQuote  # carries is_verified, quote_type, match (with matched_span)
+    formatted_text: str   # result of format_quote (the replacement text)
+
+
+Segment = Union[PlainText, QuoteSegment]
 
 
 def get_chunks_by_rulebook_and_page(chunks: list[Chunk]) -> dict[tuple[str, str], list[Chunk]]:
@@ -704,6 +759,17 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
             # Empty line - keep as is
             formatted_lines.append(line)
 
+    # When a citation was in its own separate blockquote (> quote\n\n> (citation)),
+    # text_before_citation ends with blank lines followed by a bare '>'. Strip those
+    # since they're an extraction artifact, not meaningful content.
+    if formatted_lines and formatted_lines[-1].strip() == '>':
+        i = len(formatted_lines) - 2
+        while i >= 0 and formatted_lines[i].strip() == '':
+            i -= 1
+        if i < len(formatted_lines) - 2:
+            # There were blank lines before the trailing >, strip them and it
+            formatted_lines = formatted_lines[:i + 1]
+
     # Find the last non-empty line
     last_content_idx = -1
     for i in range(len(formatted_lines) - 1, -1, -1):
@@ -741,13 +807,16 @@ def should_reformat_blockquote_citation(quote_text: str, citation_start_index: i
     return '\n\n' in text_before_citation or text_before_citation.rstrip() != text_before_citation.rstrip('\n')
 
 
-def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitationsResult:
-    original_text = text
+def locate_quotes(
+    quotes: list[quote_util.ExtractedQuote],
+    chunks: list[Chunk],
+) -> list[LocatedQuote]:
+    """Stage 2: Map each extracted quote to its source chunk(s) via fuzzy matching.
 
-    # Track referenced chunks
-    referenced_chunks: list[Chunk] = []
-
-    # Build per-rulebook combined indices for matching quotes that span multiple chunks
+    For each quote, searches the per-rulebook combined text using find_quote_with_gaps.
+    Quotes with ellipsis are allowed a wider match span (10× vs 3× quote length) to
+    accommodate intentional gaps between passages.
+    """
     chunks_by_rulebook: dict[str, list[Chunk]] = {}
     for chunk in chunks:
         chunks_by_rulebook.setdefault(chunk["rulebook_name"], []).append(chunk)
@@ -756,204 +825,219 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
         for name, rb_chunks in chunks_by_rulebook.items()
     }
 
-    # Find the quotes in the text
-    unfixable_quotes: list[quote_util.ExtractedQuote] = []
-    valid_or_fixed_quotes: list[quote_util.ExtractedQuote] = []
-    quotes_in_text = quote_util.find_quotes_in_text(text)
+    located: list[LocatedQuote] = []
+    for quote in quotes:
+        quote_text = quote["quote"]
+        has_ellipsis = "..." in quote_text or "\u2026" in quote_text
+        span_multiplier = 10 if has_ellipsis else 3
 
-    # We need to go in reverse order of appearance to not mess up indices
-    # Sort quotes by their position in the text
-    quotes_in_text.sort(key=lambda q: q["start_index"], reverse=True)
-
-    for quote_info in quotes_in_text:
-        citation = quote_info["citation"]
-
-        # Search all rulebook combined strings for the quote; map match back to originating chunk.
-        # Reject matches where the span in the combined string is much larger than the quote itself,
-        # which would indicate false positives from fragments scattered across unrelated chunks.
-        found_chunk = None
+        match: QuoteMatch | None = None
         for index in rulebook_indices.values():
-            m = quote_util.find_quote_with_gaps(index.combined, quote_info["quote"])
-            if m and (m.end - m.start) <= len(quote_info["quote"]) * 3:
-                found_chunk = find_chunk_for_offset(m.start, index)
+            m = quote_util.find_quote_with_gaps(index.combined, quote_text)
+            if m and (m.end - m.start) <= len(quote_text) * span_multiplier:
+                start_chunk_idx = max(0, bisect.bisect_right(index.offsets, m.start) - 1)
+                source_chunk = index.chunks[start_chunk_idx]
+                ref_chunks = find_chunks_for_span(m.start, m.end, index)
+                chunk_start_in_combined = index.offsets[start_chunk_idx]
+                span_start = source_chunk["start_index"] + (m.start - chunk_start_in_combined)
+                end_chunk_idx = max(0, bisect.bisect_right(index.offsets, m.end - 1) - 1)
+                end_chunk = index.chunks[end_chunk_idx]
+                span_end = end_chunk["start_index"] + (m.end - index.offsets[end_chunk_idx])
+                matched_span = Chunk(
+                    rulebook_name=source_chunk["rulebook_name"],
+                    page=source_chunk["page"],
+                    start_index=span_start,
+                    end_index=span_end,
+                    content=m.matched_text,
+                )
+                match = QuoteMatch(
+                    matched_text=m.matched_text,
+                    source_chunk=source_chunk,
+                    referenced_chunks=ref_chunks,
+                    match_ratio=m.score / 100.0,
+                    matched_span=matched_span,
+                )
                 break
 
-        if found_chunk:
-            correct_citation = {
-                "ref_name": found_chunk["rulebook_name"],
-                "page": found_chunk["page"],
-            }
-            referenced_chunks.append(found_chunk)
+        located.append(LocatedQuote(quote=quote, match=match))
 
-            # Check if the existing citation is already correct
-            citation_correct = (
-                citation is not None
-                and citation["ref_name"] == correct_citation["ref_name"]
-                and citation["page"] == correct_citation["page"]
-            )
-        else:
-            correct_citation = None
-            citation_correct = False
+    return located
 
-        if citation_correct:
-            # Citation is correct — reformat blockquotes with citations on separate lines if needed
-            if quote_info["quote_type"] == "blockquote" and citation and should_reformat_blockquote_citation(quote_info["text"], citation["start_index"]):
-                text_before_citation = quote_info["text"][:citation["start_index"]]
-                reformatted_quote = format_blockquote_with_inline_citation(text_before_citation, citation["text"])
-                text = text[:quote_info["start_index"]] + reformatted_quote + text[quote_info["end_index"]:]
-                new_cit_start = len(reformatted_quote) - len(citation["text"])
-                valid_or_fixed_quotes.append({
-                    "text": reformatted_quote,
-                    "quote": quote_info["quote"],
-                    "quote_type": quote_info["quote_type"],
-                    "start_index": quote_info["start_index"],
-                    "end_index": quote_info["start_index"] + len(reformatted_quote),
-                    "citation": {
-                        "text": citation["text"],
-                        "ref_name": citation["ref_name"],
-                        "page": citation["page"],
-                        "start_index": new_cit_start,
-                        "end_index": len(reformatted_quote)
-                    }
-                })
-            else:
-                valid_or_fixed_quotes.append(quote_info)
-            continue
-        
-        # If we found the correct citation, update the text
-        if correct_citation:
-            fixed_citation_text = f'({correct_citation["ref_name"]}, p. {correct_citation["page"]})'
-            # If there is a citation, replace it
-            if citation:
-                # Get text before old citation
-                text_before_citation = quote_info["text"][:citation["start_index"]]
 
-                # For blockquotes, format with citation inline; for inline quotes, just append
-                if quote_info["quote_type"] == "blockquote":
-                    new_quote_text = format_blockquote_with_inline_citation(text_before_citation, fixed_citation_text)
-                else:
-                    new_quote_text = text_before_citation.rstrip() + ' ' + fixed_citation_text
+def format_quote(located: LocatedQuote) -> QuoteReplacement:
+    """Stage 3: Determine the replacement text for a single quote.
 
-                # Update overall text
-                text = text[:quote_info["start_index"]] + new_quote_text + text[quote_info["end_index"]:]
+    Unverified quotes are returned unchanged (identity replacement). Verified
+    quotes have their citations corrected and blockquotes reformatted inline.
+    This is the single place to add further formatting changes (e.g. a
+    data-verified wrapper div).
+    """
+    quote = located.quote
+    original_text = quote["text"]
 
-                # Add to valid quotes
-                new_cit_start = len(new_quote_text) - len(fixed_citation_text)
-                valid_or_fixed_quotes.append({
-                    "text": new_quote_text,
-                    "quote": quote_info["quote"],
-                    "quote_type": quote_info["quote_type"],
-                    "start_index": quote_info["start_index"],
-                    "end_index": quote_info["start_index"] + len(new_quote_text),
-                    "citation": {
-                        "text": fixed_citation_text,
-                        "ref_name": correct_citation["ref_name"],
-                        "page": str(correct_citation["page"]),
-                        "start_index": new_cit_start,
-                        "end_index": len(new_quote_text)
-                    }
-                })
+    if not located.is_verified:
+        return QuoteReplacement(
+            start_index=quote["start_index"],
+            end_index=quote["end_index"],
+            replacement=original_text,
+            is_verified=False,
+            quote_type=quote["quote_type"],
+        )
 
-            else:
-                # No citation exists, insert one
-                # For blockquotes, format with citation inline; for inline quotes, append
-                if quote_info["quote_type"] == "blockquote":
-                    new_quote_text = format_blockquote_with_inline_citation(quote_info["text"], fixed_citation_text)
-                else:
-                    new_quote_text = quote_info["text"] + " " + fixed_citation_text
+    assert located.match is not None
+    source_chunk = located.match.source_chunk
+    citation = quote["citation"]
+    fixed_citation_text = f'({source_chunk["rulebook_name"]}, p. {source_chunk["page"]})'
 
-                # Update overall text
-                text = text[:quote_info["start_index"]] + new_quote_text + text[quote_info["end_index"]:]
-
-                # Add to valid quotes
-                new_cit_start = len(new_quote_text) - len(fixed_citation_text)
-                valid_or_fixed_quotes.append({
-                    "text": new_quote_text,
-                    "quote": quote_info["quote"],
-                    "quote_type": quote_info["quote_type"],
-                    "start_index": quote_info["start_index"],
-                    "end_index": quote_info["start_index"] + len(new_quote_text),
-                    "citation": {
-                        "text": fixed_citation_text,
-                        "ref_name": correct_citation["ref_name"],
-                        "page": str(correct_citation["page"]),
-                        "start_index": new_cit_start,
-                        "end_index": len(new_quote_text)
-                    }
-                })
-        else:
-            # If we couldn't find a correct citation but the quote is a blockquote
-            # with actual content and its citation genuinely on a separate paragraph
-            # (blank line before it), reformat it inline so the standalone-citation
-            # cleanup doesn't delete the original citation.
-            if (
-                citation
-                and quote_info["quote"]  # non-empty quote body
-                and quote_info["quote_type"] == "blockquote"
-                and '\n\n' in quote_info["text"][:citation["start_index"]]
-            ):
-                text_before_cit = quote_info["text"][:citation["start_index"]]
-                new_quote_text = format_blockquote_with_inline_citation(text_before_cit, citation["text"])
-                text = text[:quote_info["start_index"]] + new_quote_text + text[quote_info["end_index"]:]
-                new_cit_start = len(new_quote_text) - len(citation["text"])
-                valid_or_fixed_quotes.append({
-                    "text": new_quote_text,
-                    "quote": quote_info["quote"],
-                    "quote_type": quote_info["quote_type"],
-                    "start_index": quote_info["start_index"],
-                    "end_index": quote_info["start_index"] + len(new_quote_text),
-                    "citation": {
-                        "text": citation["text"],
-                        "ref_name": citation["ref_name"],
-                        "page": citation["page"],
-                        "start_index": new_cit_start,
-                        "end_index": len(new_quote_text),
-                    }
-                })
-            else:
-                unfixable_quotes.append(quote_info)
-
-    # Remove standalone citations that might have been left over after fixing quotes
-    # Pattern: citations on their own line(s), typically after blockquotes
-    # This handles the case where LLMs put a single citation at the end covering multiple quotes
-    # We need to be careful not to remove citations that are part of blockquotes
-    import re
-
-    # Find all citation positions that were part of valid quotes
-    protected_ranges = set()
-    for q in valid_or_fixed_quotes:
-        if q["citation"]:
-            # Protect the range where this citation appears in the text
-            cit_start = q["start_index"] + q["citation"]["start_index"]
-            cit_end = q["start_index"] + q["citation"]["end_index"]
-            for i in range(cit_start, cit_end):
-                protected_ranges.add(i)
-
-    # Find and remove standalone citations that aren't protected
-    standalone_citation_pattern = re.compile(
-        r'\n\s*\n\s*>?\s*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))[^\S\n]*(?=\n|$)',
-        re.MULTILINE
+    citation_correct = (
+        citation is not None
+        and citation["ref_name"] == source_chunk["rulebook_name"]
+        and citation["page"] == source_chunk["page"]
     )
 
-    # Actually, we want to remove non-protected ones, so:
-    matches_to_remove = []
-    for match in standalone_citation_pattern.finditer(text):
-        is_protected = any(i in protected_ranges for i in range(match.start(), match.end()))
-        if not is_protected:
-            matches_to_remove.append(match)
+    if citation_correct:
+        if quote["quote_type"] == "blockquote" and should_reformat_blockquote_citation(original_text, citation["start_index"]):
+            text_before_citation = original_text[:citation["start_index"]]
+            replacement = format_blockquote_with_inline_citation(text_before_citation, citation["text"])
+        else:
+            replacement = original_text
+    elif citation is not None:
+        text_before_citation = original_text[:citation["start_index"]]
+        if quote["quote_type"] == "blockquote":
+            replacement = format_blockquote_with_inline_citation(text_before_citation, fixed_citation_text)
+        else:
+            replacement = text_before_citation.rstrip() + ' ' + fixed_citation_text
+    else:
+        # No citation at all — insert one
+        if quote["quote_type"] == "blockquote":
+            replacement = format_blockquote_with_inline_citation(original_text, fixed_citation_text)
+        else:
+            replacement = original_text + ' ' + fixed_citation_text
 
-    # Remove in reverse order to preserve indices
-    for match in reversed(matches_to_remove):
-        text = text[:match.start()] + text[match.end():]
+    return QuoteReplacement(
+        start_index=quote["start_index"],
+        end_index=quote["end_index"],
+        replacement=replacement,
+        is_verified=True,
+        quote_type=quote["quote_type"],
+    )
 
-    if original_text != text:
-        logger.info("Fixed quote citations in text", text=original_text, fixed_text=text)
+
+def apply_replacements(text: str, replacements: list[QuoteReplacement]) -> str:
+    """Stage 4: Apply quote replacements to the text.
+
+    Processes in reverse index order so that earlier positions are not
+    invalidated by changes at later positions.
+    """
+    for r in sorted(replacements, key=lambda r: r.start_index, reverse=True):
+        text = text[:r.start_index] + r.replacement + text[r.end_index:]
+    return text
+
+
+# ── Segment model ─────────────────────────────────────────────────────────────
+
+
+def build_segments(text: str, located: list[LocatedQuote]) -> list[Segment]:
+    """Split text into alternating PlainText/QuoteSegment based on quote positions.
+
+    Each QuoteSegment carries the full LocatedQuote metadata and its
+    formatted replacement text, so downstream operations do not need to
+    re-run fuzzy matching.
+    """
+    result: list[Segment] = []
+    cursor = 0
+    for lq in sorted(located, key=lambda lq: lq.quote["start_index"]):
+        start = lq.quote["start_index"]
+        end = lq.quote["end_index"]
+        if start > cursor:
+            result.append(PlainText(text[cursor:start]))
+        result.append(QuoteSegment(
+            original_text=lq.quote["text"],
+            located=lq,
+            formatted_text=format_quote(lq).replacement,
+        ))
+        cursor = end
+    if cursor < len(text):
+        result.append(PlainText(text[cursor:]))
+    return result
+
+
+def materialize(segments: list[Segment], *, wrap_verified: bool = True) -> str:
+    """Produce final text from a segment list.
+
+    When wrap_verified=True, verified blockquotes are wrapped in
+    <div data-quote-status="verified"> markers as the very last step before the
+    string is formed, so no downstream function ever sees partially-wrapped text.
+    """
+    parts: list[str] = []
+    for seg in segments:
+        if isinstance(seg, PlainText):
+            parts.append(seg.text)
+        else:
+            is_verified_bq = (
+                seg.located.is_verified
+                and seg.located.quote["quote_type"] == "blockquote"
+            )
+            if wrap_verified and is_verified_bq:
+                parts.append(
+                    f'<div data-quote-status="verified"></div>\n\n{seg.formatted_text}'
+                )
+            else:
+                parts.append(seg.formatted_text)
+    return "".join(parts)
+
+
+def are_segments_adjacent(
+    segments: list[Segment], seg_a: QuoteSegment, seg_b: QuoteSegment
+) -> bool:
+    """True when everything between seg_a and seg_b is whitespace-only PlainText.
+
+    Replaces quote_util.are_blockquotes_adjacent for the deduplication step —
+    purely structural, immune to whatever has been materialised between the quotes.
+    """
+    idx_a = next(i for i, s in enumerate(segments) if s is seg_a)
+    idx_b = next(i for i, s in enumerate(segments) if s is seg_b)
+    if idx_a > idx_b:
+        idx_a, idx_b = idx_b, idx_a
+    between = segments[idx_a + 1 : idx_b]
+    return all(isinstance(s, PlainText) and s.text.strip() == "" for s in between)
+
+
+def remove_quote_segments(
+    segments: list[Segment], segs_to_remove: set
+) -> list[Segment]:
+    """Return a new segment list with the given QuoteSegments removed.
+
+    Adjacent PlainText runs left by the removal are merged so the invariant
+    (no two consecutive PlainTexts) is preserved.
+    """
+    result: list[Segment] = []
+    for seg in segments:
+        if isinstance(seg, QuoteSegment) and seg in segs_to_remove:
+            continue
+        if result and isinstance(result[-1], PlainText) and isinstance(seg, PlainText):
+            result[-1] = PlainText(result[-1].text + seg.text)
+        else:
+            result.append(seg)
+    return result
+
+
+def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitationsResult:
+    original_text = text
+    quotes = quote_util.find_quotes_in_text(text)
+    located = locate_quotes(quotes, chunks)
+    parsed = build_segments(text, located)
+    fixed_text = materialize(parsed, wrap_verified=False)
+
+    if original_text != fixed_text:
+        logger.info("Fixed quote citations in text", text=original_text, fixed_text=fixed_text)
 
     return FixQuoteCitationsResult(
-        fixed_text=text,
-        unfixable_quotes=unfixable_quotes,
-        referenced_chunks=dedupe_chunks(referenced_chunks),
-        valid_quotes=valid_or_fixed_quotes
+        fixed_text=fixed_text,
+        segments=parsed,
+        unfixable_quotes=[lq.quote for lq in located if not lq.is_verified],
+        referenced_chunks=dedupe_chunks([lq.match.source_chunk for lq in located if lq.match]),
+        valid_quotes=[lq.quote for lq in located if lq.is_verified],
     )
 
 
@@ -983,7 +1067,7 @@ def tweak_and_validate_quotes_response(response: QaResponse, chunks: list[Chunk]
 
     # Check and fix quotes in the final answer
     result = fix_quote_citations_in_text(response["final_answer"], chunks)
-    response["final_answer"] = result.fixed_text
+    response["final_answer"] = materialize(result.segments, wrap_verified=True)
     referenced_chunks.extend(result.referenced_chunks)
 
     for _quote in result.valid_quotes:
@@ -1145,6 +1229,10 @@ class GameAgentInputState(MessagesState):
     """The current recursion depth"""
     evidence: list[Chunk]
     clarifying_questions: NotRequired[list[ClarifyingQA]]
+    filter_invalid_quotes: NotRequired[bool]
+    """When True, invalid quotes are silently stripped from the response rather than
+    retried. Used for subquestion calls so hallucinated quotes cannot propagate into
+    the final answer's validation corpus."""
 
 
 class GameAgentOutputState(MessagesState):
@@ -1546,6 +1634,7 @@ def build_coordinating_agent_graph(
             logger.info("Asking subquestion", question=question)
             input = {
                 "query": question,
+                "filter_invalid_quotes": True,
             }
             inputs.append(input)
         
@@ -1753,6 +1842,27 @@ class ValidateAndFixResponseOutput(TypedDict):
     validation_attempts: int
 
 
+def _strip_invalid_quotes(fix_result: FixQuoteCitationsResult, documents: list[Chunk]) -> ValidateAndFixResponseOutput:
+    """Remove unverified quote segments from the response and return a clean result.
+
+    Used when filter_invalid_quotes=True (subquestion mode) so that hallucinated quotes
+    are silently dropped rather than retried or propagated to the final answer.
+    """
+    invalid_segs = {
+        seg for seg in fix_result.segments
+        if isinstance(seg, QuoteSegment) and not seg.located.is_verified
+    }
+    cleaned = remove_quote_segments(fix_result.segments, invalid_segs)
+    valid_entries = [extracted_quote_to_quote_entry(vq) for vq in fix_result.valid_quotes]
+    evidence = compile_evidence_from_documents(valid_entries, documents)
+    return {
+        "response": materialize(cleaned, wrap_verified=True),
+        "evidence": list(evidence),
+        "invalid_quotes": [],
+        "validation_attempts": 0,
+    }
+
+
 async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runtime: Runtime[Any], config: RunnableConfig|None = None) -> ValidateAndFixResponseOutput:
     # Get required services
     chat_model = runtime.context.chat_model
@@ -1761,6 +1871,12 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
     response = state["response"]
     documents = get_evidence(state)
     documents = sort_chunks(documents, runtime.context.manifest)
+
+    if state.get("filter_invalid_quotes", False):
+        # Exclude synthetic chunks (start_index == -1) built from unverified quotes in
+        # earlier subquestion answers. They are not real source-document spans and must
+        # not be used as evidence when validating quotes in this response.
+        documents = [d for d in documents if d.get("start_index", -1) != -1]
 
     # Do simple citation fixes and validate the response
     fix_result = fix_quote_citations_in_text(response, documents)
@@ -1775,23 +1891,25 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
         valid_quote_entries = [extracted_quote_to_quote_entry(vq) for vq in valid_extracted]
         evidence = compile_evidence_from_documents(valid_quote_entries, documents)
         return {
-            "response": fixed_response,
+            "response": materialize(fix_result.segments, wrap_verified=True),
             "evidence": list(evidence),
             "invalid_quotes": [],
             "validation_attempts": 0,
         }
-    
+
     # Okay, something is still busted with the response
     invalid_quote_entries = [
-        extracted_quote_to_quote_entry(iq) 
+        extracted_quote_to_quote_entry(iq)
         for iq in invalid_extracted
     ]
 
     # Formatting inline quotes correctly can be tricky, so we'll only
     # attempt to repair blockquotes for now
     if any(q["quote_type"] not in ["blockquote"] for q in invalid_extracted):
+        if state.get("filter_invalid_quotes", False):
+            return _strip_invalid_quotes(fix_result, documents)
         return {
-            "response": fixed_response,
+            "response": materialize(fix_result.segments, wrap_verified=True),
             "invalid_quotes": invalid_quote_entries,
             "validation_attempts": state.get("validation_attempts", 0) + 1,
         }
@@ -1841,8 +1959,10 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
     # Bail if we were unable to fix all the quotes
     all_fixed = all(result["fixable"] for result in fix_quote_results)
     if not all_fixed:
+        if state.get("filter_invalid_quotes", False):
+            return _strip_invalid_quotes(fix_result, documents)
         return {
-            "response": fixed_response,
+            "response": materialize(fix_result.segments, wrap_verified=True),
             "invalid_quotes": invalid_quote_entries,
             "validation_attempts": state.get("validation_attempts", 0) + 1,
         }
@@ -1868,129 +1988,121 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
             + fixed_response[end_index:]
         )
 
-    # Okay, we have applied the fixes, now let's see if the response has
-    # valid quotes now
-    fix_result = fix_quote_citations_in_text(fixed_response, documents)
-    fixed_response = fix_result.fixed_text
+    # Okay, we have applied the fixes, now let's re-validate
+    fix_result2 = fix_quote_citations_in_text(fixed_response, documents)
+    fixed_response = fix_result2.fixed_text
 
-    if len(fix_result.unfixable_quotes) > 0:
+    if len(fix_result2.unfixable_quotes) > 0:
         # Okay, it is still busted, time to bail
         logger.info("Response still invalid after attempting fixes")
-        for iq in fix_result.unfixable_quotes:
+        for iq in fix_result2.unfixable_quotes:
             logger.info("Unfixable quote", quote=iq["quote"])
         return {
-            "response": fixed_response,
+            "response": materialize(fix_result2.segments, wrap_verified=True),
             "invalid_quotes": [
-                extracted_quote_to_quote_entry(iq) for iq in fix_result.unfixable_quotes
+                extracted_quote_to_quote_entry(iq) for iq in fix_result2.unfixable_quotes
             ],
             "validation_attempts": state.get("validation_attempts", 0) + 1
         }
-    
-    # Get the extracted quotes from the new fixed response
-    all_extracted_ordered = quote_util.find_quotes_in_text(
-        fix_result.fixed_text
-    )
-    all_extracted_ordered = [
-        eq for eq in all_extracted_ordered 
-        if eq["quote_type"] == "blockquote"
-    ]
-    all_extracted_ordered.sort(key=lambda eq: eq["start_index"])
-    all_quote_entries_ordered = [extracted_quote_to_quote_entry(eq) for eq in all_extracted_ordered]
-    chunks_for_blockquotes = create_chunks_for_quotes(
-        all_quote_entries_ordered,
-        documents
-    )
 
-    assert len(all_extracted_ordered) == total_blockquotes, "We should not have changed the number of blockquotes in the response, only fixed their formatting and citations. If this assertion fails, we need to add logic to handle the case where the number of blockquotes changes, since that can affect the indices of the quotes in the response and how we apply fixes."
+    # Build an ordered list of blockquote segments from the second pass.
+    # This replaces re-parsing + create_chunks_for_quotes — the segment list
+    # already carries all the metadata we need.
+    ordered_bq_segs: list[QuoteSegment] = [
+        s for s in fix_result2.segments
+        if isinstance(s, QuoteSegment) and s.located.quote["quote_type"] == "blockquote"
+    ]
+
+    assert len(ordered_bq_segs) == total_blockquotes, "We should not have changed the number of blockquotes in the response, only fixed their formatting and citations. If this assertion fails, we need to add logic to handle the case where the number of blockquotes changes, since that can affect the indices of the quotes in the response and how we apply fixes."
 
     # The LLM will often output multiple consecutive blockquotes that point
     # out essentially the same rule in multiple places in the documents.
     # Sometimes when fixing the quotes, we end up with duplicates of the
-    # same quote adjacent to eachother in the response. We can drop any
+    # same quote adjacent to each other in the response. We can drop any
     # fixed quotes that introduce such duplication.
 
-    # Get the consecutive groups of blockquotes in the fixed response
+    # Get the consecutive groups of blockquotes — purely structural check
+    # (immune to whatever text is materialised between the quotes).
     consecutive_blockquote_groups: List[List[int]] = []
     current_group: List[int] = []
-    for index, quote in enumerate(all_extracted_ordered):
+    for index, seg in enumerate(ordered_bq_segs):
         if not current_group:
             current_group.append(index)
         else:
-            previous_quote = all_extracted_ordered[current_group[-1]]
-            if quote_util.are_blockquotes_adjacent(
-                previous_quote,
-                quote,
-                fixed_response
-            ):
-
+            prev_seg = ordered_bq_segs[current_group[-1]]
+            if are_segments_adjacent(fix_result2.segments, prev_seg, seg):
                 current_group.append(index)
             else:
                 consecutive_blockquote_groups.append(current_group)
                 current_group = [index]
     if current_group:
         consecutive_blockquote_groups.append(current_group)
-    
-    blockquote_indices_to_remove = set()
+
+    segs_to_remove: set[QuoteSegment] = set()
     for group in consecutive_blockquote_groups:
         overlapping_pairs: List[tuple[int, int]] = []
         for i in group:
-            if i in blockquote_indices_to_remove:
+            if ordered_bq_segs[i] in segs_to_remove:
                 continue
             for j in group:
-                if j in blockquote_indices_to_remove:
+                if ordered_bq_segs[j] in segs_to_remove:
                     continue
                 if i == j:
                     continue
-                # We only care about pairs where one our fixed quotes is
+                # We only care about pairs where one of our fixed quotes is
                 # implicated
                 if i not in invalid_indices and j not in invalid_indices:
                     continue
 
-                chunk_i = chunks_for_blockquotes[i]
-                chunk_j = chunks_for_blockquotes[j]
-                if are_chunks_overlapping(chunk_i, chunk_j):
+                # Overlap is determined by the match span in the source document
+                # (not just chunk identity — two quotes from the same chunk but
+                # different non-overlapping spans should not be treated as overlapping).
+                match_i = ordered_bq_segs[i].located.match
+                match_j = ordered_bq_segs[j].located.match
+                span_i = match_i.matched_span if match_i else None
+                span_j = match_j.matched_span if match_j else None
+                if are_chunks_overlapping(span_i, span_j):
                     overlapping_pairs.append((i, j))
 
         for i, j in overlapping_pairs:
-            # If we've already decided to remove one of these, we can just
-            # skip this pair
-            if i in blockquote_indices_to_remove or j in blockquote_indices_to_remove:
+            seg_i = ordered_bq_segs[i]
+            seg_j = ordered_bq_segs[j]
+            # If we've already decided to remove one of these, skip
+            if seg_i in segs_to_remove or seg_j in segs_to_remove:
                 continue
 
             # We have two blockquotes that are adjacent and point to overlapping
-            # chunks in the documents. This likely means they are quoting the
-            # same rule, so we can probably get away with removing one of them.
-            # If only one of them was fixed, we should remove that one since it
-            # introduced the duplication.
+            # spans in the source document. This likely means they quote the
+            # same rule, so we can remove one of them. If only one was fixed
+            # by the LLM, remove that one since it introduced the duplication.
             if i in invalid_indices and j in invalid_indices:
-                # Lets keep the one that starts earlier in the document
-                if all_extracted_ordered[i]["start_index"] < all_extracted_ordered[j]["start_index"]:
-                    blockquote_indices_to_remove.add(j)
+                # Keep the one that starts earlier in the source document
+                span_i = seg_i.located.match.matched_span if seg_i.located.match else None
+                span_j = seg_j.located.match.matched_span if seg_j.located.match else None
+                if span_i and span_j and span_i["start_index"] < span_j["start_index"]:
+                    segs_to_remove.add(seg_j)
                 else:
-                    blockquote_indices_to_remove.add(i)
+                    segs_to_remove.add(seg_i)
             elif j in invalid_indices:
-                blockquote_indices_to_remove.add(j)
+                segs_to_remove.add(seg_j)
             elif i in invalid_indices:
-                blockquote_indices_to_remove.add(i)
+                segs_to_remove.add(seg_i)
 
-    # Now we remove duplicate blockquotes
-    for index in sorted(blockquote_indices_to_remove, reverse=True):
-        quote_to_remove = all_extracted_ordered[index]
-        start_index = quote_to_remove["start_index"]
-        end_index = quote_to_remove["end_index"]
-        fixed_response = fixed_response[:start_index] + fixed_response[end_index:]
-    
+    # Remove duplicate blockquotes and materialise the final response.
+    # Wrapping is applied in the same materialisation step, so there is no
+    # second fuzzy-match pass for wrapping.
+    final_segments = remove_quote_segments(fix_result2.segments, segs_to_remove)
     # In the process of fixing the quotes, we may have introduced extra
-    # blank lines, so lets collapse those
-    fixed_response = re.sub(r'\n\s*\n', '\n\n', fixed_response)
+    # blank lines, so collapse those in the final string.
+    response_str = re.sub(r'\n\s*\n', '\n\n', materialize(final_segments, wrap_verified=True))
 
     # We should have a fixed response now. Yay! Let's compile the evidence.
     quote_entries = [
-        extracted_quote_to_quote_entry(eq) for eq in fix_result.valid_quotes
+        extracted_quote_to_quote_entry(eq) for eq in fix_result2.valid_quotes
     ]
     evidence = compile_evidence_from_documents(quote_entries, documents)
     return {
-        "response": fixed_response,
+        "response": response_str,
         "evidence": list(evidence),
         "invalid_quotes": [],
         "validation_attempts": 0,
@@ -2087,8 +2199,6 @@ def build_question_answer_graph(
         extracted = extract_reasoning_and_answer(result.text)
     
         logger.info("Answer question result", answer=extracted["answer"], document_count=len(documents))
-        print("Reasoning:\n", extracted["reasoning"])
-        print("Answer:\n", extracted["answer"])
         return {
             "answer": extracted["answer"],
             "reasoning": extracted["reasoning"],

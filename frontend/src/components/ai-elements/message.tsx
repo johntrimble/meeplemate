@@ -333,6 +333,7 @@ export const MessageResponse = memo(
         className
       )}
       plugins={streamdownPlugins}
+      allowedTags={{ div: ['dataQuoteStatus'] }}
       {...props}
     />
   ),
