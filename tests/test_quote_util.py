@@ -15,6 +15,141 @@ from meeplemate.quote_util import (
     strip_latex_with_map,
 )
 
+def test_find_quotes_in_text_citation_page_word():
+    """Blockquote with 'page N' format citation (instead of 'p. N') is captured."""
+    text = inspect.cleandoc("""\
+        The rules state:
+
+        > Roll two dice and add your combat score.
+
+        (Battle Rulebook, page 15)
+    """)
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote_type'] == 'blockquote'
+    assert q['quote'] == 'Roll two dice and add your combat score.'
+    assert q['citation'] is not None
+    assert q['citation']['text'] == '(Battle Rulebook, page 15)'
+    assert q['citation']['ref_name'] == 'Battle Rulebook'
+    assert q['citation']['page'] == '15'
+    assert q['text'].endswith('(Battle Rulebook, page 15)')
+
+
+def test_find_quotes_in_text_citation_pp():
+    """Blockquote with 'pp. N' format citation is captured."""
+    text = inspect.cleandoc("""\
+        The rules state:
+
+        > Roll two dice and add your combat score.
+
+        (Battle Rulebook, pp. 15)
+    """)
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote_type'] == 'blockquote'
+    assert q['quote'] == 'Roll two dice and add your combat score.'
+    assert q['citation'] is not None
+    assert q['citation']['text'] == '(Battle Rulebook, pp. 15)'
+    assert q['citation']['ref_name'] == 'Battle Rulebook'
+    assert q['citation']['page'] == '15'
+    assert q['text'].endswith('(Battle Rulebook, pp. 15)')
+
+
+def test_find_quotes_in_text_citation_as_blockquote():
+    """Citation placed in its own blockquote line is merged with the preceding quote."""
+    text = inspect.cleandoc("""\
+        The rules state:
+
+        > Roll two dice and add your combat score.
+
+        > (Battle Rulebook, p. 15)
+    """)
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1, f"Expected 1 quote, got {len(quotes)}: {quotes}"
+    q = quotes[0]
+    assert q['quote_type'] == 'blockquote'
+    assert q['quote'] == 'Roll two dice and add your combat score.'
+    assert q['citation'] is not None
+    assert q['citation']['text'] == '(Battle Rulebook, p. 15)'
+    assert q['citation']['ref_name'] == 'Battle Rulebook'
+    assert q['citation']['page'] == '15'
+
+
+def test_find_quotes_in_text_multiple_blockquote_citations():
+    """Multiple blockquotes each followed by a citation-as-blockquote are all captured."""
+    text = inspect.cleandoc("""\
+        First rule:
+
+        > The first rule states this.
+
+        > (Rulebook A, p. 10)
+
+        Second rule:
+
+        > The second rule states that.
+
+        > (Rulebook B, p. 20)
+    """)
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 2, f"Expected 2 quotes, got {len(quotes)}: {quotes}"
+    quotes_by_ref = {q['citation']['ref_name']: q for q in quotes}
+    assert 'Rulebook A' in quotes_by_ref
+    assert quotes_by_ref['Rulebook A']['quote'] == 'The first rule states this.'
+    assert quotes_by_ref['Rulebook A']['citation']['page'] == '10'
+    assert 'Rulebook B' in quotes_by_ref
+    assert quotes_by_ref['Rulebook B']['quote'] == 'The second rule states that.'
+    assert quotes_by_ref['Rulebook B']['citation']['page'] == '20'
+
+
+def test_find_quotes_in_text_unparseable_inline_citation():
+    """Inline unparseable citation is still captured with empty ref_name/page."""
+    text = '> Some block quote ending with an inline citation. (some citation pattern, we did not expect)'
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote'] == 'Some block quote ending with an inline citation.'
+    assert q['citation'] is not None
+    assert q['citation']['text'] == '(some citation pattern, we did not expect)'
+    assert q['citation']['ref_name'] == ''
+    assert q['citation']['page'] == ''
+    # Citation is within the captured span
+    assert q['end_index'] == len(text)
+
+
+def test_find_quotes_in_text_unparseable_bare_citation():
+    """Bare unparseable citation on its own line is captured with empty ref_name/page.
+
+    A standalone (...) line immediately after a blockquote (with nothing else on
+    that line) is treated as a citation regardless of its internal format.
+    """
+    text = '> Some block quote.\n\n(Some unexpected. Citation. Pattern)'
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote'] == 'Some block quote.'
+    assert q['citation'] is not None
+    assert q['citation']['text'] == '(Some unexpected. Citation. Pattern)'
+    assert q['citation']['ref_name'] == ''
+    assert q['citation']['page'] == ''
+    assert q['end_index'] == len(text)
+
+
+def test_find_quotes_in_text_unparseable_blockquote_citation():
+    """Unparseable citation in its own blockquote line is captured with empty ref_name/page."""
+    text = '> Some block quote.\n\n> (Some unexpected. Citation. Pattern)'
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote'] == 'Some block quote.'
+    assert q['citation'] is not None
+    assert q['citation']['text'] == '(Some unexpected. Citation. Pattern)'
+    assert q['citation']['ref_name'] == ''
+    assert q['citation']['page'] == ''
+    assert q['end_index'] == len(text)
+
+
 def test_find_quotes_in_text():
     sample_answer = """
     Some unrelated content here.

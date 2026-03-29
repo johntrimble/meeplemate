@@ -10,7 +10,7 @@ from cydifflib import SequenceMatcher
 
 BLOCKQUOTE_PATTERN = re.compile(r'(?:^>.*(?:\n^>.*)*)(?:\n^>.*$)?', re.MULTILINE)
 CITATION_PAGE_TITLE_REGEX = re.compile(
-    r'''^\s*(?P<title>.*[^, ]),?\s*(pg?[.])\s*(?P<page>[0-9]+)\s*$'''
+    r'''^\s*(?P<title>.*[^, ]),?\s+(?:pp?g?[.]|page)\s*(?P<page>[0-9]+)\s*$'''
 )
 INLINE_QUOTE_CITATION_REGEX = re.compile(
     r'''(?<!>\s)(["])(?P<quote>[^"]+?)\1\s*\((?P<citation>([^()]+|["][^"]+["])?,?\s*pg?[.]\s*[0-9]+)\)'''
@@ -68,7 +68,14 @@ def extract_blockquotes(text: str) -> List[Tuple[int, int, str]]:
     if not matches:
         return result
 
+    # Track how far we've consumed so citation-only blockquotes can be skipped
+    consumed_end = 0
+
     for match in matches:
+        # Skip blockquotes that were already consumed as a citation of a preceding quote
+        if match.start() < consumed_end:
+            continue
+
         quote_text = match.group()
         start_idx = match.start()
         end_idx = match.end()
@@ -86,18 +93,35 @@ def extract_blockquotes(text: str) -> List[Tuple[int, int, str]]:
             end_idx += len(continuation_text)
             quote_text += continuation_text
 
-        # Now check if there's a citation on the next line (common LLM pattern)
-        # Look for pattern: \n\n(Citation, p. X) after the blockquote
-        remaining_text = text[end_idx:]
-        citation_on_next_line = re.match(r'^[\s\n]*(\([^)]+,?\s*pg?[.]\s*[0-9]+\))', remaining_text)
-        if citation_on_next_line:
-            # Include the citation as part of the blockquote
-            citation_text = citation_on_next_line.group(1)
-            # Find the actual end of the citation in the original text
-            citation_end = end_idx + citation_on_next_line.end(1)
-            quote_text = text[start_idx:citation_end]
-            end_idx = citation_end
+        # Check for a citation following the blockquote, but only if the quote
+        # doesn't already end with one inline (i.e. ends with ')').
+        if not quote_text.rstrip().endswith(')'):
+            remaining_text = text[end_idx:]
 
+            # Pattern 1: bare citation on its own line (only whitespace around it).
+            # We don't require a page-number format here — a standalone (...) line
+            # immediately after a blockquote is almost certainly a citation.
+            #   e.g. \n\n(Book, p. X)  or  \n\n(Some unexpected citation format)
+            citation_match = re.match(
+                r'^[\s\n]*(\([^)]+\))[ \t]*(?:\n|$)',
+                remaining_text
+            )
+
+            # Pattern 2: a blockquote line containing only parenthesised content
+            #   e.g. \n\n> (anything at all)
+            # More permissive: any > (…) line with nothing else is treated as a citation.
+            if not citation_match:
+                citation_match = re.match(
+                    r'^[\s\n]*>([ \t]*\([^)]+\))[ \t]*(?:\n|$)',
+                    remaining_text
+                )
+
+            if citation_match:
+                citation_end = end_idx + citation_match.end(1)
+                quote_text = text[start_idx:citation_end]
+                end_idx = citation_end
+
+        consumed_end = end_idx
         result.append((start_idx, end_idx, quote_text))
     return result
 
@@ -220,15 +244,14 @@ def find_quotes_in_text(text: str) -> List[ExtractedQuote]:
         if citation_info:
             cit_start, cit_end, cit_text = citation_info
             ref_name_page = extract_ref_name_and_page(cit_text)
-            if ref_name_page:
-                ref_name, page = ref_name_page
-                citation = ExtractedCitation(
-                    text=cit_text,
-                    ref_name=ref_name,
-                    page=page,
-                    start_index=cit_start,
-                    end_index=cit_end
-                )
+            ref_name, page = ref_name_page if ref_name_page else ("", "")
+            citation = ExtractedCitation(
+                text=cit_text,
+                ref_name=ref_name,
+                page=page,
+                start_index=cit_start,
+                end_index=cit_end
+            )
         if citation:
             quote_without_citation = quote_text[:citation["start_index"]]
         else:
