@@ -9,8 +9,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.stores import BaseStore
 import structlog
 from uuid_utils import uuid7
+from meeplemate.config import Config, create_app_system
 from meeplemate.eval import collect_runs_by_name_iter, load_persisted_run, skip_run_types, snake_case, test_suites, TestRunTracer, get_test_run_file_path, parse_group_run_id
-from dev_system import areload, get_service
 from dataclasses import dataclass
 import fnmatch
 
@@ -21,7 +21,7 @@ from deepeval import evaluate
 from deepeval.metrics import GEval, BaseMetric
 from deepeval.test_case import LLMTestCaseParams
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 from pydantic import BaseModel
 from openai.types.chat import ChatCompletion
 from deepeval.models.llms.utils import trim_and_load_json
@@ -29,7 +29,7 @@ from deepeval.models.retry_policy import create_retry_decorator
 from deepeval.constants import ProviderSlug as PS
 
 from meeplemate.ingest.gamepackage import GamePackage, get_game_key_for_id_version
-from meeplemate.component_system import factory
+from meeplemate.component_system import System, astart_system, factory, subsystem
 from meeplemate.qa_graph import Chunk, QAService, QAServiceInput, QuoteValidationException
 from meeplemate.util import slurp_json
 from meeplemate.game_service import GameService
@@ -238,24 +238,9 @@ async def _print_summary_of_run(filter: str = "*", group_run_id: str | None = No
                 click.echo(f"{json.dumps(parsed, indent=2)}")
 
 
-async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_runs: int, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
+async def _run_qa_gen_multiple_runs(game_service: GameService, qa_service: QAService, filter: str, group_run_id: str, number_of_runs: int, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
     run_numbers = [i + 1 for i in range(number_of_runs)]
     skip_cases = handle_existing_files(filter, group_run_id, run_numbers, overwrite, skip_existing)
-
-    # TODO: Move this component setup elsewhere... maybe make these functions
-    # part of the component system?
-    extra_components = {
-        # Lets not persist the graph state during evals
-        "checkpointer": (
-            factory(InMemorySaver, ignore_context_manager=True)(),
-            []
-        )
-    }
-
-    await areload(
-        ["game_service", "qa_service", "checkpointer"],
-        extra_components=extra_components
-    )
 
     # Generate multiple runs with run numbers
     tasks = []
@@ -263,28 +248,15 @@ async def _run_qa_gen_multiple_runs(filter: str, group_run_id: str, number_of_ru
         run_number = i + 1
         tasks.append(
             asyncio.create_task(
-                _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=run_number, skip_cases=skip_cases)
+                _run_qa_gen_no_start_system(game_service, qa_service, filter, group_run_id, skip_retrieval=skip_retrieval, run_number=run_number, skip_cases=skip_cases)
             )
         )
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _run_qa_gen(filter: str, group_run_id: str, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
+async def _run_qa_gen(game_service: GameService, qa_service: QAService, filter: str, group_run_id: str, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
     skip_cases = handle_existing_files(filter, group_run_id, [None], overwrite, skip_existing)
-
-    extra_components = {
-        # Lets not persist the graph state during evals
-        "checkpointer": (
-            factory(InMemorySaver, ignore_context_manager=True)(),
-            []
-        )
-    }
-
-    await areload(
-        ["game_service", "qa_service", "checkpointer"],
-        extra_components=extra_components
-    )
-    await _run_qa_gen_no_start_system(filter, group_run_id, skip_retrieval=skip_retrieval, run_number=None, skip_cases=skip_cases)
+    await _run_qa_gen_no_start_system(game_service, qa_service, filter, group_run_id, skip_retrieval=skip_retrieval, run_number=None, skip_cases=skip_cases)
 
 
 def check_existing_run_files(
@@ -353,10 +325,7 @@ def handle_existing_files(
 concurrency_semaphore = asyncio.Semaphore(5)  # Limit concurrency to 5 simultaneous runs
 
 
-async def _run_qa_gen_no_start_system(filter: str, group_run_id: str, skip_retrieval: bool = False, run_number: int | None = None, skip_cases: set[tuple[str, str, int | None]] | None = None):
-    game_service: GameService = get_service("game_service")
-    qa_service: QAService = get_service("qa_service")
-
+async def _run_qa_gen_no_start_system(game_service: GameService, qa_service:QAService, filter: str, group_run_id: str, skip_retrieval: bool = False, run_number: int | None = None, skip_cases: set[tuple[str, str, int | None]] | None = None):
     tracer = TestRunTracer(
         get_eval_generation_runs_dir(),
         run_transformer=skip_run_types(
@@ -458,7 +427,7 @@ def get_correctness_metric(model) -> BaseMetric:
     return correctness_metric
 
 
-async def _run_qa_eval(filter: str, base_group_run_id: str):
+async def _run_qa_eval(filter: str, base_group_run_id: str, llm: StructuredLocalModel):
     """Evaluate all runs for a given base group_run_id.
 
     Discovers all runs (e.g., __run001, __run002, etc.) and evaluates them.
@@ -553,7 +522,37 @@ async def _run_qa_eval(filter: str, base_group_run_id: str):
     results = evaluate(llm_tests, metrics)
 
     click.echo(f"\n✓ Evaluation complete! Results saved to: {get_eval_generation_runs_dir().parent / 'qa_evals' / base_group_run_id}")
-         
+
+
+def create_eval_system(names: Optional[Sequence[str]]=None) -> System:
+    config = Config()
+    config.chat.endpoint = "http://192.168.0.44:8000/v1"
+
+    extra_components = {
+        "deepeval_llm": (
+            factory(StructuredLocalModel)(
+                model="Qwen/Qwen3-30B-A3B-Instruct-2507",
+                api_key="dummy",
+                base_url=config.chat.endpoint,
+                temperature=0.7,
+                generation_kwargs={
+                    "presence_penalty": 0.6,
+                    "top_p": 0.8,
+                    "extra_body": {
+                        "top_k": 20,
+                        "min_p": 0.0,
+                        "repetition_penalty": 1.1,
+                    },
+                },
+            ),
+            []
+        )
+    }
+
+    app_system = create_app_system(config)
+    system = subsystem(app_system, names=names, extra_components=extra_components)  
+    return system
+
 
 @click.group()
 def cli():
@@ -574,10 +573,19 @@ def run_qa_gen(filter: str, group_run_id: str | None = None, number_of_runs: int
 
     click.echo(f"Group run ID: {group_run_id}")
 
-    if number_of_runs is None:
-        asyncio.run(_run_qa_gen(filter, group_run_id, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing))
-    else:
-        asyncio.run(_run_qa_gen_multiple_runs(filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing))
+    system = create_eval_system(["game_service", "qa_service"])
+
+    async def run():
+        async with system.astart() as services:
+            game_service: GameService = services["game_service"]
+            qa_service: QAService = services["qa_service"]
+            if number_of_runs is None:
+                await _run_qa_gen(game_service, qa_service, filter, group_run_id, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing)
+            else:
+                await _run_qa_gen_multiple_runs(game_service, qa_service, filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing)
+
+    asyncio.run(run())
+
 
 @cli.command()
 @click.argument("filter", required=False, default="*")
@@ -595,13 +603,19 @@ def run_qa_eval(filter: str, group_run_id: str | None = None):
 
     click.echo(f"Group run ID: {group_run_id}")
 
+    async def run():
+        system = create_eval_system(["deepeval_llm"])
+        async with system.astart() as started_system:
+            llm: StructuredLocalModel = started_system.get("deepeval_llm")
+            await _run_qa_eval(filter, group_run_id, llm)
+
     # Set environment variable DEEPEVAL_RESULTS_FOLDER to data/evals/qa_evals/{group_run_id}
     eval_runs_dir = get_eval_generation_runs_dir().parent / "qa_evals"
     eval_dir = eval_runs_dir / group_run_id
     eval_dir.mkdir(parents=True, exist_ok=True)
     os.environ["DEEPEVAL_RESULTS_FOLDER"] = str(eval_dir)
 
-    asyncio.run(_run_qa_eval(filter, group_run_id))
+    asyncio.run(run())
 
 
 @cli.command()
@@ -621,21 +635,31 @@ def run_qa(filter: str, group_run_id: str | None = None, number_of_runs: int | N
 
     click.echo(f"Group run ID: {group_run_id}")
 
-    # --- Generation ---
-    click.echo("\n--- Generation ---")
-    if number_of_runs is None:
-        asyncio.run(_run_qa_gen(filter, group_run_id, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing))
-    else:
-        asyncio.run(_run_qa_gen_multiple_runs(filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing))
+    async def run():
+        system = create_eval_system(["game_service", "qa_service", "deepeval_llm"])
+        async with system.astart() as started_system:
+            llm: StructuredLocalModel = started_system.get("deepeval_llm")
+            game_service: GameService = started_system.get("game_service")
+            qa_service: QAService = started_system.get("qa_service")
 
-    # --- Evaluation ---
-    click.echo("\n--- Evaluation ---")
-    eval_runs_dir = get_eval_generation_runs_dir().parent / "qa_evals"
-    eval_dir = eval_runs_dir / group_run_id
-    eval_dir.mkdir(parents=True, exist_ok=True)
-    os.environ["DEEPEVAL_RESULTS_FOLDER"] = str(eval_dir)
 
-    asyncio.run(_run_qa_eval(filter, group_run_id))
+            # --- Generation ---
+            click.echo("\n--- Generation ---")
+            if number_of_runs is None:
+                await _run_qa_gen(game_service, qa_service, filter, group_run_id, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing)
+            else:
+                await _run_qa_gen_multiple_runs(game_service, qa_service, filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing)
+
+            # --- Evaluation ---
+            click.echo("\n--- Evaluation ---")
+            eval_runs_dir = get_eval_generation_runs_dir().parent / "qa_evals"
+            eval_dir = eval_runs_dir / group_run_id
+            eval_dir.mkdir(parents=True, exist_ok=True)
+            os.environ["DEEPEVAL_RESULTS_FOLDER"] = str(eval_dir)
+
+            await _run_qa_eval(filter, group_run_id, llm)
+    
+    asyncio.run(run())
 
 
 @cli.command()
@@ -652,23 +676,25 @@ def print_run_summary(filter: str = "*", group_run_id: str | None = None, skip_r
 def ask(game_id: str, query: str) -> None:
     import asyncio
 
+    system = create_eval_system(["game_service", "qa_service"])
+
     async def _run():
-        await areload(["game_service", "qa_service"])
-        game_service: GameService = get_service("game_service")
-        qa_service: QAService = get_service("qa_service")
+        async with system.astart() as services:
+            game_service: GameService = services["game_service"]
+            qa_service: QAService = services["qa_service"]
 
-        manifest = await game_service.get_manifest(game_id)
-        assert manifest is not None, f"Manifest not found for game_id: {game_id}"
+            manifest = await game_service.get_manifest(game_id)
+            assert manifest is not None, f"Manifest not found for game_id: {game_id}"
 
-        config: RunnableConfig = {
-            "configurable": {"thread_id": str(uuid7())},
-        }
+            config: RunnableConfig = {
+                "configurable": {"thread_id": str(uuid7())},
+            }
 
-        response = await qa_service.ainvoke(
-            {"manifest": manifest, "query": query},
-            config=config
-        )
-        print(response["response"])
+            response = await qa_service.ainvoke(
+                {"manifest": manifest, "query": query},
+                config=config
+            )
+            print(response["response"])
 
     return asyncio.run(_run())
 
