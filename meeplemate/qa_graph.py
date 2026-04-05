@@ -257,90 +257,6 @@ class QuoteEntry(TypedDict):
     page: Annotated[str, ..., "Page number where this quote appears"]
 
 
-class QuoteEntryWithID(QuoteEntry):
-    """A quote from a rulebook with its citation information"""
-    id: Annotated[str, ..., "Unique identifier for this quote, used for tracking and referencing"]
-
-
-class DefinitionEntry(TypedDict):
-    """A term and its definition status with supporting quotes"""
-    term: Annotated[str, ..., "The term being defined"]
-    quotes: Annotated[list[QuoteEntry], ..., "List of quotes that define or relate to this term"]
-    defines_term: Annotated[bool, ..., "Whether the provided quotes contain a clear definition of the term"]
-    clarifying_question: Annotated[str, ..., "If defines_term is false, a clarifying question to ask; otherwise, leave empty"]
-
-
-# New nested types for exceptions
-class ExplicitNamingCheck(TypedDict):
-    """Step 2: Check whether the exception explicitly names the target mechanic"""
-    does_exception_name_target: Annotated[bool, ..., "Whether the exception explicitly names the target mechanic"]
-    explanation: Annotated[str, ..., "Brief explanation of the naming check result"]
-
-
-class RelationshipCheck(TypedDict):
-    """Step 3: Check for relationship statements linking the exception to the target mechanic"""
-    relationship_exists: Annotated[bool | Literal["unclear"], ..., "Whether a relationship between mechanics exists (true/false/'unclear')"]
-    quotes: Annotated[list[QuoteEntry], ..., "Quotes showing the relationship between mechanics"]
-    explanation: Annotated[str, ..., "Explanation of the relationship or lack thereof"]
-
-
-class SeparationCheck(TypedDict):
-    """Step 4: Check for separation statements that prevent the exception from applying"""
-    separation_exists: Annotated[bool, ..., "Whether the mechanics are explicitly separated in the rules"]
-    quotes: Annotated[list[QuoteEntry], ..., "Quotes showing separation between mechanics"]
-    explanation: Annotated[str, ..., "Explanation of the separation or lack thereof"]
-
-
-# New types for top-level fields
-class IdentifiedMechanics(TypedDict):
-    """Game mechanics"""
-    mechanics: Annotated[list[str], ..., "The game mechanics involved in the question"]
-    # secondary_mechanics: Annotated[list[str], ..., "Other mechanics mentioned or implied that might affect the primary mechanics"]
-    # reasoning: Annotated[str, ..., "Brief explanation of why these mechanics were identified and how they relate to each other"]
-
-
-class RelationshipStatement(TypedDict):
-    """A statement about how two mechanics relate to each other"""
-    mechanics: Annotated[list[str], ..., "List of two mechanics whose relationship is being described"]
-    relationship_type: Annotated[Literal["separate", "same", "subset", "other"], ..., "Type of relationship: 'separate', 'same', 'subset', or 'other'"]
-    quotes: Annotated[list[QuoteEntry], ..., "Quotes establishing the relationship between these mechanics"]
-    interpretation: Annotated[str, ..., "What this relationship means for answering the user's query"]
-
-
-class GeneralRule(TypedDict):
-    """A general rule governing a game mechanic"""
-    mechanic: Annotated[str, ..., "The game mechanic this rule governs"]
-    quotes: Annotated[list[QuoteEntry], ..., "Quotes stating the general rule"]
-    summary: Annotated[str, ..., "Brief summary of what the rule states"]
-
-
-class ExceptionEntry(TypedDict):
-    """An exception that might override general rules, analyzed using the 4-step test"""
-    exception_source: Annotated[str, ..., "Where the exception comes from (card name, ability name, etc.)"]
-    exception_scope_language: Annotated[str, ..., "Exact language describing what the exception affects"]
-    target_mechanic: Annotated[str, ..., "The mechanic in the user's query being tested against this exception"]
-    step1_scope_analysis: Annotated[str, ..., "Analysis of what language the exception uses to describe its scope"]
-    step2_explicit_naming: ExplicitNamingCheck
-    step3_relationship_check: RelationshipCheck
-    step4_separation_check: SeparationCheck
-    does_exception_apply: Annotated[bool | Literal["clarification_needed"], ..., "Whether this exception applies to the target mechanic (true/false/'clarification_needed')"]
-    precedence_level: Annotated[str, ..., "Precedence level from rule #10: level 1-5"]
-    clarifying_question: Annotated[str, ..., "If clarification is needed, a question to ask; otherwise, leave empty"]
-
-
-class QaResponse(TypedDict):
-    """Rules analysis and answer structure"""
-    # reasoning: Annotated[str, ..., "Step-by-step reasoning process using bullet points"]
-    identified_mechanics: IdentifiedMechanics
-    # relationship_statements: Annotated[list[RelationshipStatement], ..., "List of relationship statements between mechanics found in the documents"]
-    general_rules: Annotated[list[GeneralRule], ..., "List of general rules governing the mechanics in question"]
-    definitions: Annotated[list[DefinitionEntry], ..., "List of term definitions found in or missing from the documents. Do not include definitions for things already defined under general_rules."]
-    exceptions: Annotated[list[ExceptionEntry], ..., "List of exceptions that might apply to the situation"]
-    precedence_analysis: Annotated[str, ..., "If multiple rules apply, explanation of which takes precedence and why (using rule #10)"]
-    final_answer: Annotated[str, ..., "Free-form markdown text following all citation requirements. Must follow rule #1 for document-first, quote-first answering, use blockquotes instead of inline quotes, and include citations in the form (Rulebook name, p. X). Do NOT refer to rule interpretation criteria names (e.g. 'Rule #10') in the final answer."]
-    sufficient_information_to_answer: Annotated[bool, ..., "Whether there is sufficient information in the documents to answer the query"]
-
-
 def get_all_chunks_from_message_history(messages: list[AnyMessage]) -> list[Chunk]:
     # Find the tool call ids for search_chunks
     tool_call_ids = set()
@@ -411,14 +327,6 @@ def dedupe_chunks_in_message_history(messages):
                 logger.error(f"Error deduping tool message content: {e}")
 
     return [m for m in messages if getattr(m, "id", None) in edited_ids]
-
-
-class QuoteValidationException(ValueError):
-    
-    def __init__(self, result: "TweakAndValidateQuotesResult"):
-        self.result = result
-        message = f"Quote validation failed: {len(result.invalid_quotes)} invalid quotes"
-        super().__init__(message)
 
 
 def create_chunks_for_quotes(quote_entries: Sequence[QuoteEntry], documents: Sequence[Chunk]) -> Sequence[Chunk|None]:
@@ -1041,139 +949,6 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitat
     )
 
 
-@dataclass
-class TweakAndValidateQuotesResult:
-    revised_response: QaResponse
-    invalid_quotes: list[QuoteEntry]
-    valid_quotes: list[QuoteEntry]
-    chunks_referenced: list[Chunk]
-
-    @property
-    def valid(self) -> bool:
-        return len(self.invalid_quotes) == 0
-
-
-def tweak_and_validate_quotes_response(response: QaResponse, chunks: list[Chunk]) -> TweakAndValidateQuotesResult:
-    # Clone the QaResponse to avoid mutating the input
-    response = copy.deepcopy(response)
-
-    # Keep track of all chunks referenced in the response
-    referenced_chunks: list[Chunk] = []
-
-    # Keep track of all quotes
-    valid_quotes: list[QuoteEntry] = []
-
-    chunks_by_rulebook_and_page = get_chunks_by_rulebook_and_page(chunks)
-
-    # Check and fix quotes in the final answer
-    result = fix_quote_citations_in_text(response["final_answer"], chunks)
-    response["final_answer"] = materialize(result.segments, wrap_verified=True)
-    referenced_chunks.extend(result.referenced_chunks)
-
-    for _quote in result.valid_quotes:
-        valid_quotes.append(
-            QuoteEntry(
-                text=_quote["quote"],
-                rulebook_name=_quote["citation"]["ref_name"] if _quote["citation"] else "",
-                page=_quote["citation"]["page"] if _quote["citation"] else ""
-            )
-        )
-
-    # Check the final answer for invalid quotes
-    invalid_final_answer_quotes: list[QuoteEntry] = []
-    for extracted_quote in result.unfixable_quotes:
-        citation = extracted_quote["citation"]
-        if not citation:
-            citation = {"ref_name": "", "page": ""}
-        quote_entry: QuoteEntry = {
-            "text": extracted_quote["quote"],
-            "rulebook_name": citation["ref_name"],
-            "page": citation["page"]
-        }
-        invalid_final_answer_quotes.append(quote_entry)
-    
-    def _check_quote(quote: QuoteEntry) -> bool:
-        key = (quote["rulebook_name"], quote["page"])
-        if key not in chunks_by_rulebook_and_page:
-            return False
-        candidate_chunks = chunks_by_rulebook_and_page[key]
-        return_value = False
-        for candidate_chunk in candidate_chunks:
-            page_content = candidate_chunk["content"]
-            m = quote_util.find_quote_with_gaps(page_content, quote["text"])
-            if m:
-                return_value = True
-                referenced_chunks.append(candidate_chunk)
-        return return_value
-    
-    def _find_chunk_with_quote(text: str) -> Chunk | None:
-        found_chunk = None
-        for chunk in chunks:
-            m = quote_util.find_quote_with_gaps(chunk["content"], text)
-            if m:
-                found_chunk = chunk
-                referenced_chunks.append(chunk)
-        return found_chunk
-    
-    def check_quotes_in_list(quotes: list[QuoteEntry]) -> list[QuoteEntry]:
-        invalid_quotes: list[QuoteEntry] = []
-        for quote in quotes:
-            if not _check_quote(quote):
-                chunk_with_quote = _find_chunk_with_quote(quote["text"])
-                if chunk_with_quote:
-                    # Fix the quote to have the right rulebook and page
-                    quote["rulebook_name"] = chunk_with_quote["rulebook_name"]
-                    quote["page"] = chunk_with_quote["page"]
-                    valid_quotes.append(quote)
-                else:
-                    # Record invalid quote
-                    invalid_quotes.append(quote)
-            else:
-                valid_quotes.append(quote)
-        return invalid_quotes
-
-    # Validate definitions
-    invalid_definition_quotes: list[QuoteEntry] = []
-    for definition in response["definitions"]:
-        invalid_definition_quotes.extend(check_quotes_in_list(definition["quotes"]))
-
-    # Validate relationship_statements
-    invalid_relationship_quotes: list[QuoteEntry] = []
-    if "relationship_statements" in response:
-        for statement in response["relationship_statements"]:
-            invalid_relationship_quotes.extend(check_quotes_in_list(statement["quotes"]))
-
-    # Validate general_rules
-    invalid_general_rule_quotes: list[QuoteEntry] = []
-    for rule in response["general_rules"]:
-        invalid_general_rule_quotes.extend(check_quotes_in_list(rule["quotes"]))
-
-    # Validate exceptions (new nested structure)
-    invalid_exception_quotes: list[QuoteEntry] = []
-    for exception in response["exceptions"]:
-        # step3_relationship_check contains quotes
-        invalid_exception_quotes.extend(
-            check_quotes_in_list(exception["step3_relationship_check"]["quotes"])
-        )
-        # step4_separation_check contains quotes
-        invalid_exception_quotes.extend(
-            check_quotes_in_list(exception["step4_separation_check"]["quotes"])
-        )
-
-    return TweakAndValidateQuotesResult(
-        revised_response=response,
-        invalid_quotes=(
-            invalid_definition_quotes +
-            invalid_relationship_quotes +
-            invalid_general_rule_quotes +
-            invalid_exception_quotes +
-            invalid_final_answer_quotes
-        ),
-        chunks_referenced=dedupe_chunks(referenced_chunks),
-        valid_quotes=valid_quotes,
-    )
-
-
 def get_run_id_from_config(config: RunnableConfig | None) -> str:
     """Extract run_id from config or callback manager, returning 'unknown' if not found."""
     if not config:
@@ -1244,7 +1019,6 @@ class GameAgentOutputState(MessagesState):
 
 
 class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
-    analysis: QaResponse
     rounds_clarification: int
     """The number of rounds of clarification performed"""
     validation_attempts: int

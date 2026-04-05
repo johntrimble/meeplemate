@@ -46,36 +46,6 @@ async def test_aenumerate():
 
 # Test reorder_dict_by_typeddict and serialize_typeddict
 import json
-from meeplemate.qa_graph import (
-    QaResponse, IdentifiedMechanics, GeneralRule, QuoteEntry,
-    DefinitionEntry, ExceptionEntry
-)
-
-
-def test_reorder_dict_preserves_all_keys():
-    """Verify reordered dict has same keys/values as original (CRITICAL)."""
-    response = {
-        "final_answer": "Test answer",
-        "extra_llm_field": "This wasn't in the TypedDict!",  # Extra key
-        "reasoning": "Test reasoning",
-        "identified_mechanics": {
-            "reasoning": "Mechanic reasoning",
-            "secondary_mechanics": ["mech2"],
-            "primary_mechanics": ["mech1"],
-        },
-        "general_rules": [],
-        "definitions": [],
-        "exceptions": [],
-        "precedence_analysis": "",
-        "sufficient_information_to_answer": True,
-        "another_extra": 42,  # Another extra key
-    }
-
-    reordered = util.reorder_dict_by_typeddict(response, QaResponse)
-
-    # CRITICAL: Reordered dict should equal original (same keys/values)
-    assert reordered == response
-    assert set(reordered.keys()) == set(response.keys())
 
 
 class ReorderTypedDictNested(TypedDict):
