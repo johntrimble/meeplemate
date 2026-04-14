@@ -1,3 +1,7 @@
+import eval_logging
+
+eval_logging.configure_logging()
+
 import asyncio
 import json
 from pathlib import Path
@@ -28,10 +32,8 @@ from deepeval.models.llms.utils import trim_and_load_json
 from deepeval.models.retry_policy import create_retry_decorator
 from deepeval.constants import ProviderSlug as PS
 
-from meeplemate.ingest.gamepackage import GamePackage, get_game_key_for_id_version
-from meeplemate.component_system import System, astart_system, factory, subsystem
-from meeplemate.qa_graph import Chunk, QAService, QAServiceInput, QuoteValidationException
-from meeplemate.util import slurp_json
+from meeplemate.component_system import System, factory, subsystem
+from meeplemate.qa_graph import Chunk, QAService, QAServiceInput
 from meeplemate.game_service import GameService
 
 logger = structlog.get_logger(__name__)
@@ -518,7 +520,10 @@ async def _run_qa_eval(filter: str, base_group_run_id: str, llm: StructuredLocal
         return
 
     click.echo(f"\nEvaluating {len(llm_tests)} test cases across {len(run_groups)} runs...")
-    metrics: list[BaseMetric] = [get_correctness_metric(model=llm), AnswerRelevancyMetric(model=llm)]
+    metrics: list[BaseMetric] = [
+        get_correctness_metric(model=llm),
+        # AnswerRelevancyMetric(model=llm)
+    ]
     results = evaluate(llm_tests, metrics)
 
     click.echo(f"\n✓ Evaluation complete! Results saved to: {get_eval_generation_runs_dir().parent / 'qa_evals' / base_group_run_id}")

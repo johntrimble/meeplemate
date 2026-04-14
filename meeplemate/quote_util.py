@@ -8,7 +8,7 @@ from typing import List, Tuple, TypedDict, Literal
 from cydifflib import SequenceMatcher
 
 
-BLOCKQUOTE_PATTERN = re.compile(r'(?:^>.*(?:\n^>.*)*)(?:\n^>.*$)?', re.MULTILINE)
+BLOCKQUOTE_PATTERN = re.compile(r'(?:^[ \t]*>.*(?:\n^[ \t]*>.*)*)(?:\n^[ \t]*>.*$)?', re.MULTILINE)
 CITATION_PAGE_TITLE_REGEX = re.compile(
     r'''^\s*(?P<title>.*[^, ]),?\s+(?:pp?g?[.]|page)\s*(?P<page>[0-9]+)\s*$'''
 )
@@ -81,12 +81,16 @@ def extract_blockquotes(text: str) -> List[Tuple[int, int, str]]:
         end_idx = match.end()
 
         # Check for lazy continuation (lines that are part of the quote but don't start with >)
-        # These lines continue until we hit a blank line or a citation
+        # These lines continue until we hit a blank line or a citation.
+        # Lazy continuation is only applied to non-indented blockquotes: an indented blockquote
+        # (one whose first line starts with whitespace before '>') is embedded inside a list or
+        # other structure, so a following non-'>' line is NOT a continuation of the quote.
+        is_indented = bool(re.match(r'^[ \t]+>', quote_text))
         remaining_text = text[end_idx:]
 
         # Look for continuation lines (not starting with >, not blank)
         # until we hit a blank line or end of text
-        continuation_match = re.match(r'^(\n[^\n>][^\n]*(?:\n[^\n>][^\n]*)*)', remaining_text)
+        continuation_match = (not is_indented) and re.match(r'^(\n[^\n>][^\n]*(?:\n[^\n>][^\n]*)*)', remaining_text)
         if continuation_match:
             # Include the continuation lines
             continuation_text = continuation_match.group(1)
@@ -120,6 +124,30 @@ def extract_blockquotes(text: str) -> List[Tuple[int, int, str]]:
                 citation_end = end_idx + citation_match.end(1)
                 quote_text = text[start_idx:citation_end]
                 end_idx = citation_end
+
+        # If the blockquote content (after stripping > markers) is just a
+        # citation with no quote text — i.e. the LLM wrote the quote as prose
+        # then put only the citation in a blockquote — absorb the preceding
+        # non-empty, non-blockquote line so the quote text is not empty.
+        #
+        # Matches patterns like:
+        #   Some prose text here.
+        #   > (Rulebook, p. 62)
+        #
+        # or with a blank > line:
+        #   Some prose text here.
+        #   >
+        #   > (Rulebook, p. 62)
+        _bq_stripped = re.sub(r'(?m)^[ \t]*>[ \t]?', '', quote_text).strip()
+        if re.fullmatch(r'\([^()]*\)', _bq_stripped):
+            before_lines = text[:start_idx].split('\n')
+            for i in range(len(before_lines) - 1, -1, -1):
+                line = before_lines[i]
+                if line.strip() and not re.match(r'^[ \t]*>', line):
+                    new_start = sum(len(before_lines[j]) + 1 for j in range(i))
+                    start_idx = new_start
+                    quote_text = text[new_start:end_idx]
+                    break
 
         consumed_end = end_idx
         result.append((start_idx, end_idx, quote_text))
@@ -556,6 +584,8 @@ def find_quote_with_gaps(
     if not norm_quote or not norm_doc:
         return None
 
+    # Pass 1: run against the full document to check whether the quote is
+    # present at all and to locate the dominant matching block.
     s = SequenceMatcher(None, norm_quote, norm_doc, autojunk=False)
     blocks = [b for b in s.get_matching_blocks() if b.size > 0]
     if not blocks:
@@ -566,8 +596,36 @@ def find_quote_with_gaps(
     if score < min_score:
         return None
 
-    norm_start = blocks[0].b
-    norm_end = blocks[-1].b + blocks[-1].size
+    # Identify the dominant block — the single largest match region.  For a
+    # verbatim or near-verbatim quote it contains almost all of the matched
+    # characters; spurious small anchors (e.g. a common opening word found
+    # far earlier in the document) are typically much smaller.
+    dominant = max(blocks, key=lambda b: b.size)
+
+    # Pass 2: re-run SequenceMatcher on a window anchored on the dominant
+    # block.  The padding on each side is quote-length for normal quotes so
+    # that a single spurious anchor (e.g. "However" appearing 5 000 chars
+    # earlier) cannot inflate the span.  For ellipsis quotes the padding is
+    # 10× quote-length so that a second segment sitting far to either side
+    # of the dominant block is still captured within the window.
+    has_ellipsis = "..." in cleaned_quote or "\u2026" in cleaned_quote
+    padding = len(norm_quote) * (10 if has_ellipsis else 1)
+    win_start = max(0, dominant.b - padding)
+    win_end = min(len(norm_doc), dominant.b + dominant.size + padding)
+
+    s2 = SequenceMatcher(None, norm_quote, norm_doc[win_start:win_end], autojunk=False)
+    blocks2 = [b for b in s2.get_matching_blocks() if b.size > 0]
+    if not blocks2:
+        return None
+
+    matched2 = sum(b.size for b in blocks2)
+    score2 = matched2 / len(norm_quote) * 100
+    if score2 < min_score:
+        return None
+
+    # Translate windowed positions back to full-document positions.
+    norm_start = win_start + blocks2[0].b
+    norm_end = win_start + blocks2[-1].b + blocks2[-1].size
 
     orig_start = norm_to_orig[norm_start]
     orig_end = norm_to_orig[norm_end - 1] + 1  # exclusive
@@ -580,11 +638,11 @@ def find_quote_with_gaps(
         orig_end += 1
 
     return MatchResult(
-        score=score,
+        score=score2,
         start=orig_start,
         end=orig_end,
         matched_text=doc[orig_start:orig_end],
-        part_scores=[score],
+        part_scores=[score2],
     )
 
 

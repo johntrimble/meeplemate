@@ -31,6 +31,7 @@ logger = get_logger()
 REFINEMENT_PARTITION_NUMBER = 4
 
 system_prompt_template = load_template("system_prompt_rules_lawyer.md")
+format_answer_system_prompt_template = load_template("system_prompt_format_answer.md")
 qa_template = load_template("single_question_and_tool_use.md")
 answer_template = load_template("structured_rag_answer_addl_questions.md")
 markdown_format_response_template = load_template("markdown_format_response.md")
@@ -492,7 +493,8 @@ class QuoteMatch:
 @dataclass
 class LocatedQuote:
     quote: quote_util.ExtractedQuote
-    match: QuoteMatch | None       # None = could not be verified against any chunk
+    match: QuoteMatch | None        # high-confidence match (≥92); None = unverified
+    hint_match: QuoteMatch | None = None  # low-confidence match used only for chunk extraction
 
     @property
     def is_verified(self) -> bool:
@@ -658,8 +660,9 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
             # Lines before the first blockquote
             formatted_lines.append(line)
         elif line.strip().startswith('>'):
-            # Already a blockquote line
-            formatted_lines.append(line)
+            # Already a blockquote line — strip any leading indentation (LLMs sometimes
+            # indent blockquotes inside numbered lists; we normalise that here)
+            formatted_lines.append(line.lstrip(' \t'))
         elif line.strip():  # Non-empty line that doesn't start with >
             # Lazy continuation - add > prefix
             formatted_lines.append('> ' + line)
@@ -668,15 +671,12 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
             formatted_lines.append(line)
 
     # When a citation was in its own separate blockquote (> quote\n\n> (citation)),
-    # text_before_citation ends with blank lines followed by a bare '>'. Strip those
-    # since they're an extraction artifact, not meaningful content.
+    # text_before_citation ends with blank blockquote lines followed by a bare '>'.
+    # Strip all trailing blank blockquote lines (both empty strings and bare '>'
+    # lines, whose .strip() is '>' not '') since they're extraction artefacts.
     if formatted_lines and formatted_lines[-1].strip() == '>':
-        i = len(formatted_lines) - 2
-        while i >= 0 and formatted_lines[i].strip() == '':
-            i -= 1
-        if i < len(formatted_lines) - 2:
-            # There were blank lines before the trailing >, strip them and it
-            formatted_lines = formatted_lines[:i + 1]
+        while formatted_lines and formatted_lines[-1].strip() in ('', '>'):
+            formatted_lines.pop()
 
     # Find the last non-empty line
     last_content_idx = -1
@@ -736,13 +736,10 @@ def locate_quotes(
     located: list[LocatedQuote] = []
     for quote in quotes:
         quote_text = quote["quote"]
-        has_ellipsis = "..." in quote_text or "\u2026" in quote_text
-        span_multiplier = 10 if has_ellipsis else 3
-
         match: QuoteMatch | None = None
         for index in rulebook_indices.values():
             m = quote_util.find_quote_with_gaps(index.combined, quote_text)
-            if m and (m.end - m.start) <= len(quote_text) * span_multiplier:
+            if m:
                 start_chunk_idx = max(0, bisect.bisect_right(index.offsets, m.start) - 1)
                 source_chunk = index.chunks[start_chunk_idx]
                 ref_chunks = find_chunks_for_span(m.start, m.end, index)
@@ -767,16 +764,47 @@ def locate_quotes(
                 )
                 break
 
-        located.append(LocatedQuote(quote=quote, match=match))
+        hint_match: QuoteMatch | None = None
+        if match is None:
+            for index in rulebook_indices.values():
+                m = quote_util.find_quote_with_gaps(index.combined, quote_text, min_score=50)
+                if m:
+                    start_chunk_idx = max(0, bisect.bisect_right(index.offsets, m.start) - 1)
+                    source_chunk = index.chunks[start_chunk_idx]
+                    ref_chunks = find_chunks_for_span(m.start, m.end, index)
+                    chunk_start_in_combined = index.offsets[start_chunk_idx]
+                    span_start = source_chunk["start_index"] + (m.start - chunk_start_in_combined)
+                    end_chunk_idx = max(0, bisect.bisect_right(index.offsets, m.end - 1) - 1)
+                    end_chunk = index.chunks[end_chunk_idx]
+                    span_end = end_chunk["start_index"] + (m.end - index.offsets[end_chunk_idx])
+                    matched_span = Chunk(
+                        rulebook_name=source_chunk["rulebook_name"],
+                        page=source_chunk["page"],
+                        start_index=span_start,
+                        end_index=span_end,
+                        content=m.matched_text,
+                    )
+                    hint_match = QuoteMatch(
+                        matched_text=m.matched_text,
+                        source_chunk=source_chunk,
+                        referenced_chunks=ref_chunks,
+                        match_ratio=m.score / 100.0,
+                        matched_span=matched_span,
+                    )
+                    break
+
+        located.append(LocatedQuote(quote=quote, match=match, hint_match=hint_match))
 
     return located
 
 
-def format_quote(located: LocatedQuote) -> QuoteReplacement:
+def format_quote(located: LocatedQuote, *, strip_invalid_blockquotes: bool = False) -> QuoteReplacement:
     """Stage 3: Determine the replacement text for a single quote.
 
-    Unverified quotes are returned unchanged (identity replacement). Verified
-    quotes have their citations corrected and blockquotes reformatted inline.
+    Unverified quotes are returned unchanged (identity replacement), except when
+    strip_invalid_blockquotes=True, in which case unverified blockquotes have
+    their '> ' markers stripped so they become plain prose. Verified quotes have
+    their citations corrected and blockquotes reformatted inline.
     This is the single place to add further formatting changes (e.g. a
     data-verified wrapper div).
     """
@@ -784,10 +812,17 @@ def format_quote(located: LocatedQuote) -> QuoteReplacement:
     original_text = quote["text"]
 
     if not located.is_verified:
+        if quote["quote_type"] == "blockquote":
+            if strip_invalid_blockquotes:
+                replacement = quote_util.strip_blockquote_markers_and_quotes(original_text)
+            else:
+                replacement = re.sub(r'^[ \t]+(>)', r'\1', original_text, flags=re.MULTILINE)
+        else:
+            replacement = original_text
         return QuoteReplacement(
             start_index=quote["start_index"],
             end_index=quote["end_index"],
-            replacement=original_text,
+            replacement=replacement,
             is_verified=False,
             quote_type=quote["quote_type"],
         )
@@ -845,7 +880,7 @@ def apply_replacements(text: str, replacements: list[QuoteReplacement]) -> str:
 # ── Segment model ─────────────────────────────────────────────────────────────
 
 
-def build_segments(text: str, located: list[LocatedQuote]) -> list[Segment]:
+def build_segments(text: str, located: list[LocatedQuote], *, strip_invalid_blockquotes: bool = False) -> list[Segment]:
     """Split text into alternating PlainText/QuoteSegment based on quote positions.
 
     Each QuoteSegment carries the full LocatedQuote metadata and its
@@ -862,7 +897,7 @@ def build_segments(text: str, located: list[LocatedQuote]) -> list[Segment]:
         result.append(QuoteSegment(
             original_text=lq.quote["text"],
             located=lq,
-            formatted_text=format_quote(lq).replacement,
+            formatted_text=format_quote(lq, strip_invalid_blockquotes=strip_invalid_blockquotes).replacement,
         ))
         cursor = end
     if cursor < len(text):
@@ -930,22 +965,40 @@ def remove_quote_segments(
     return result
 
 
-def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitationsResult:
+def fix_quote_citations_in_text(text: str, chunks: list[Chunk], *, strip_invalid_blockquotes: bool = False) -> FixQuoteCitationsResult:
     original_text = text
     quotes = quote_util.find_quotes_in_text(text)
     located = locate_quotes(quotes, chunks)
-    parsed = build_segments(text, located)
+    parsed = build_segments(text, located, strip_invalid_blockquotes=strip_invalid_blockquotes)
     fixed_text = materialize(parsed, wrap_verified=False)
 
     if original_text != fixed_text:
         logger.info("Fixed quote citations in text", text=original_text, fixed_text=fixed_text)
 
+    unfixable_quotes = [lq.quote for lq in located if not lq.is_verified]
+    valid_quotes = [lq.quote for lq in located if lq.is_verified]
+    referenced_chunks = dedupe_chunks([
+        chunk
+        for lq in located
+        for m in [lq.match or lq.hint_match]
+        if m
+        for chunk in m.referenced_chunks
+    ])
+
+    if unfixable_quotes:
+        logger.warning(
+            "Some quotes could not be verified and fixed",
+            invalid_quotes=[q["text"] for q in unfixable_quotes],
+            chunks=chunks,
+            text=text,
+        )
+
     return FixQuoteCitationsResult(
         fixed_text=fixed_text,
         segments=parsed,
-        unfixable_quotes=[lq.quote for lq in located if not lq.is_verified],
-        referenced_chunks=dedupe_chunks([lq.match.source_chunk for lq in located if lq.match]),
-        valid_quotes=[lq.quote for lq in located if lq.is_verified],
+        unfixable_quotes=unfixable_quotes,
+        referenced_chunks=referenced_chunks,
+        valid_quotes=valid_quotes,
     )
 
 
@@ -1627,11 +1680,11 @@ def _strip_invalid_quotes(fix_result: FixQuoteCitationsResult, documents: list[C
         if isinstance(seg, QuoteSegment) and not seg.located.is_verified
     }
     cleaned = remove_quote_segments(fix_result.segments, invalid_segs)
-    valid_entries = [extracted_quote_to_quote_entry(vq) for vq in fix_result.valid_quotes]
-    evidence = compile_evidence_from_documents(valid_entries, documents)
+    # Use referenced_chunks directly — it already includes chunks recovered via hint_match
+    # from low-confidence (paraphrase) matches, not just verified quotes.
     return {
         "response": materialize(cleaned, wrap_verified=True),
-        "evidence": list(evidence),
+        "evidence": fix_result.referenced_chunks,
         "invalid_quotes": [],
         "validation_attempts": 0,
     }
@@ -1970,12 +2023,14 @@ def build_question_answer_graph(
         chain = answer_prompt | chat_model
         chain = chain.with_config(run_name="qa_graph_answer_chain")
         result = await chain.ainvoke(input, config=config)
-        extracted = extract_reasoning_and_answer(result.text)
-    
-        logger.info("Answer question result", answer=extracted["answer"], document_count=len(documents))
+        fix_result = fix_quote_citations_in_text(result.text, documents, strip_invalid_blockquotes=True)
+        extracted = extract_reasoning_and_answer(fix_result.fixed_text)
+        referenced = fix_result.referenced_chunks
+        logger.info("Answer question result", answer=extracted["answer"], document_count=len(documents), valid_quotes=len(fix_result.valid_quotes), invalid_quotes=len(fix_result.unfixable_quotes), referenced_chunks=len(referenced))
         return {
             "answer": extracted["answer"],
             "reasoning": extracted["reasoning"],
+            "evidence": referenced,
         }
     
     def get_quotes(fix_quote_result: FixQuoteCitationsResult) -> Tuple[list[QuoteEntry], list[QuoteEntry]]:
@@ -2028,18 +2083,18 @@ def build_question_answer_graph(
         # of the answer + reasoning (since it hadn't been generated yet)
         format_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", system_prompt_template),
+                ("system", format_answer_system_prompt_template),
                 ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query, then answer the user's query."),
-                ("assistant", "{{answer}}"),
+                ("assistant", "{{{answer}}}"),
                 ("user", markdown_format_response_template),
             ],
             template_format="mustache"
         )
 
         input = dict(
-            game_summary="",
+            game_summary=False,
             game_name=manifest["name"],
-            documents=documents,
+            documents=[],
             query=state["query"],
             reasoning=state["reasoning"],
             answer=state["answer"],
@@ -2048,9 +2103,10 @@ def build_question_answer_graph(
         chain = format_prompt | chat_model
         chain = chain.with_config(run_name="format_answer_chain")
         result = await chain.ainvoke(input, config=config)
+        extracted = extract_reasoning_and_answer(result.text)
 
         return {
-            "response": result.text,
+            "response": extracted["answer"],
         }
 
 
