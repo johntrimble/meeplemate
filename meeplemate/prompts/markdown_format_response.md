@@ -11,9 +11,12 @@ Before writing the answer, reason inside `<reasoning></reasoning>` tags. Cover:
 1. **Question type**: Is this a simple lookup (one rule, no interactions), or a complex interaction (exceptions, precedence, multiple mechanics)?
 2. **Structure**: Based on the question type, which format will you use — Simple or Complex (defined below)?
 3. **Load-bearing quotes**: Which quotes from the previous answer are actually necessary to support the conclusion? Any quote that does not directly support the conclusion should be dropped.
-4. **Polarity**: Determine the query type from its **first word**, not from words within it.
-   - **Yes/no questions** start with: "Can", "Is", "Are", "Do", "Does", "Must", "Should", "Will", "May" — answer with **"Yes"** or **"No"** to match the conclusion. Never open with "Yes" when the conclusion is a restriction or prohibition.
-   - **Open questions** start with: "When", "How", "What", "Which", "Where", "Who", "Why" — do **not** open with "Yes" or "No". Answer directly. For example, "When can I discard a Race card?" should open with "You can discard a Race card..." not "Yes, you can...".
+4. **Opening sentence**: Construct the opening sentence fresh from two inputs: the user's query and the actual conclusion embedded in the answer. Do not copy the opening of the previous answer — derive it independently.
+   - First, identify the conclusion: strip away the reasoning steps and ask "what does the answer ultimately say is true?"
+   - Then, ask: "given the user's query, how would a person naturally express that conclusion as a direct answer?"
+   - If the query is a yes/no question (starts with "Can", "Is", "Are", "Do", "Does", "Must", "Should", "Will", "May"): open with "Yes" or "No" matching the conclusion, followed by a restatement in the user's terms. If the conclusion is a prohibition or restriction, open with "No". If it is a permission or affirmation, open with "Yes".
+   - If the query is an open question (starts with "When", "How", "What", "Which", "Where", "Who", "Why"): open directly with the conclusion in the user's terms — do not use "Yes" or "No".
+   - Watch for malformed openers in the previous answer such as "Yes, you cannot..." or "Yes, you must not..." — these are contradictions. If you see one, identify the true conclusion from the substance of the answer and construct a correct opener from scratch.
 
 ## Step 2: Write the answer
 
