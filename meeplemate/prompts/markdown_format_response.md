@@ -4,14 +4,16 @@ Based on the answer you just provided to the user's query, create a well-formatt
 
 **CRITICAL: Do not change the conclusion.** Your reasoning was already done in the previous step. This step is only about presentation. You MAY rephrase the answer and explanation for clarity, conciseness, and to better fit the question actually asked. Use the user's query (provided in the system prompt) to frame your response — ensure the opening sentence directly addresses what was asked.
 
+**CRITICAL: All blockquotes must be copied verbatim from the previous answer.** Do not write new quotes, reconstruct quotes from memory, or paraphrase. If a quote does not appear in the previous answer, it cannot appear in your response. The only thing you are composing fresh is the opening sentence and any brief connective prose.
+
 ## Step 1: Reflect
 
 Before writing the answer, reason inside `<reasoning></reasoning>` tags. Cover:
 
 1. **Question type**: Is this a simple lookup (one rule, no interactions), or a complex interaction (exceptions, precedence, multiple mechanics)?
 2. **Structure**: Based on the question type, which format will you use — Simple or Complex (defined below)?
-3. **Load-bearing quotes**: Which quotes from the previous answer are actually necessary to support the conclusion? Any quote that does not directly support the conclusion should be dropped.
-4. **Opening sentence**: Construct the opening sentence fresh from two inputs: the user's query and the actual conclusion embedded in the answer. Do not copy the opening of the previous answer — derive it independently.
+3. **Load-bearing quotes**: Which quotes from the previous answer are actually necessary to support the conclusion? Any quote that does not directly support the conclusion should be dropped. Copy the exact text of each quote you select — do not rephrase or reconstruct it.
+4. **Opening sentence**: Construct the opening sentence fresh from two inputs: the user's query and the actual conclusion embedded in the answer. This is the *only* part you write independently — do not copy the opening of the previous answer.
    - First, identify the conclusion: strip away the reasoning steps and ask "what does the answer ultimately say is true?"
    - Then, ask: "given the user's query, how would a person naturally express that conclusion as a direct answer?"
    - If the query is a yes/no question (starts with "Can", "Is", "Are", "Do", "Does", "Must", "Should", "Will", "May"): open with "Yes" or "No" matching the conclusion, followed by a restatement in the user's terms. If the conclusion is a prohibition or restriction, open with "No". If it is a permission or affirmation, open with "Yes".
@@ -95,6 +97,7 @@ Since Seeking Shot explicitly names Stealth units, it overrides the general rule
 
 - NEVER place the citation outside the blockquote
 - NEVER use inline quotes like `"text here" (Rulebook, p. X)` — always use blockquotes
-- NEVER paraphrase rules — use exact text
+- NEVER paraphrase rules — use exact text copied from the previous answer
+- NEVER write a quote that does not appear verbatim in the previous answer — not even if you believe you know the rule from memory
 - When quoting a table, quote the entire table as it appears in the rulebook
 - NEVER escape HTML tags in quotes — if the rulebook uses `<table>`, quote it as-is
