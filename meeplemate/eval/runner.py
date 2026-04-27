@@ -1,8 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+import fnmatch
 from pathlib import Path
-from typing import AsyncIterator, Optional, Sequence, Mapping, Any
+from typing import AsyncIterator, Callable, Optional, Sequence, Mapping, Any
 
 from deepeval import evaluate
 from deepeval.test_case import LLMTestCase
@@ -20,14 +21,66 @@ from uuid_utils import uuid7
 from meeplemate.chatloop import QAServiceInput
 from meeplemate.component_system import subsystem, System
 from meeplemate.config import Config, QAService, create_app_system, factory
-from meeplemate.eval import get_test_run_file_path, load_persisted_run
-from meeplemate.eval.__main__ import TestRunTracer, get_correctness_metric, skip_run_types
+from meeplemate.eval import (
+    get_test_run_file_path,
+    load_persisted_run,
+    TestRunTracer
+)
+from meeplemate.eval.metrics import get_correctness_metric
 from meeplemate.eval.local_model import StructuredLocalModel
 from meeplemate.game_service import GameService
 from meeplemate.qa_graph import Chunk
 from meeplemate.util import snake_case
 
 logger = get_logger(__name__)
+
+
+def skip_run_types(skip_types: set[str]) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
+    """Create a transformer that skips certain run types/names.
+
+    Nodes matching the skip criteria are removed from the tree, but their children
+    are promoted to the parent level, preserving the execution trace.
+
+    Supports wildcard patterns using shell-style glob syntax:
+    - `*` matches everything
+    - `?` matches any single character
+    - `[seq]` matches any character in seq
+    - `[!seq]` matches any character not in seq
+
+    Args:
+        skip_types: Set of run names or run_type values to skip. Supports wildcards.
+
+    Returns:
+        A transformer function
+
+    Example:
+        # Exact match
+        transformer = skip_run_types({"RunnableLambda", "RunnableSequence"})
+
+        # Wildcard patterns
+        transformer = skip_run_types({"Runnable*"})  # Matches RunnableLambda, RunnableSequence, etc.
+        transformer = skip_run_types({"*Lambda", "*Sequence"})
+
+        pruned_run = transform_run_tree(run, transformer)
+    """
+    def matches_any_pattern(value: str, patterns: set[str]) -> bool:
+        """Check if value matches any pattern in the set."""
+        for pattern in patterns:
+            # Try exact match first (faster)
+            if value == pattern:
+                return True
+            # Try wildcard match
+            if fnmatch.fnmatch(value, pattern):
+                return True
+        return False
+
+    def transformer(run: Run, children: list[Run]) -> tuple[Run | None, list[Run]]:
+        if matches_any_pattern(run.name, skip_types) or matches_any_pattern(run.run_type, skip_types):
+            # Skip this run, promote children
+            return (None, children)
+        return (run, children)
+    return transformer
+
 
 class Runner:
     target_directory: Path
@@ -46,7 +99,7 @@ class Runner:
     ) -> None:
         raise NotImplementedError
     
-    def evaluate(self, group_run_id:str) -> None:
+    async def evaluate(self, group_run_id:str) -> None:
         raise NotImplementedError
 
 
@@ -166,8 +219,8 @@ class E2ERunner(Runner):
             "callbacks": [tracer],
             "configurable": {
                 "thread_id": str(uuid7()),
-                "metadata": metadata,
-            }
+            },
+            "metadata": dict(metadata),
         }
 
         input: QAServiceInput = {
@@ -269,8 +322,11 @@ class E2ERunner(Runner):
                             )
                     tasks.append(ainvoke())
 
-            await asyncio.gather(*tasks, return_exceptions=True)
-    
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for golden, result in zip(self.goldens, results):
+                if isinstance(result, Exception):
+                    logger.exception("Error during generation", test_case=golden.name, exc_info=result)
+
     def _create_test_case(self, golden: Golden, run: Run) -> LLMTestCase:
         assert golden.name is not None, "Golden name is required for creating test case"
 
@@ -293,7 +349,7 @@ class E2ERunner(Runner):
             name=test_name,
             input=golden.input,
             actual_output=actual_output,
-            expected_output=golden.actual_output,
+            expected_output=golden.expected_output,
         )
 
         return test_case
@@ -334,10 +390,8 @@ class E2ERunner(Runner):
         metrics = self.get_evaluation_metrics()
 
         eval_directory = self.evaluation_results_directory / group_run_id
-
         eval_directory.mkdir(parents=True, exist_ok=True)
 
         display_config = DisplayConfig(results_folder=str(eval_directory))
 
         evaluate(list(test_cases), list(metrics), display_config=display_config)
-

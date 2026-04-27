@@ -5,36 +5,36 @@ eval_logging.configure_logging()
 import asyncio
 import json
 from pathlib import Path
-import struct
+from typing import Sequence
+
 import click
-from gradio import skip
-from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import InMemorySaver
-from langchain_core.stores import BaseStore
-import structlog
-from uuid_utils import uuid7
-from meeplemate.config import Config, create_app_system
-from meeplemate.eval import collect_runs_by_name_iter, load_persisted_run, skip_run_types, snake_case, test_suites, TestRunTracer, get_test_run_file_path, parse_group_run_id
-from dataclasses import dataclass
 import fnmatch
+import structlog
 
-from deepeval.test_case import LLMTestCase
-from deepeval.metrics import AnswerRelevancyMetric, BaseMetric
-from deepeval.models.llms.local_model import LocalModel
+from uuid_utils import uuid7
+
 from deepeval import evaluate
-from deepeval.metrics import GEval, BaseMetric
-from deepeval.test_case import LLMTestCaseParams
+from deepeval.dataset.golden import Golden
+from deepeval.metrics import BaseMetric
+from deepeval.models.llms.local_model import LocalModel
+from deepeval.test_case import LLMTestCase
 
-from typing import Optional, Sequence, Tuple, Union
-from pydantic import BaseModel
-from openai.types.chat import ChatCompletion
-from deepeval.models.llms.utils import trim_and_load_json
-from deepeval.models.retry_policy import create_retry_decorator
-from deepeval.constants import ProviderSlug as PS
+from langchain_core.runnables import RunnableConfig
 
-from meeplemate.component_system import System, factory, subsystem
-from meeplemate.qa_graph import Chunk, QAService, QAServiceInput
+from meeplemate.eval import (
+    collect_runs_by_name_iter,
+    load_persisted_run,
+    snake_case,
+    test_suites,
+    get_test_run_file_path,
+    parse_group_run_id
+)
+from meeplemate.eval.local_model import StructuredLocalModel
+from meeplemate.eval.metrics import get_correctness_metric
+from meeplemate.eval.runner import E2ERunner, create_eval_system
 from meeplemate.game_service import GameService
+from meeplemate.qa_graph import QAService
+
 
 logger = structlog.get_logger(__name__)
 
@@ -45,100 +45,33 @@ LLM_COST_PER_1M_TOKENS_TABLE = {
     }
 }
 
-# Custom LocalModel that properly supports structured outputs with vllm
-class StructuredLocalModel(LocalModel):
-    """LocalModel subclass that properly uses vllm's structured output features.
 
-    This adds the response_format parameter when a schema is requested, which tells
-    vllm to enforce JSON schema compliance via guided decoding.
-    """
-
-    @create_retry_decorator(PS.LOCAL)
-    def generate(
-        self, prompt: str, schema: Optional[BaseModel] = None
-    ) -> Tuple[Union[str, BaseModel], float]:
-        from deepeval.utils import check_if_multimodal, convert_to_multi_modal_array
-
-        if check_if_multimodal(prompt):
-            prompt = convert_to_multi_modal_array(input=prompt)
-            content = self.generate_content(prompt)
-        else:
-            content = prompt
-
-        client = self.load_model(async_mode=False)
-
-        # Build request kwargs
-        kwargs = {
-            "model": self.name,
-            "messages": [{"role": "user", "content": content}],
-            "temperature": self.temperature,
-            **self.generation_kwargs,
-        }
-
-        # If schema is provided, add response_format for structured outputs
-        if schema:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema.__name__,
-                    "schema": schema.model_json_schema(),
-                    "strict": True
-                }
+def load_goldens() -> Sequence[Golden]:
+    goldens: list[Golden] = []
+    for test_suite in test_suites:
+        game_id = test_suite["params"]["game_id"]
+        for test_case in test_suite["test_cases"]:
+            if "reference_answer" not in test_case:
+                continue
+            metadata = {
+                "test_suite": test_suite["name"],
+                "game_id": game_id,
             }
+            if "evidence" in test_case:
+                metadata["evidence"] = test_case["evidence"]
 
-        response: ChatCompletion = client.chat.completions.create(**kwargs)
-        res_content = response.choices[0].message.content
-
-        if schema:
-            json_output = trim_and_load_json(res_content)
-            return schema.model_validate(json_output), 0.0
-        else:
-            return res_content, 0.0
-
-    @create_retry_decorator(PS.LOCAL)
-    async def a_generate(
-        self, prompt: str, schema: Optional[BaseModel] = None
-    ) -> Tuple[Union[str, BaseModel], float]:
-        from deepeval.utils import check_if_multimodal, convert_to_multi_modal_array
-
-        if check_if_multimodal(prompt):
-            prompt = convert_to_multi_modal_array(input=prompt)
-            content = self.generate_content(prompt)
-        else:
-            content = prompt
-
-        client = self.load_model(async_mode=True)
-
-        # Build request kwargs
-        kwargs = {
-            "model": self.name,
-            "messages": [{"role": "user", "content": content}],
-            "temperature": self.temperature,
-            **self.generation_kwargs,
-        }
-
-        # If schema is provided, add response_format for structured outputs
-        if schema:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema.__name__,
-                    "schema": schema.model_json_schema(),
-                    "strict": True
-                }
-            }
-
-        response: ChatCompletion = await client.chat.completions.create(**kwargs)
-        res_content = response.choices[0].message.content
-
-        if schema:
-            json_output = trim_and_load_json(res_content)
-            return schema.model_validate(json_output), 0.0
-        else:
-            return res_content, 0.0
+            golden = Golden(
+                input=test_case["query"],
+                expected_output=test_case["reference_answer"],
+                name=test_case["name"],
+                additional_metadata=metadata,
+                multimodal=False,
+            )
+            goldens.append(golden)
+    return goldens
 
 
-def get_eval_generation_runs_dir():
+def get_eval_and_generation_output_dir() -> Path:
     import meeplemate
     from pathlib import Path
 
@@ -150,10 +83,14 @@ def get_eval_generation_runs_dir():
     # Now get the parent directory
     project_dir = meeplemate_file.parent
 
-    return project_dir / "data" / "evals" / "generation_runs"
+    return project_dir / "data" / "evals"
 
 
-def next_group_run_id() -> str:
+def get_eval_generation_runs_dir():
+    return get_eval_and_generation_output_dir() / "generation_runs"
+
+
+def next_group_run_id(generation_runs_dir: Path|None=None) -> str:
     """Generate the next available group_run_id based on today's date.
 
     Scans existing generation_runs directories and auto-increments:
@@ -161,7 +98,9 @@ def next_group_run_id() -> str:
     """
     from datetime import datetime
     base = datetime.now().strftime("%Y-%m-%d")
-    gen_dir = get_eval_generation_runs_dir()
+    if generation_runs_dir is None:
+        generation_runs_dir = get_eval_generation_runs_dir()
+    gen_dir = generation_runs_dir
 
     if not gen_dir.exists() or not (gen_dir / base).exists():
         return base
@@ -240,204 +179,8 @@ async def _print_summary_of_run(filter: str = "*", group_run_id: str | None = No
                 click.echo(f"{json.dumps(parsed, indent=2)}")
 
 
-async def _run_qa_gen_multiple_runs(game_service: GameService, qa_service: QAService, filter: str, group_run_id: str, number_of_runs: int, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
-    run_numbers = [i + 1 for i in range(number_of_runs)]
-    skip_cases = handle_existing_files(filter, group_run_id, run_numbers, overwrite, skip_existing)
-
-    # Generate multiple runs with run numbers
-    tasks = []
-    for i in range(number_of_runs):
-        run_number = i + 1
-        tasks.append(
-            asyncio.create_task(
-                _run_qa_gen_no_start_system(game_service, qa_service, filter, group_run_id, skip_retrieval=skip_retrieval, run_number=run_number, skip_cases=skip_cases)
-            )
-        )
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-
-async def _run_qa_gen(game_service: GameService, qa_service: QAService, filter: str, group_run_id: str, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
-    skip_cases = handle_existing_files(filter, group_run_id, [None], overwrite, skip_existing)
-    await _run_qa_gen_no_start_system(game_service, qa_service, filter, group_run_id, skip_retrieval=skip_retrieval, run_number=None, skip_cases=skip_cases)
-
-
-def check_existing_run_files(
-    filter: str,
-    group_run_id: str,
-    run_numbers: list[int | None],
-) -> list[tuple[str, str, int | None, Path]]:
-    """Check which test run output files already exist.
-
-    Returns a list of (test_suite, test_case, run_number, path) for existing files.
-    """
-    eval_runs_dir = get_eval_generation_runs_dir()
-    existing = []
-    for test_suite in test_suites:
-        for test_case in test_suite["test_cases"]:
-            if not fnmatch.fnmatch(test_case["name"], filter):
-                continue
-            for run_number in run_numbers:
-                run_file = get_test_run_file_path(
-                    eval_runs_dir, group_run_id, test_suite["name"], test_case["name"], run_number=run_number
-                )
-                if run_file.exists():
-                    existing.append((test_suite["name"], test_case["name"], run_number, run_file))
-    return existing
-
-
-def handle_existing_files(
-    filter: str,
-    group_run_id: str,
-    run_numbers: list[int | None],
-    overwrite: bool,
-    skip_existing: bool,
-) -> set[tuple[str, str, int | None]]:
-    """Pre-flight check for existing run files.
-
-    Returns:
-        Set of (test_suite, test_case, run_number) tuples to skip.
-        Empty set if overwrite=True or no files exist.
-
-    Raises:
-        click.ClickException if files exist and neither --overwrite nor --skip-existing is set.
-    """
-    existing = check_existing_run_files(filter, group_run_id, run_numbers)
-    if not existing:
-        return set()
-
-    if overwrite:
-        for _, _, _, path in existing:
-            path.unlink()
-            logger.info("Deleted existing run file", path=str(path))
-        return set()
-
-    if skip_existing:
-        skip_set = {(suite, case, rn) for suite, case, rn, _ in existing}
-        for suite, case, rn, path in existing:
-            logger.info("Skipping existing run", test_suite=suite, test_case=case, run_number=rn)
-        return skip_set
-
-    file_list = "\n".join(f"  {path}" for _, _, _, path in existing)
-    raise click.ClickException(
-        f"The following run files already exist:\n{file_list}\n"
-        f"Use --overwrite to replace them or --skip-existing to skip them."
-    )
-
-
-concurrency_semaphore = asyncio.Semaphore(5)  # Limit concurrency to 5 simultaneous runs
-
-
-async def _run_qa_gen_no_start_system(game_service: GameService, qa_service:QAService, filter: str, group_run_id: str, skip_retrieval: bool = False, run_number: int | None = None, skip_cases: set[tuple[str, str, int | None]] | None = None):
-    tracer = TestRunTracer(
-        get_eval_generation_runs_dir(),
-        run_transformer=skip_run_types(
-            {
-                "RunnableLambda*",
-                "RunnableSequence*",
-                "RunnableAssign*",
-                "RunnableParallel*",
-                "RunnableWithFallbacks*", 
-            }
-        )
-    )
-    tasks = []
-    for test_suite in test_suites:
-        game_id = test_suite["params"]["game_id"]
-        manifest = await game_service.get_manifest(game_id)
-        assert manifest is not None, f"Manifest not found for game_id: {game_id}"
-
-        for test_case in test_suite["test_cases"]:
-            # Compare test_case name to filter (contains wildcard *)
-            import fnmatch
-            if not fnmatch.fnmatch(test_case["name"], filter):
-                continue
-
-            if skip_cases and (test_suite["name"], test_case["name"], run_number) in skip_cases:
-                click.echo(f"Skipping existing: {test_case['name']} (run {run_number})")
-                continue
-
-            query = test_case["query"]
-            evidence = test_case.get("evidence", None)
-
-            if skip_retrieval and evidence is None:
-                click.echo(f"Skipping retrieval for test case without evidence: {test_case['name']}")
-                continue
-
-
-            metadata = {
-                "test_group_run_id": group_run_id,
-                "test_suite": test_suite["name"],
-                "test_case": test_case["name"],
-                "skip_retrieval": skip_retrieval,
-                "run_number": run_number,
-            }
-            config: RunnableConfig = {
-                "callbacks": [
-                    tracer,
-                ],
-                "configurable": {"thread_id": str(uuid7())},
-                "metadata": metadata
-            }
-
-            input: QAServiceInput = {
-                "manifest": manifest,
-                "query": query,
-                "messages": [],
-                "recursion_depth": 0,
-                "evidence": []
-            }
-            if skip_retrieval:
-                logger.info("Skipping retrieval as per flag", test_case=test_case['name'])
-                chunks: list[Chunk] = []
-                for item in evidence:
-                    chunks.append(
-                        {
-                            "rulebook_name": item["rulebook"],
-                            "page": item["page"],
-                            "start_index": item.get("start_index", -1),
-                            "end_index": item.get("end_index", -1),
-                            "content": item["quote"],
-                        }
-                    )
-                input["evidence"] = chunks
-                logger.info(f"Starting generation with evidence", number_of_chunks=len(chunks), test_case=test_case['name'])
-            logger.info(f"Starting QA generation", test_case=test_case['name'])
-
-            async def run_ainvoke(input, config):
-                async with concurrency_semaphore:
-                    return await qa_service.ainvoke(
-                        input,
-                        config=config
-                    )
-
-            tasks.append(
-                asyncio.create_task(
-                    run_ainvoke(input, config)
-                )
-            )
-
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-
-def get_correctness_metric(model) -> BaseMetric:
-    correctness_metric = GEval(
-        model=model,
-        name="Correctness",
-        criteria="Determine whether the actual output reaches the same general conclusion as the expected output. Do not penalize if one explores exceptions or edge cases not mentioned in the other. Focus on whether both outputs agree on the main point. IMPORTANT: Do not rely on the opening Yes/No word alone — read the full reasoning and conclusion to determine the actual position. A response may start with 'No' while its conclusion agrees with the expected output (e.g., 'No, they are not exempt' means the same as 'Yes, they must take the test'). Judge based on the substantive conclusion, not surface-level phrasing.",
-        evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT, LLMTestCaseParams.EXPECTED_OUTPUT],
-    )
-    return correctness_metric
-
-
-async def _run_qa_eval(filter: str, base_group_run_id: str, llm: StructuredLocalModel):
-    """Evaluate all runs for a given base group_run_id.
-
-    Discovers all runs (e.g., __run001, __run002, etc.) and evaluates them.
-    All results are stored in a single directory: qa_evals/{base_group_run_id}/
-    """
-    from meeplemate.eval.analysis import find_run_groups
-
-    llm = StructuredLocalModel(
+def build_local_model() -> LocalModel:
+    return StructuredLocalModel(
         model="Qwen/Qwen3-30B-A3B-Instruct-2507",
         api_key="dummy",
         # base_url="http://vllm:8000/v1"
@@ -453,6 +196,17 @@ async def _run_qa_eval(filter: str, base_group_run_id: str, llm: StructuredLocal
             },
         },
     )
+
+
+async def _run_qa_eval(filter: str, base_group_run_id: str, llm: LocalModel):
+    """Evaluate all runs for a given base group_run_id.
+
+    Discovers all runs (e.g., __run001, __run002, etc.) and evaluates them.
+    All results are stored in a single directory: qa_evals/{base_group_run_id}/
+    """
+    from meeplemate.eval.analysis import find_run_groups
+
+    llm = build_local_model()
 
     # Find all runs for this group
     run_groups = find_run_groups(base_group_run_id)
@@ -529,34 +283,29 @@ async def _run_qa_eval(filter: str, base_group_run_id: str, llm: StructuredLocal
     click.echo(f"\n✓ Evaluation complete! Results saved to: {get_eval_generation_runs_dir().parent / 'qa_evals' / base_group_run_id}")
 
 
-def create_eval_system(names: Optional[Sequence[str]]=None) -> System:
-    config = Config()
-    config.chat.endpoint = "http://192.168.0.44:8000/v1"
+def build_runner(filter:str) -> E2ERunner:
+    # Filter test cases based on the provided filter
+    goldens = [
+        golden 
+        for golden in load_goldens() 
+        if fnmatch.fnmatch(golden.name or "", filter)
+    ]
 
-    extra_components = {
-        "deepeval_llm": (
-            factory(StructuredLocalModel)(
-                model="Qwen/Qwen3-30B-A3B-Instruct-2507",
-                api_key="dummy",
-                base_url=config.chat.endpoint,
-                temperature=0.7,
-                generation_kwargs={
-                    "presence_penalty": 0.6,
-                    "top_p": 0.8,
-                    "extra_body": {
-                        "top_k": 20,
-                        "min_p": 0.0,
-                        "repetition_penalty": 1.1,
-                    },
-                },
-            ),
-            []
-        )
-    }
+    # Directory where results go, used for both generation and eval runs
+    output_dir = get_eval_and_generation_output_dir()
 
-    app_system = create_app_system(config)
-    system = subsystem(app_system, names=names, extra_components=extra_components)  
-    return system
+    # Build the local llm for evaluation (though we won't actually us it here)
+    llm = build_local_model()
+
+    runner = E2ERunner(
+        target_directory=output_dir,
+        goldens=goldens,
+        local_llm_model_eval=llm,
+        generation_runs_directory_name="generation_runs",
+        evaluation_results_directory_name="qa_evals",
+    )
+
+    return runner
 
 
 @click.group()
@@ -572,55 +321,40 @@ def cli():
 @click.option("--overwrite", is_flag=True, default=False, help="Overwrite existing run files")
 @click.option("--skip-existing", is_flag=True, default=False, help="Skip test cases with existing output files")
 def run_qa_gen(filter: str, group_run_id: str | None = None, number_of_runs: int|None = None, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
-    import asyncio
+    runner = build_runner(filter)
+
     if group_run_id is None:
-        group_run_id = next_group_run_id()
+        group_run_id = next_group_run_id(runner.generation_runs_directory)
 
     click.echo(f"Group run ID: {group_run_id}")
 
-    system = create_eval_system(["game_service", "qa_service"])
+    if number_of_runs is None:
+        number_of_runs = 1
 
-    async def run():
-        async with system.astart() as services:
-            game_service: GameService = services["game_service"]
-            qa_service: QAService = services["qa_service"]
-            if number_of_runs is None:
-                await _run_qa_gen(game_service, qa_service, filter, group_run_id, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing)
-            else:
-                await _run_qa_gen_multiple_runs(game_service, qa_service, filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing)
-
-    asyncio.run(run())
+    asyncio.run(
+        runner.generate(
+            group_run_id=group_run_id,
+            number_of_runs=number_of_runs,
+            skip_existing=skip_existing,
+            overwrite=overwrite,
+            skip_retrieval=skip_retrieval,
+        )
+    )
 
 
 @cli.command()
 @click.argument("filter", required=False, default="*")
 @click.option("--group-run-id", default=None)
 def run_qa_eval(filter: str, group_run_id: str | None = None):
-    import os
-    import asyncio
-
+    runner = build_runner(filter)
     if group_run_id is None:
-        # For eval, default to most recent generation run (not a new one)
-        eval_runs_dir = get_eval_generation_runs_dir()
-        group_run_id = get_most_recent_group_run_id(eval_runs_dir)
+        group_run_id = get_most_recent_group_run_id(runner.generation_runs_directory)
         if group_run_id is None:
             raise click.ClickException("No generation runs found. Run 'run-qa-gen' first.")
 
     click.echo(f"Group run ID: {group_run_id}")
 
-    async def run():
-        system = create_eval_system(["deepeval_llm"])
-        async with system.astart() as started_system:
-            llm: StructuredLocalModel = started_system.get("deepeval_llm")
-            await _run_qa_eval(filter, group_run_id, llm)
-
-    # Set environment variable DEEPEVAL_RESULTS_FOLDER to data/evals/qa_evals/{group_run_id}
-    eval_runs_dir = get_eval_generation_runs_dir().parent / "qa_evals"
-    eval_dir = eval_runs_dir / group_run_id
-    eval_dir.mkdir(parents=True, exist_ok=True)
-    os.environ["DEEPEVAL_RESULTS_FOLDER"] = str(eval_dir)
-
-    asyncio.run(run())
+    asyncio.run(runner.evaluate(group_run_id=group_run_id))
 
 
 @cli.command()
@@ -632,38 +366,27 @@ def run_qa_eval(filter: str, group_run_id: str | None = None):
 @click.option("--skip-existing", is_flag=True, default=False, help="Skip test cases with existing output files")
 def run_qa(filter: str, group_run_id: str | None = None, number_of_runs: int | None = None, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
     """Generate and evaluate in one step."""
-    import os
-    import asyncio
 
     if group_run_id is None:
         group_run_id = next_group_run_id()
 
     click.echo(f"Group run ID: {group_run_id}")
 
+    runner = build_runner(filter)
+
+    if number_of_runs is None:
+        number_of_runs = 1
+
     async def run():
-        system = create_eval_system(["game_service", "qa_service", "deepeval_llm"])
-        async with system.astart() as started_system:
-            llm: StructuredLocalModel = started_system.get("deepeval_llm")
-            game_service: GameService = started_system.get("game_service")
-            qa_service: QAService = started_system.get("qa_service")
+        await runner.generate(
+            group_run_id=group_run_id,
+            number_of_runs=number_of_runs,
+            skip_existing=skip_existing,
+            overwrite=overwrite,
+            skip_retrieval=skip_retrieval,
+        )
+        await runner.evaluate(group_run_id=group_run_id)
 
-
-            # --- Generation ---
-            click.echo("\n--- Generation ---")
-            if number_of_runs is None:
-                await _run_qa_gen(game_service, qa_service, filter, group_run_id, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing)
-            else:
-                await _run_qa_gen_multiple_runs(game_service, qa_service, filter, group_run_id, number_of_runs, skip_retrieval=skip_retrieval, overwrite=overwrite, skip_existing=skip_existing)
-
-            # --- Evaluation ---
-            click.echo("\n--- Evaluation ---")
-            eval_runs_dir = get_eval_generation_runs_dir().parent / "qa_evals"
-            eval_dir = eval_runs_dir / group_run_id
-            eval_dir.mkdir(parents=True, exist_ok=True)
-            os.environ["DEEPEVAL_RESULTS_FOLDER"] = str(eval_dir)
-
-            await _run_qa_eval(filter, group_run_id, llm)
-    
     asyncio.run(run())
 
 
@@ -672,15 +395,12 @@ def run_qa(filter: str, group_run_id: str | None = None, number_of_runs: int | N
 @click.option("--group-run-id", default=None)
 @click.option("--skip-retrieval", is_flag=True, default=False)
 def print_run_summary(filter: str = "*", group_run_id: str | None = None, skip_retrieval: bool = False):
-    import asyncio
     asyncio.run(_print_summary_of_run(filter, group_run_id))
 
 @cli.command()
 @click.argument("game-id", required=True)
 @click.argument("query", required=True)
 def ask(game_id: str, query: str) -> None:
-    import asyncio
-
     system = create_eval_system(["game_service", "qa_service"])
 
     async def _run():

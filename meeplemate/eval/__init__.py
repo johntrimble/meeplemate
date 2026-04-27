@@ -324,53 +324,6 @@ def transform_run_tree(
     return results[0] if results else None
 
 
-def skip_run_types(skip_types: set[str]) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
-    """Create a transformer that skips certain run types/names.
-
-    Nodes matching the skip criteria are removed from the tree, but their children
-    are promoted to the parent level, preserving the execution trace.
-
-    Supports wildcard patterns using shell-style glob syntax:
-    - `*` matches everything
-    - `?` matches any single character
-    - `[seq]` matches any character in seq
-    - `[!seq]` matches any character not in seq
-
-    Args:
-        skip_types: Set of run names or run_type values to skip. Supports wildcards.
-
-    Returns:
-        A transformer function
-
-    Example:
-        # Exact match
-        transformer = skip_run_types({"RunnableLambda", "RunnableSequence"})
-
-        # Wildcard patterns
-        transformer = skip_run_types({"Runnable*"})  # Matches RunnableLambda, RunnableSequence, etc.
-        transformer = skip_run_types({"*Lambda", "*Sequence"})
-
-        pruned_run = transform_run_tree(run, transformer)
-    """
-    def matches_any_pattern(value: str, patterns: set[str]) -> bool:
-        """Check if value matches any pattern in the set."""
-        for pattern in patterns:
-            # Try exact match first (faster)
-            if value == pattern:
-                return True
-            # Try wildcard match
-            if fnmatch(value, pattern):
-                return True
-        return False
-
-    def transformer(run: Run, children: list[Run]) -> tuple[Run | None, list[Run]]:
-        if matches_any_pattern(run.name, skip_types) or matches_any_pattern(run.run_type, skip_types):
-            # Skip this run, promote children
-            return (None, children)
-        return (run, children)
-    return transformer
-
-
 def filter_children_by_predicate(
     predicate: Callable[[Run], bool]
 ) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
