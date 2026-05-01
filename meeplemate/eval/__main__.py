@@ -27,7 +27,9 @@ from meeplemate.eval import (
     snake_case,
     test_suites,
     get_test_run_file_path,
-    parse_group_run_id
+    parse_group_run_id,
+    next_group_run_id,
+    load_goldens
 )
 from meeplemate.eval.local_model import StructuredLocalModel
 from meeplemate.eval.metrics import get_correctness_metric
@@ -46,29 +48,7 @@ LLM_COST_PER_1M_TOKENS_TABLE = {
 }
 
 
-def load_goldens() -> Sequence[Golden]:
-    goldens: list[Golden] = []
-    for test_suite in test_suites:
-        game_id = test_suite["params"]["game_id"]
-        for test_case in test_suite["test_cases"]:
-            if "reference_answer" not in test_case:
-                continue
-            metadata = {
-                "test_suite": test_suite["name"],
-                "game_id": game_id,
-            }
-            if "evidence" in test_case:
-                metadata["evidence"] = test_case["evidence"]
 
-            golden = Golden(
-                input=test_case["query"],
-                expected_output=test_case["reference_answer"],
-                name=test_case["name"],
-                additional_metadata=metadata,
-                multimodal=False,
-            )
-            goldens.append(golden)
-    return goldens
 
 
 def get_eval_and_generation_output_dir() -> Path:
@@ -88,28 +68,6 @@ def get_eval_and_generation_output_dir() -> Path:
 
 def get_eval_generation_runs_dir():
     return get_eval_and_generation_output_dir() / "generation_runs"
-
-
-def next_group_run_id(generation_runs_dir: Path|None=None) -> str:
-    """Generate the next available group_run_id based on today's date.
-
-    Scans existing generation_runs directories and auto-increments:
-    2026-02-17, 2026-02-17-2, 2026-02-17-3, etc.
-    """
-    from datetime import datetime
-    base = datetime.now().strftime("%Y-%m-%d")
-    if generation_runs_dir is None:
-        generation_runs_dir = get_eval_generation_runs_dir()
-    gen_dir = generation_runs_dir
-
-    if not gen_dir.exists() or not (gen_dir / base).exists():
-        return base
-
-    # Find the next available suffix
-    n = 2
-    while (gen_dir / f"{base}-{n}").exists():
-        n += 1
-    return f"{base}-{n}"
 
 
 def get_most_recent_group_run_id(eval_runs_dir: Path) -> str | None:
@@ -367,12 +325,12 @@ def run_qa_eval(filter: str, group_run_id: str | None = None):
 def run_qa(filter: str, group_run_id: str | None = None, number_of_runs: int | None = None, skip_retrieval: bool = False, overwrite: bool = False, skip_existing: bool = False):
     """Generate and evaluate in one step."""
 
-    if group_run_id is None:
-        group_run_id = next_group_run_id()
-
     click.echo(f"Group run ID: {group_run_id}")
 
     runner = build_runner(filter)
+
+    if group_run_id is None:
+        group_run_id = next_group_run_id(runner.generation_runs_directory)
 
     if number_of_runs is None:
         number_of_runs = 1

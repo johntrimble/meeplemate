@@ -26,7 +26,7 @@ from meeplemate.eval import (
     load_persisted_run,
     TestRunTracer
 )
-from meeplemate.eval.metrics import get_correctness_metric
+from meeplemate.eval.metrics import RunawayGenerationsMetric, ValidQuoteMetric, add_quote_counts, add_runaway_generation_counts, get_correctness_metric
 from meeplemate.eval.local_model import StructuredLocalModel
 from meeplemate.game_service import GameService
 from meeplemate.qa_graph import Chunk
@@ -103,8 +103,9 @@ class Runner:
         raise NotImplementedError
 
 
-def create_eval_system(names: Optional[Sequence[str]]=None) -> System:
-    config = Config()
+def create_eval_system(names: Optional[Sequence[str]]=None, config:Config|None=None) -> System:
+    if config is None:
+        config = Config()
     config.chat.endpoint = "http://192.168.0.44:8000/v1"
 
     extra_components = {
@@ -261,9 +262,15 @@ class E2ERunner(Runner):
             config=config
         )
     
+    def apply_hyperparameters_to_config(self, config: Config, hyperparameters: Mapping[str, Any]) -> Config:
+        return config
+
     @asynccontextmanager
     async def generation_astart_dependencies(self, hyperparameters: Mapping[str, Any]|None=None) -> AsyncIterator[Mapping[str, Any]]:
-        system = create_eval_system(["game_service", "qa_service"])
+        config = Config()
+        if hyperparameters:
+            config = self.apply_hyperparameters_to_config(config, hyperparameters)
+        system = create_eval_system(["game_service", "qa_service"], config=config)
         async with system.astart() as services:
             yield services
 
@@ -315,12 +322,20 @@ class E2ERunner(Runner):
                         "hyperparameters": hyperparameters,
                     }
 
-                    async def ainvoke():
+                    async def ainvoke(*args, **kwargs):
                         async with self.generation_semaphore:
                             await self._run_agent(
-                                services, golden, metadata, skip_retrieval=skip_retrieval
+                                *args, **kwargs
                             )
-                    tasks.append(ainvoke())
+
+                    tasks.append(
+                        ainvoke(
+                            services,
+                            golden,
+                            metadata,
+                            skip_retrieval=skip_retrieval
+                        )
+                    )
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for golden, result in zip(self.goldens, results):
@@ -351,6 +366,8 @@ class E2ERunner(Runner):
             actual_output=actual_output,
             expected_output=golden.expected_output,
         )
+        add_quote_counts(test_case, run)
+        add_runaway_generation_counts(test_case, run)
 
         return test_case
 
@@ -374,18 +391,32 @@ class E2ERunner(Runner):
         
         return test_cases
 
+    def _get_hyperparameters(self, group_run_id:str) -> Mapping[str, Any]:
+        # Get hyperparameters from one of the runs for this group_run_id (they should all be the same)
+        run_files = self._discover_existing_generation_runs(group_run_id)
+        if not run_files:
+            logger.warning("No run files found for group_run_id, cannot extract hyperparameters", group_run_id=group_run_id)
+            return {}
+        
+        run = load_persisted_run(run_files[0])
+        hyperparameters = run.metadata.get("hyperparameters")
+        return hyperparameters or {}
+
     def get_evaluation_metrics(self) -> Sequence[BaseMetric]:
         return [
-            get_correctness_metric(self.local_llm_model_eval)
+            get_correctness_metric(self.local_llm_model_eval),
+            ValidQuoteMetric(threshold=0.9),
+            RunawayGenerationsMetric(threshold=0.9),
         ]
 
     async def evaluate(self, group_run_id:str) -> None:
         test_cases = self._create_test_cases(group_run_id)
+        hyperparameters:Mapping[str, Any] = self._get_hyperparameters(group_run_id)
 
         if not test_cases:
             logger.warning("No test cases found for evaluation", group_run_id=group_run_id)
             return
-        
+
         logger.info("Evaluated test cases", count=len(test_cases), group_run_id=group_run_id)
         metrics = self.get_evaluation_metrics()
 
@@ -394,4 +425,9 @@ class E2ERunner(Runner):
 
         display_config = DisplayConfig(results_folder=str(eval_directory))
 
-        evaluate(list(test_cases), list(metrics), display_config=display_config)
+        evaluate(
+            list(test_cases),
+            list(metrics),
+            hyperparameters=dict(hyperparameters),
+            display_config=display_config
+        )
