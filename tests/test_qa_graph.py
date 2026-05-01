@@ -22,6 +22,7 @@ from meeplemate.qa_graph import (
     dedupe_chunks_in_message_history,
     extracted_quote_to_quote_entry,
     fix_quote_citations_in_text,
+    format_blockquote_with_inline_citation,
     format_quote,
     get_chunk_id_tuple,
     locate_quotes,
@@ -324,15 +325,12 @@ def test_fix_quote_citations_in_text():
         This indicates that the rule has multiple paragraphs.
 
         > "Look, it has paragraphs too!"
-        >
         >\x20
         > (Some Rulebook, p. 44)
 
         Finally, we see:
 
         > "Here is another one too!"
-        >
-        >
         >\x20
         > (Some Rulebook, p. 44)
 
@@ -701,7 +699,26 @@ def test_locate_quotes_referenced_chunks():
     quotes = quote_util.find_quotes_in_text(text)
     located = locate_quotes(quotes, chunks)
     assert located[0].is_verified
-    assert len(located[0].match.referenced_chunks) >= 1
+    assert len(located[0].match.referenced_chunks) == 2, (
+        "Both chunks should be in referenced_chunks when the quote spans two chunks"
+    )
+
+
+def test_fix_quote_citations_referenced_chunks_multi_chunk():
+    """fix_quote_citations_in_text.referenced_chunks includes all chunks overlapping a quote."""
+    chunks: list[Chunk] = [
+        {"content": "First sentence here.", "rulebook_name": "Book", "page": "1", "start_index": 0, "end_index": 20},
+        {"content": "Second sentence here.", "rulebook_name": "Book", "page": "1", "start_index": 21, "end_index": 42},
+        {"content": "Unrelated content.", "rulebook_name": "Book", "page": "1", "start_index": 43, "end_index": 61},
+    ]
+    # Quote spans chunk 0 and chunk 1; chunk 2 is not touched
+    text = "> First sentence here. Second sentence here.\n\n(Book, p. 1)"
+    result = fix_quote_citations_in_text(text, chunks)
+    assert len(result.unfixable_quotes) == 0
+    ref_contents = {c["content"] for c in result.referenced_chunks}
+    assert "First sentence here." in ref_contents, "First chunk should be in referenced_chunks"
+    assert "Second sentence here." in ref_contents, "Second chunk should be in referenced_chunks"
+    assert "Unrelated content." not in ref_contents, "Unrelated chunk should not be in referenced_chunks"
 
 
 def test_locate_quotes_match_ratio():
@@ -809,6 +826,92 @@ def test_format_quote_missing_citation():
     r = format_quote(lq)
     assert r.is_verified
     assert '(Book, p. 7)' in r.replacement
+
+
+def test_format_quote_no_extra_blank_line_added():
+    """Citation already in blockquote with blank-line separator — no extra > line inserted.
+
+    Regression: format_blockquote_with_inline_citation was producing
+    `\\n> \\n>\\n> \\n> (citation)` instead of `\\n> \\n> (citation)` because
+    the blank-line cleanup treated `> ` (blockquote blank) as non-blank (its
+    .strip() is '>' not '').
+    """
+    chunk = _make_chunk("Book", "1", "Some rule text.")
+    text = "> Some rule text.\n> \n> (Book, p. 1)"
+    lq = _make_located(text, chunk)
+    r = format_quote(lq)
+    assert r.is_verified
+    assert r.replacement == "> Some rule text.\n> \n> (Book, p. 1)", (
+        f"Expected clean citation format but got: {r.replacement!r}"
+    )
+
+
+def test_fix_quote_citations_em_dash_for_hyphen():
+    """LLM uses em-dash (–) where the document has a hyphen (-).
+
+    Regression: both characters normalize to a word-boundary space, so the
+    quote should validate successfully despite the substitution.
+    """
+    chunk: Chunk = {
+        "rulebook_name": "Bretonnia Army Book",
+        "page": "43",
+        "start_index": 132609,
+        "end_index": 132998,
+        "content": (
+            "## Grail Virtue\n\n"
+            "Grail Knights have the most noble chivalric virtue of all - the Grail Virtue. "
+            "This means that they are unaffected by any of the psychology rules; any such "
+            "tests they are called upon to take are disregarded with a cool and steely "
+            "countenance. The Knight knows neither fear nor terror, nor will he panic, for "
+            "the grail sustains his noble will better than any magic trickery."
+        ),
+    }
+    # LLM used an en-dash instead of the document's hyphen
+    response = inspect.cleandoc("""\
+        Grail Knights are immune to psychology tests but not Break tests.
+
+        > Grail Knights have the most noble chivalric virtue of all \u2013 the Grail Virtue. This means that they are unaffected by any of the psychology rules; any such tests they are called upon to take are disregarded with a cool and steely countenance. The Knight knows neither fear nor terror, nor will he panic, for the grail sustains his noble will better than any magic trickery.
+        >
+        > (Bretonnia Army Book, p. 43)
+    """)
+    result = fix_quote_citations_in_text(response, [chunk])
+    assert len(result.unfixable_quotes) == 0, (
+        f"Em-dash quote should be valid but was flagged unfixable: {result.unfixable_quotes}"
+    )
+
+
+def test_fix_quote_citations_truncated_leading_context():
+    """LLM quotes a sentence fragment that drops leading context ('However, ').
+
+    Regression: the LLM quoted 'A Break test is not a psychology test.' starting
+    mid-sentence, capitalising the first word. After normalisation the text is a
+    verbatim substring of the document, so the match should succeed.
+    """
+    chunk: Chunk = {
+        "rulebook_name": "Warhammer Rulebook",
+        "page": "46",
+        "start_index": 123428,
+        "end_index": 123808,
+        "content": (
+            "Players will immediately realise that a psychology test is taken in the same "
+            "way as a Break test in hand- to- hand combat and uses the same characteristic, "
+            "namely Leadership. However, a Break test is not a psychology test. The two "
+            "tests are quite separate. This is important because some bonuses apply "
+            "specifically to Break tests and others apply specifically to psychology tests."
+        ),
+    }
+    # LLM dropped "However, " and capitalised the first word
+    response = inspect.cleandoc("""\
+        Break tests are distinct from psychology tests.
+
+        > A Break test is not a psychology test. The two tests are quite separate.
+        >
+        > (Warhammer Rulebook, p. 46)
+    """)
+    result = fix_quote_citations_in_text(response, [chunk])
+    assert len(result.unfixable_quotes) == 0, (
+        f"Truncated-prefix quote should be valid but was flagged unfixable: {result.unfixable_quotes}"
+    )
 
 
 # ── apply_replacements ───────────────────────────────────────────────────────
@@ -1459,3 +1562,134 @@ def test_unescape_table_html():
 
     result = unescape_table_html(example)
     assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# fix_quote_citations_in_text – indented blockquotes
+# ---------------------------------------------------------------------------
+
+
+def test_fix_quote_citations_indented_blockquote_verified():
+    """Indented blockquote (LLM list-item format) is detected, verified, and de-indented."""
+    chunk: Chunk = {
+        'content': 'The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test.',
+        'start_index': 0,
+        'end_index': -1,
+        'page': '41',
+        'rulebook_name': 'Warhammer Rulebook',
+    }
+
+    # Mirrors the actual answer_question output where blockquotes are sub-items
+    # of a numbered list — each blockquote line has 3 spaces of leading indentation.
+    text = inspect.cleandoc("""\
+        2. **Locate the definition of Break tests**:
+           > The side that loses a combat must take a test to determine whether it stands and fights or turns tail and runs away. This is called a Break test.
+           >
+           > (Warhammer Rulebook, p. 41)
+    """)
+
+    result = fix_quote_citations_in_text(text, [chunk])
+
+    assert len(result.unfixable_quotes) == 0, f"Expected no unfixable quotes, got: {result.unfixable_quotes}"
+    assert len(result.referenced_chunks) == 1
+    assert '   >' not in result.fixed_text, "Indented blockquote markers should be removed in fixed_text"
+    assert '> The side that loses' in result.fixed_text
+
+
+def test_fix_quote_citations_indented_blockquote_unverified():
+    """Indented blockquote that cannot be verified is still de-indented in the output."""
+    chunk: Chunk = {
+        'content': 'Completely unrelated content that will not match.',
+        'start_index': 0,
+        'end_index': -1,
+        'page': '1',
+        'rulebook_name': 'Some Book',
+    }
+
+    text = "3. **Check**:\n   > Hallucinated rule that does not appear in any chunk.\n   >\n   > (Warhammer Rulebook, p. 99)"
+
+    result = fix_quote_citations_in_text(text, [chunk])
+
+    assert len(result.unfixable_quotes) == 1
+    assert '   >' not in result.fixed_text, "Indented markers should be removed even for unverified quotes"
+    assert '> Hallucinated rule' in result.fixed_text
+
+
+# ---------------------------------------------------------------------------
+# hint_match — chunk recovery from low-confidence matches
+# ---------------------------------------------------------------------------
+
+
+def test_fix_quote_citations_hint_chunks_from_paraphrase():
+    """A close paraphrase that fails the high-confidence threshold (≥92) but
+    passes the hint threshold (≥50) still recovers the relevant chunk via hint_match."""
+    # This mirrors the real pattern seen in logs: "separate and distinct" vs "quite separate"
+    chunk: Chunk = {
+        'content': 'A Break test is not a psychology test. The two tests are quite separate.',
+        'start_index': 0,
+        'end_index': 71,
+        'page': '46',
+        'rulebook_name': 'Core Rulebook',
+    }
+    # Scores ~74% — fails ≥92 but passes ≥50
+    text = (
+        "> Break tests are not psychology tests. The two are separate and distinct.\n"
+        ">\n"
+        "> (Core Rulebook, p. 46)"
+    )
+    result = fix_quote_citations_in_text(text, [chunk])
+
+    assert len(result.valid_quotes) == 0, "Paraphrase should not be verified"
+    assert len(result.unfixable_quotes) == 1, "Paraphrase should be in unfixable_quotes"
+    assert len(result.referenced_chunks) >= 1, "hint_match should recover the chunk"
+    assert result.referenced_chunks[0]['rulebook_name'] == 'Core Rulebook'
+
+
+# ---------------------------------------------------------------------------
+# strip_invalid_blockquotes
+# ---------------------------------------------------------------------------
+
+
+def test_fix_quote_citations_strip_invalid_blockquotes():
+    """With strip_invalid_blockquotes=True, unverified blockquotes have their
+    '> ' markers stripped and appear as plain prose in the output."""
+    chunk: Chunk = {
+        'content': 'Completely unrelated content that will not match.',
+        'start_index': 0,
+        'end_index': -1,
+        'page': '1',
+        'rulebook_name': 'Some Book',
+    }
+    text = (
+        "My analysis:\n\n"
+        "> Yes, units must take the test even when immune to psychology.\n"
+        ">\n"
+        "> (Some Book, p. 1)"
+    )
+    result = fix_quote_citations_in_text(text, [chunk], strip_invalid_blockquotes=True)
+
+    assert len(result.unfixable_quotes) == 1
+    assert '>' not in result.fixed_text, "blockquote markers should be stripped"
+    assert 'Yes, units must take the test' in result.fixed_text
+
+
+def test_fix_quote_citations_no_strip_by_default():
+    """Without strip_invalid_blockquotes (default False), unverified blockquotes
+    retain their '> ' markers unchanged."""
+    chunk: Chunk = {
+        'content': 'Completely unrelated content that will not match.',
+        'start_index': 0,
+        'end_index': -1,
+        'page': '1',
+        'rulebook_name': 'Some Book',
+    }
+    text = (
+        "My analysis:\n\n"
+        "> Yes, units must take the test even when immune to psychology.\n"
+        ">\n"
+        "> (Some Book, p. 1)"
+    )
+    result = fix_quote_citations_in_text(text, [chunk])
+
+    assert len(result.unfixable_quotes) == 1
+    assert '>' in result.fixed_text, "blockquote markers should be preserved by default"

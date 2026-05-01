@@ -261,6 +261,80 @@ def test_find_quote_with_gaps():
     assert result.matched_text == "Look at all the text we have here."
 
 
+def test_find_quote_with_gaps_common_opening_word():
+    """Verbatim quote whose opening word appears earlier in the document is still found.
+
+    Regression for Q25: "However, some bonuses apply..." was rejected because
+    SequenceMatcher anchored on an earlier "However", producing a span that
+    exceeded the 3x multiplier.  The two-pass windowed approach should match
+    against the dominant block (the large verbatim tail) and return a tight span.
+    """
+    early_filler = (
+        "However, the Goblin player has 4 complete ranks in his formation, and as "
+        "each extra rank adds +1 to his score this gives him 6 points. "
+        "The Elves have therefore lost the combat even though they inflicted more casualties. "
+        "However, the situation may be reversed in subsequent rounds of combat. "
+    )
+    target = (
+        "However, some bonuses apply specifically to Break tests and others apply "
+        "specifically to psychology tests."
+    )
+    doc = early_filler + target
+
+    result = find_quote_with_gaps(doc, target)
+    assert result is not None, "Verbatim quote should be found despite common opening word"
+    assert result.score >= 92
+    assert "some bonuses apply specifically" in result.matched_text
+
+
+def test_find_quote_with_gaps_changed_opening_phrase():
+    """Quote whose opening phrase differs from the document but the body is verbatim.
+
+    Regression for Q5: "The side that loses a combat..." was rejected because
+    the document says "Each unit that loses in combat..." — the changed opening
+    anchored far away, exploding the span.
+    """
+    doc = (
+        "## RESULTS\n\n"
+        "Work out which side has won each combat and by how much. "
+        "The losing side will have lost by 1, 2 or more points as explained later.\n\n"
+        "## BREAK TESTS\n\n"
+        "Each unit that loses in combat must take a Break test as explained in the rules. "
+        "Any units failing their Break test are termed broken and a note is made or models "
+        "are turned round to show this. Take all Break tests now."
+    )
+    quote = (
+        "The side that loses a combat must take a Break test as explained in the rules. "
+        "Any units failing their Break test are termed broken and a note is made or models "
+        "are turned round to show this. Take all Break tests now."
+    )
+
+    result = find_quote_with_gaps(doc, quote)
+    assert result is not None, "Near-verbatim quote with changed opening should be found"
+    assert result.score >= 92
+    assert "Break test as explained in the rules" in result.matched_text
+
+
+def test_find_quote_with_gaps_paraphrase_rejected():
+    """Quote with multiple word substitutions spread across the text is rejected.
+
+    Regression for Q26: "Break tests are not psychological tests. The two are
+    separate and distinct." — multiple changes from the real text mean no single
+    block is large enough to anchor a clean windowed match above threshold.
+    """
+    doc = (
+        "Players will immediately realise that a psychology test is taken in the same "
+        "way as a Break test in hand-to-hand combat and uses the same characteristic, "
+        "namely Leadership. However, a Break test is not a psychology test. "
+        "The two tests are quite separate. This is important because some bonuses apply "
+        "specifically to Break tests and others apply specifically to psychology tests."
+    )
+    quote = "Break tests are not psychological tests. The two are separate and distinct."
+
+    result = find_quote_with_gaps(doc, quote)
+    assert result is None, "Multi-word paraphrase should not be accepted"
+
+
 def test_find_quote_with_gaps_near_end_of_long_document():
     """Quote near end of a document longer than window_size must still be found.
 
@@ -781,3 +855,188 @@ def test_find_quote_with_gaps_multi_paragraph_blockquote():
     result = find_quote_with_gaps(doc, quote)
     assert result is not None, "Multi-paragraph blockquote should match with gap"
     assert result.score >= 85
+
+
+# ---------------------------------------------------------------------------
+# find_quotes_in_text – indented blockquotes
+# ---------------------------------------------------------------------------
+
+
+def test_find_quotes_in_text_indented_blockquote_spaces():
+    """Blockquote indented with spaces (as in a numbered list) is detected."""
+    text = inspect.cleandoc("""\
+        2. **Locate the definition**:
+
+           > The side that loses a combat must take a Break test.
+
+           > (Warhammer Rulebook, p. 41)
+    """)
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote_type'] == 'blockquote'
+    assert q['quote'] == 'The side that loses a combat must take a Break test.'
+    assert q['citation'] is not None
+    assert q['citation']['ref_name'] == 'Warhammer Rulebook'
+    assert q['citation']['page'] == '41'
+
+
+def test_find_quotes_in_text_indented_blockquote_multi_line():
+    """Multi-line blockquote indented with spaces is detected and joined correctly."""
+    text = "2. Step:\n\n   > First sentence of the rule.\n   > Second sentence continues.\n   >\n   > (Rulebook, p. 10)"
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote_type'] == 'blockquote'
+    assert 'First sentence' in q['quote']
+    assert 'Second sentence' in q['quote']
+    assert q['citation'] is not None
+    assert q['citation']['page'] == '10'
+
+
+def test_find_quotes_in_text_indented_blockquote_mixed():
+    """Mix of a properly-formatted blockquote and an indented blockquote — both detected."""
+    text = inspect.cleandoc("""\
+        Normal blockquote:
+
+        > Normal rule text.
+
+        (Rulebook A, p. 1)
+
+        Numbered step:
+
+           > Indented rule text.
+
+           > (Rulebook B, p. 2)
+    """)
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 2
+    quote_types = {q['quote'] for q in quotes}
+    assert 'Normal rule text.' in quote_types
+    assert 'Indented rule text.' in quote_types
+
+
+def test_find_quotes_in_text_numbered_list_with_blockquotes():
+    """Realistic LLM-style numbered list with indented blockquotes as sub-items."""
+    text = inspect.cleandoc("""\
+        ### Step-by-step reasoning:
+
+        1. **Identify the relevant mechanics**:
+           The question is about Break tests and Grail Knights.
+
+        2. **Locate the definition of Break tests**:
+           > The side that loses a combat must take a test to determine whether it stands and fights.
+           >
+           > (Warhammer Rulebook, p. 41)
+
+        3. **Check the Grail Virtue**:
+           > Grail Knights are unaffected by any of the psychology rules.
+           >
+           > (Bretonnia Army Book, p. 43)
+    """)
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 2
+    quotes_by_ref = {q['citation']['ref_name']: q for q in quotes if q['citation']}
+    assert 'Warhammer Rulebook' in quotes_by_ref
+    assert 'Bretonnia Army Book' in quotes_by_ref
+    assert quotes_by_ref['Warhammer Rulebook']['citation']['page'] == '41'
+    assert quotes_by_ref['Bretonnia Army Book']['citation']['page'] == '43'
+
+
+def test_find_quotes_in_text_lazy_continuation_non_indented():
+    """Non-indented blockquote followed immediately by a non-'>' line uses lazy continuation."""
+    text = (
+        "> The side that loses a combat must take a Break test to determine\n"
+        "whether it stands and fights.\n"
+        "\n"
+        "(Warhammer Rulebook, p. 41)"
+    )
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert 'whether it stands and fights' in q['quote']
+    assert q['citation'] is not None
+    assert q['citation']['page'] == '41'
+
+
+def test_find_quotes_in_text_lazy_continuation_not_applied_to_indented():
+    """Indented blockquote followed by a non-'>' line does NOT include the continuation line."""
+    # Mirrors the real failure: indented blockquote inside a numbered list where
+    # the next line is a list bullet that must NOT be absorbed into the quote.
+    text = (
+        "1. Apply the separation rule:\n\n"
+        "     > However, a Break test is not a psychology test. The two tests are quite separate.\n"
+        "     >\n"
+        "     > (Warhammer Rulebook, p. 46)\n"
+        "   - Therefore, Break tests are **not** considered part of the psychology rules."
+    )
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    # The quote text must not include the list bullet
+    assert 'Therefore' not in q['text']
+    assert 'Therefore' not in q['quote']
+    # The real rule text and citation must be present
+    assert 'Break test is not a psychology test' in q['quote']
+    assert q['citation'] is not None
+    assert q['citation']['ref_name'] == 'Warhammer Rulebook'
+    assert q['citation']['page'] == '46'
+
+
+def test_find_quotes_in_text_prose_then_citation_blockquote():
+    """Prose line immediately before a citation-only blockquote is absorbed as the quote text."""
+    text = (
+        "Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology.\n"
+        "> (Bretonnia Army Book, p. 62)"
+    )
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote'] == 'Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology.'
+    assert q['citation'] is not None
+    assert q['citation']['ref_name'] == 'Bretonnia Army Book'
+    assert q['citation']['page'] == '62'
+
+
+def test_find_quotes_in_text_prose_then_blank_bq_then_citation_blockquote():
+    """Prose line followed by a blank > line then citation-only blockquote is absorbed."""
+    text = (
+        "Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology.\n"
+        "> \n"
+        "> (Bretonnia Army Book, p. 62)"
+    )
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote'] == 'Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology.'
+    assert q['citation'] is not None
+    assert q['citation']['ref_name'] == 'Bretonnia Army Book'
+    assert q['citation']['page'] == '62'
+
+
+def test_find_quotes_in_text_prose_blank_line_then_citation_blockquote():
+    """Prose line separated by a blank line from a citation-only blockquote is absorbed."""
+    text = (
+        "Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology.\n"
+        "\n"
+        "> (Bretonnia Army Book, p. 62)"
+    )
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote'] == 'Grail Knights have the Grail Virtue; they have drunk from the sacred grail and are immune to psychology.'
+    assert q['citation'] is not None
+    assert q['citation']['ref_name'] == 'Bretonnia Army Book'
+    assert q['citation']['page'] == '62'
+
+
+def test_find_quotes_in_text_citation_blockquote_no_preceding_prose():
+    """A citation-only blockquote with no preceding prose line is left as-is (empty quote)."""
+    text = "> (Bretonnia Army Book, p. 62)"
+    quotes = find_quotes_in_text(text)
+    assert len(quotes) == 1
+    q = quotes[0]
+    assert q['quote'] == ''
+    assert q['citation'] is not None
+    assert q['citation']['ref_name'] == 'Bretonnia Army Book'
+    assert q['citation']['page'] == '62'
