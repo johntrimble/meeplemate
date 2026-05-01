@@ -12,6 +12,30 @@ chat:
   max_new_tokens: 3072
   timeout: 900
   explicit_disable_thinking: true
+  # Sampling config
+  # These two turned out best in our grid search:
+  #
+  #  `freq=0.2, min_p=0.10, pres=0.0`
+  # 
+  # and
+  #
+  # `freq=0.6, min_p=0.05, pres=1.2`
+  #
+  # The second does better at quote quality.
+  #
+  # Subsequently found that:
+  #
+  # `freq=0.2, min_p=0.1, pres=1.2`
+  #
+  # Works better
+  temperature: 0.7
+  top_p: 1.0 # was 0.8
+  top_k: -1
+  min_p: 0.10
+  presence_penalty: 1.2 # was 1.6
+  frequency_penalty: 0.2
+  repetition_penalty: 1.0
+  
 
 # Embedding Service Configuration
 embedding:
