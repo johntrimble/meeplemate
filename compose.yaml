@@ -16,60 +16,13 @@ x-base-service: &base-service
   ipc: host
 
 services:
-  caddy-auth:
-    image: caddy:2
-    profiles: ["public-share"]
-    network_mode: service:ts-meeplemate
-    depends_on:
-      - ts-meeplemate
-      - dev
-    env_file:
-    - path: .env
-      required: false
-    environment:
-    - DEMO_TOKEN=${DEMO_TOKEN}
-    - DEMO_COOKIE=${DEMO_COOKIE}
-    volumes:
-      - ./services/caddy-auth/Caddyfile:/etc/caddy/Caddyfile:ro
-
-  ts-meeplemate:
-    ports:
-    - 8000:8000 # Chainlit
-    - 5173:5173 # vite
-    - 4000:4000 # Firebase Emulator UI
-    - 9099:9099 # Firebase Auth Emulator
-    hostname: ts-meeplemate
-    env_file:
-    - path: .env
-      required: false
-    image: tailscale/tailscale:latest
-    environment:
-    # TS_AUTH_KEY is set in the .env file
-    - TS_EXTRA_ARGS=--advertise-tags=tag:dev-meeplemate
-    - TS_STATE_DIR=/var/lib/tailscale
-    volumes:
-    - tailscale-data-meeplemate:/var/lib/tailscale
-    devices:
-    - /dev/net/tun:/dev/net/tun
-    cap_add:
-    - net_admin
-    - sys_module
-  
   dev:
     # The main development environment container.
     # Inherits common settings from the base service anchor above.
     <<: *base-service
     depends_on:
-      tei:
-        condition: service_started
       vllm:
         condition: service_started
-      # cassandra:
-      #   condition: service_healthy
-      # dse:
-      #   condition: service_healthy
-      # data-api:
-      #   condition: service_healthy
       firebase-emulator:
         condition: service_started
     build:
@@ -83,6 +36,10 @@ services:
         # These are set in the .env file, which is initialized by script/bootstrap.
         UID: ${MY_UID}
         GID: ${MY_GID}
+
+    ports:
+    - 8000:8000 # Chainlit
+    - 5173:5173 # vite
 
     # Mount the project root and data directory into the container.
     # This allows code and data changes on the host to be reflected in the container.
@@ -102,7 +59,6 @@ services:
 
     # Keep the container running (useful for VS Code dev containers, debugging, etc).
     command: tail -f /dev/null
-    network_mode: service:ts-meeplemate
 
     # # Enable GPU access for PyTorch (NVIDIA only).
     # deploy:
@@ -278,29 +234,29 @@ services:
     - ./data/open-webui/static:/app/backend/open_webui/static
 
 
-  tei:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
-    # CPU only: no GPU devices, no --gpus flag
-    ipc: host
+  # tei:
+  #   image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+  #   # CPU only: no GPU devices, no --gpus flag
+  #   ipc: host
 
-    # If the Jina model is gated/private, add HF_TOKEN here
-    environment: {}
-      # HF_TOKEN: "${HUGGINGFACE_HUB_TOKEN}"
-      # Optional: tweak TEI batch behavior via CLI flags instead of env
+  #   # If the Jina model is gated/private, add HF_TOKEN here
+  #   environment: {}
+  #     # HF_TOKEN: "${HUGGINGFACE_HUB_TOKEN}"
+  #     # Optional: tweak TEI batch behavior via CLI flags instead of env
 
-    # TEI is configured via CLI args, like TGI/vLLM
-    command:
-      - --max-concurrent-requests
-      - "5"
-      - "--model-id"
-      - BAAI/bge-small-en-v1.5
-      # - "jinaai/jina-embeddings-v2-base-en"
-      # - "--pooling"
-      # - "mean"
+  #   # TEI is configured via CLI args, like TGI/vLLM
+  #   command:
+  #     - --max-concurrent-requests
+  #     - "5"
+  #     - "--model-id"
+  #     - BAAI/bge-small-en-v1.5
+  #     # - "jinaai/jina-embeddings-v2-base-en"
+  #     # - "--pooling"
+  #     # - "mean"
 
-    volumes:
-      # Cache model weights so they aren't re-downloaded each start
-      - ./data/tei_data:/data:cached
+  #   volumes:
+  #     # Cache model weights so they aren't re-downloaded each start
+  #     - ./data/tei_data:/data:cached
 
   # tgi2:
   #   image: ghcr.io/huggingface/text-generation-inference:3.3.4
@@ -344,9 +300,11 @@ services:
   #           capabilities: [gpu]
 
   firebase-emulator:
+    ports:
+    - 4000:4000 # Firebase Emulator UI
+    - 9099:9099 # Firebase Auth Emulator
     build:
       context: ./services/firebase-emulator/
-    network_mode: service:ts-meeplemate
 
   postgres:
     image: pgvector/pgvector:pg18
@@ -358,5 +316,4 @@ services:
 
 volumes:
   claude_data:
-  tailscale-data-meeplemate:
   pgdata:

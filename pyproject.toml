@@ -5,31 +5,20 @@ description = "Board Game AI Assistant"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "scipy",
     "matplotlib",
     "tqdm",
     "numpy",
-    "gradio",
     "langchain>=1.0,<2.0",
     "langchain-community",
     "langchain-openai",
     "langchain-classic",
     "langchain-postgres",
-    "blingfire",
     "transformers",
     "tokenizers>=0.19",
-    "datasets",
     "chainlit",
     "structlog",
     "sentencepiece",
-    "faiss-cpu",
-    "opencv-python-headless",
-    "langchain-astradb",
     "langgraph>=1.0,<2.0",
-    "cassandra-driver>=3.29.0,<4.0",
-    "cassandra-asyncio-driver~=0.1.4",
-    "langgraph-checkpoint-cassandra @ git+https://github.com/johntrimble/langgraph-checkpoint-cassandra@main",
-    "chainlit-cassandra-data-layer @ git+https://github.com/johntrimble/chainlit-cassandra-data-layer@main",
     "pydantic>=2.0,<3.0",
     "pydantic-settings>=2.0,<3.0",
     "pyyaml",
@@ -49,7 +38,6 @@ Repository = "https://github.com/johntrimble/meeplemate"
 
 [dependency-groups]
 dev = [
-    "cqlsh",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "ruff>=0.8.6",
