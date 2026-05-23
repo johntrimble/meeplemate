@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator, Literal, Optional, Sequence, Tuple, TypedDict, cast, ContextManager, AsyncContextManager
+from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, Optional, Sequence, TypedDict, cast
 import os
 
 if TYPE_CHECKING:
-    from cassandra_asyncio.cluster import Cluster
-    from cassandra.cluster import Session
     from chainlit.data.base import BaseDataLayer
 from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_postgres import PGEngine
@@ -26,18 +23,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSett
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
-from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import Runnable
 from langchain_core.stores import BaseStore
 from langchain_core.vectorstores import VectorStore
 
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
-
-
 
 from meeplemate.chatloop import ChatLoopService, build_chatloop_service
 from meeplemate.component_system import System, afactory, factory
@@ -45,11 +39,10 @@ from meeplemate.game_service import GameService
 from meeplemate.postgres.store import PostgresJSONStore, PostgresSerializableStore
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, load_lightweight_tokenizer, load_approximate_tokenizer, wrap_embeddings_with_instructions
-from meeplemate.qa import build_qa_chain
 from meeplemate.db.repository import PostgresDataLayer
 
 from meeplemate.search import (
-    ChunkSearchService, build_chunk_search_service, build_chunk_search_service_2
+    ChunkSearchService, build_chunk_search_service_2
 )
 from meeplemate.server.deps import ApiDeps, CorsConfig
 from meeplemate.server.rate_limit import RateLimitConfig, RateLimiter
@@ -86,23 +79,6 @@ class IngestConfig(BaseModel):
     chunk_overlap: int = Field(default=50, ge=0, description="Chunk overlap for document splitting")
     child_chunk_size: int = Field(default=125, ge=0, description="Child chunk size for finer splitting (0 to disable)")
     child_chunk_overlap: int = Field(default=12, ge=0, description="Child chunk overlap for finer splitting")
-
-
-class DBConfig(BaseModel):
-    """Database configuration for Cassandra cluster."""
-    dc: str = Field(default="datacenter1", description="Cassandra datacenter name")
-    contact_points: list[str] = Field(default=["cassandra"], description="Cassandra contact points")
-    replication_factor: int = Field(default=1, ge=1, description="Replication factor for keyspaces")
-    chainlit_keyspace: str = Field(default="chainlit_meeplemate", description="Keyspace for Chainlit data")
-    langgraph_keyspace: str = Field(default="meeplemate_checkpoints", description="Keyspace for LangGraph checkpoints")
-    create_keyspaces: bool = Field(default=True, description="Whether to create keyspaces on startup")
-
-    @field_validator('contact_points')
-    @classmethod
-    def validate_contact_points(cls, v):
-        if not v:
-            raise ValueError("At least one contact point must be specified")
-        return v
 
 
 class PGConfig(BaseModel):
@@ -182,20 +158,6 @@ class PGSettings(BaseSettings):
     @classmethod
     def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, **kwargs):
         return (init_settings, env_settings, dotenv_settings, YamlConfigSettingsSource(settings_cls))
-
-
-class DataAPIConfig(BaseModel):
-    """Configuration for Stargate Data API access."""
-    token: SecretStr = Field(description="Data API authentication token")
-    endpoint: str = Field(description="Data API endpoint URL")
-    namespace: str = Field(default="meeplemate", description="Data API namespace")
-
-    @field_validator('endpoint')
-    @classmethod
-    def validate_endpoint(cls, v):
-        if not v.startswith(('http://', 'https://')):
-            raise ValueError("Endpoint must be a valid HTTP/HTTPS URL")
-        return v.rstrip('/')
 
 
 class ChatServiceConfig(BaseModel):
@@ -289,14 +251,10 @@ class Config(BaseSettings):
         env_ignore_empty=True,
     )
 
-    # db: DBConfig = Field(default_factory=DBConfig)
     pg: PGConfig = Field(default_factory=PGConfig)
     ingest: IngestConfig = Field(default_factory=IngestConfig)
-    # data_api: DataAPIConfig
     chat: ChatServiceConfig
     embedding: EmbeddingServiceConfig
-    rules_path: Path = Field(default=Path("./data/rules/munchkin_rules/"))
-    load_docs: bool = Field(default=False)
     model_name: str = Field(description="Primary model name for tokenizer/other purposes")
     qa_chain_config: QAChainConfig = Field(default_factory=QAChainConfig)
     firebase: FirebaseConfig = Field(default_factory=FirebaseConfig)
@@ -323,85 +281,7 @@ class Config(BaseSettings):
     def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, **kwargs):
         return (init_settings, env_settings, dotenv_settings, YamlConfigSettingsSource(settings_cls))
 
-    @field_validator('rules_path', mode='before')
-    @classmethod
-    def validate_rules_path(cls, v):
-        if isinstance(v, str):
-            return Path(v)
-        return v
 
-
-
-def create_keyspace(data_api_endpoint:str, data_api_token:str, keyspace:str, replication_factor:int):
-    import requests
-    url = f"{data_api_endpoint}/v1"
-    headers = {
-        "TOKEN": data_api_token,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    resp = requests.post(
-        url=url,
-        headers=headers,
-        json={
-            "createKeyspace": {
-                "name": keyspace,
-                "options": {
-                    "replication": {
-                        "class": "SimpleStrategy",
-                        "replication_factor": replication_factor
-                    }
-                }
-            }
-        }
-    )
-    resp.raise_for_status()
-
-
-def build_vectorstore_cassandra(*, embedding_model: Embeddings, api_endpoint: str, token: str, namespace: str) -> VectorStore:
-    from langchain_astradb import AstraDBVectorStore
-    from langchain_astradb.utils.astradb import HybridSearchMode
-    vector_store = AstraDBVectorStore(
-            collection_name="document_vector_mapping",
-            embedding=embedding_model,
-            api_endpoint=api_endpoint,
-            token=token,
-            namespace=namespace,
-            hybrid_search=HybridSearchMode.OFF,
-            bulk_insert_batch_concurrency=1,
-        )
-    return vector_store
-
-
-def build_docstore_cassandra(*, api_endpoint, token, namespace) -> BaseStore:
-    from meeplemate.cassandra_util import AstraDBSerializableStore
-    store = AstraDBSerializableStore(
-        collection_name="document_store",
-        api_endpoint=api_endpoint,
-        token=token,
-        namespace=namespace,
-    )
-    return store
-
-
-def build_data_store_cassandra(*, api_endpoint, token, namespace, collection_name) -> BaseStore:
-    from langchain_astradb import AstraDBStore
-    store = AstraDBStore(
-        collection_name=collection_name,
-        api_endpoint=api_endpoint,
-        token=token,
-        namespace=namespace,
-    )
-    return store
-
-
-def load_docs(rules_path: Path) -> list[Document]:
-    from meeplemate.pdf import parse_pdf  # lazy: only used during ingest, not API startup
-    rule_docs = []
-    for filename in rules_path.glob("*.pdf"):
-        print(f"Processing {filename}")
-        rule_docs.extend(parse_pdf(filename))
-    return rule_docs
 
 
 class RulebookDescriptor(TypedDict):
@@ -420,40 +300,14 @@ class GameRulesAgentState(MessagesState):
     manifest: GameManifest
 
 
-def build_graph(checkpoint_saver: Optional[BaseCheckpointSaver], chain: Runnable):
-    async def call_chain(state: GameRulesAgentState):
-        msg = None
-        for msg in reversed(state["messages"]):
-            if msg.type == "human":
-                break
-        assert msg is not None
-
-        query = msg.content
-        result = await chain.ainvoke(query)
-        return {"messages": [result["answer"]]}
-
-    builder = StateGraph(GameRulesAgentState)
-    builder.add_node("call_chain", call_chain)
-    builder.add_edge(START, "call_chain")
-    builder.add_edge("call_chain", END)
-    agent_graph = builder.compile(checkpointer=checkpoint_saver) 
-
-    return agent_graph
-
-
 class AppServices(TypedDict):
-    db_cluster: Cluster
-    db_session: Session
     embedding_model: Embeddings
     vector_store: VectorStore
     docstore: BaseStore
-    retriever: BaseRetriever
     data_layer: BaseDataLayer
     tokenizer: Any
     checkpointer: BaseCheckpointSaver
     chat_model: BaseChatModel
-    qa_chain: Runnable
-    agent_graph: CompiledStateGraph[GameRulesAgentState, None, GameRulesAgentState, GameRulesAgentState]
     game_data_store: BaseStore
     game_version_store: BaseStore
     full_page_store: BaseStore
@@ -494,15 +348,6 @@ class FullPageMdDao:
 
 def create_app_system(cfg: Config) -> System[AppServices]:
 
-    def _build_retriever(*args, **kwargs):
-        from meeplemate.retrievers import build_retriever
-        return build_retriever(*args, **kwargs)
-
-    @contextmanager
-    def create_session(cluster: Cluster) -> Iterator[Session]:
-        with cluster.connect() as session:
-            yield session
-    
     def build_chat_model(config: ChatServiceConfig, tokenizer) -> BaseChatModel:
         if cfg.chat.endpoint_type == "tgi":
             chat_model = load_tgi_chat_model(
@@ -618,54 +463,10 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 )(**({} if cfg.use_approximate_tokenizer else {"model_name": cfg.model_name})),
                 []
             ),
-            "retriever": (
-                factory(_build_retriever)(),
-                ["tokenizer", "vector_store"],
-                {"docstore": "docstore"}
-            ),
             "chat_model": (
                 factory(build_chat_model)(cfg.chat),
                 ["tokenizer"]
             ),
-            "qa_chain": (
-                factory(build_qa_chain)(
-                    **cfg.qa_chain_config.model_dump()
-                ),
-                {"chat_model": "chat_model", "retriever": "retriever", "embedding_model": "embedding_model"}
-            ),
-            # "checkpointer": (
-            #     factory(
-            #         CassandraSaver,
-            #         start=lambda saver: saver.setup(replication_factor=cfg.db.replication_factor)
-            #     )(
-            #         thread_id_type="uuid",
-            #         keyspace=cfg.db.langgraph_keyspace,
-            #     ),
-            #     {"session": "db_session"}
-            # ),
-            "agent_graph": (
-                factory(build_graph)(checkpoint_saver=None),
-                {"chain": "qa_chain"},
-            ),
-            # "keyspace_creator": (
-            #     keyspace_creator(
-            #         [
-            #             (cfg.data_api.namespace, cfg.db.replication_factor),
-            #         ],
-            #         data_api_endpoint=cfg.data_api.endpoint,
-            #         data_api_token=cfg.data_api.token.get_secret_value(),
-            #         create_keyspaces=cfg.db.create_keyspaces,
-            #     ),
-            #     []
-            # ),
-            # "data_layer": (
-            #     create_data_layer(
-            #         storage_client=None,
-            #         keyspace=cfg.db.chainlit_keyspace,
-            #         replication_factor=cfg.db.replication_factor,
-            #     ),
-            #     ["db_session"]
-            # ),
             "game_version_store": (
                 factory(PostgresJSONStore)(
                     namespace="current_game_version",
@@ -688,15 +489,6 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 ),
                 {
                     "engine": "async_engine",
-                }
-            ),
-            "chunk_search_service": (
-                factory(build_chunk_search_service)(
-                    checkpoint_saver=None,
-                ),
-                {
-                    "chat_model": "chat_model",
-                    "retriever": "retriever",
                 }
             ),
             "chunk_search_service_2": (
@@ -769,30 +561,3 @@ def create_app_system(cfg: Config) -> System[AppServices]:
     return system
 
 
-def create_data_layer(storage_client: Any, keyspace: str, replication_factor: int) -> Callable[[Session], AsyncContextManager[BaseDataLayer]]:
-    @asynccontextmanager
-    async def _with_data_layer(session: Session) -> AsyncIterator[BaseDataLayer]:
-        from chainlit_cassandra_data_layer.data import CassandraDataLayer
-        dl = CassandraDataLayer(session=session, storage_client=storage_client, keyspace=keyspace)
-        try:
-            dl.setup(replication_factor=replication_factor)
-            yield dl
-        finally:
-            await dl.close()
-
-    return _with_data_layer
-
-
-def keyspace_creator(keyspaces_and_replication: Sequence[Tuple[str, int]], data_api_endpoint: str, data_api_token: str, create_keyspaces: bool) -> Callable[[], ContextManager[None]]:
-    @contextmanager
-    def _keyspace_creator() -> Iterator[None]:
-        if create_keyspaces:
-            for keyspace, replication_factor in keyspaces_and_replication:
-                create_keyspace(
-                    data_api_endpoint=data_api_endpoint,
-                    data_api_token=data_api_token,
-                    keyspace=keyspace,
-                    replication_factor=replication_factor,
-                )
-        yield
-    return _keyspace_creator

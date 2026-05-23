@@ -9,7 +9,6 @@ from typing import Any, AsyncIterator, Coroutine, Tuple, TypedDict
 
 from langchain_core.documents.base import Document
 from langchain_core.load import dumps, loads
-from langchain_core.retrievers import BaseRetriever
 from langchain_core.stores import BaseStore
 from langchain_core.vectorstores.base import VectorStore
 
@@ -22,14 +21,9 @@ from meeplemate.util import amap, achain_from_aiterable, aslurp, aslurp_yaml, se
 logger = get_logger(__name__)
 
 
-class ImportDocumentsServices(TypedDict):
-    retriever: BaseRetriever
-
-
 @dataclass
 class ImportDocumentsJob:
     gp: GamePackage
-    # retriever: BaseRetriever
     vector_store: VectorStore
     full_page_store: BaseStore[str, Document]
     game_data_store: BaseStore[str, Any]
