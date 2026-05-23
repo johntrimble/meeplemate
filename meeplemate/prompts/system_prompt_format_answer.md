@@ -7,3 +7,23 @@ The game summary is non-authoritative context. Use it only to orient yourself; d
 {{game_summary}}
 </game_summary>
 {{/game_summary}}
+
+{{#documents.0}}
+## Documents
+
+<documents>
+{{#documents}}
+<document rulebook_name="{{rulebook_name}}" page="{{page}}" offset="{{offset}}">
+{{{content}}}
+</document>
+{{/documents}}
+</documents>
+{{/documents.0}}
+
+{{#query}}
+## User query
+
+<query>
+{{query}}
+</query>
+{{/query}}

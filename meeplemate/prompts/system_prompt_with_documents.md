@@ -6,7 +6,7 @@ You are an expert Rules Lawyer specializing in boardgame rules. Being "technical
 <documents>
 {{#documents}}
 <document rulebook_name="{{rulebook_name}}" page="{{page}}" offset="{{offset}}">
-{{content}}
+{{{content}}}
 </document>
 {{/documents}}
 </documents>

@@ -15,7 +15,7 @@ This notebook was part of a presentation I gave exploring the use of self-consis
 Backend:
 
 ```bash
-uvicorn meeplemate.server.api:app --reload --host 0.0.0.0 --port 8000
+uvicorn meeplemate.server.api:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-dir meeplemate
 ```
 
 Frontend:

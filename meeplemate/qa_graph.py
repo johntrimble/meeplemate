@@ -31,6 +31,7 @@ logger = get_logger()
 REFINEMENT_PARTITION_NUMBER = 4
 
 system_prompt_template = load_template("system_prompt_rules_lawyer.md")
+format_answer_system_prompt_template = load_template("system_prompt_format_answer.md")
 qa_template = load_template("single_question_and_tool_use.md")
 answer_template = load_template("structured_rag_answer_addl_questions.md")
 markdown_format_response_template = load_template("markdown_format_response.md")
@@ -257,90 +258,6 @@ class QuoteEntry(TypedDict):
     page: Annotated[str, ..., "Page number where this quote appears"]
 
 
-class QuoteEntryWithID(QuoteEntry):
-    """A quote from a rulebook with its citation information"""
-    id: Annotated[str, ..., "Unique identifier for this quote, used for tracking and referencing"]
-
-
-class DefinitionEntry(TypedDict):
-    """A term and its definition status with supporting quotes"""
-    term: Annotated[str, ..., "The term being defined"]
-    quotes: Annotated[list[QuoteEntry], ..., "List of quotes that define or relate to this term"]
-    defines_term: Annotated[bool, ..., "Whether the provided quotes contain a clear definition of the term"]
-    clarifying_question: Annotated[str, ..., "If defines_term is false, a clarifying question to ask; otherwise, leave empty"]
-
-
-# New nested types for exceptions
-class ExplicitNamingCheck(TypedDict):
-    """Step 2: Check whether the exception explicitly names the target mechanic"""
-    does_exception_name_target: Annotated[bool, ..., "Whether the exception explicitly names the target mechanic"]
-    explanation: Annotated[str, ..., "Brief explanation of the naming check result"]
-
-
-class RelationshipCheck(TypedDict):
-    """Step 3: Check for relationship statements linking the exception to the target mechanic"""
-    relationship_exists: Annotated[bool | Literal["unclear"], ..., "Whether a relationship between mechanics exists (true/false/'unclear')"]
-    quotes: Annotated[list[QuoteEntry], ..., "Quotes showing the relationship between mechanics"]
-    explanation: Annotated[str, ..., "Explanation of the relationship or lack thereof"]
-
-
-class SeparationCheck(TypedDict):
-    """Step 4: Check for separation statements that prevent the exception from applying"""
-    separation_exists: Annotated[bool, ..., "Whether the mechanics are explicitly separated in the rules"]
-    quotes: Annotated[list[QuoteEntry], ..., "Quotes showing separation between mechanics"]
-    explanation: Annotated[str, ..., "Explanation of the separation or lack thereof"]
-
-
-# New types for top-level fields
-class IdentifiedMechanics(TypedDict):
-    """Game mechanics"""
-    mechanics: Annotated[list[str], ..., "The game mechanics involved in the question"]
-    # secondary_mechanics: Annotated[list[str], ..., "Other mechanics mentioned or implied that might affect the primary mechanics"]
-    # reasoning: Annotated[str, ..., "Brief explanation of why these mechanics were identified and how they relate to each other"]
-
-
-class RelationshipStatement(TypedDict):
-    """A statement about how two mechanics relate to each other"""
-    mechanics: Annotated[list[str], ..., "List of two mechanics whose relationship is being described"]
-    relationship_type: Annotated[Literal["separate", "same", "subset", "other"], ..., "Type of relationship: 'separate', 'same', 'subset', or 'other'"]
-    quotes: Annotated[list[QuoteEntry], ..., "Quotes establishing the relationship between these mechanics"]
-    interpretation: Annotated[str, ..., "What this relationship means for answering the user's query"]
-
-
-class GeneralRule(TypedDict):
-    """A general rule governing a game mechanic"""
-    mechanic: Annotated[str, ..., "The game mechanic this rule governs"]
-    quotes: Annotated[list[QuoteEntry], ..., "Quotes stating the general rule"]
-    summary: Annotated[str, ..., "Brief summary of what the rule states"]
-
-
-class ExceptionEntry(TypedDict):
-    """An exception that might override general rules, analyzed using the 4-step test"""
-    exception_source: Annotated[str, ..., "Where the exception comes from (card name, ability name, etc.)"]
-    exception_scope_language: Annotated[str, ..., "Exact language describing what the exception affects"]
-    target_mechanic: Annotated[str, ..., "The mechanic in the user's query being tested against this exception"]
-    step1_scope_analysis: Annotated[str, ..., "Analysis of what language the exception uses to describe its scope"]
-    step2_explicit_naming: ExplicitNamingCheck
-    step3_relationship_check: RelationshipCheck
-    step4_separation_check: SeparationCheck
-    does_exception_apply: Annotated[bool | Literal["clarification_needed"], ..., "Whether this exception applies to the target mechanic (true/false/'clarification_needed')"]
-    precedence_level: Annotated[str, ..., "Precedence level from rule #10: level 1-5"]
-    clarifying_question: Annotated[str, ..., "If clarification is needed, a question to ask; otherwise, leave empty"]
-
-
-class QaResponse(TypedDict):
-    """Rules analysis and answer structure"""
-    # reasoning: Annotated[str, ..., "Step-by-step reasoning process using bullet points"]
-    identified_mechanics: IdentifiedMechanics
-    # relationship_statements: Annotated[list[RelationshipStatement], ..., "List of relationship statements between mechanics found in the documents"]
-    general_rules: Annotated[list[GeneralRule], ..., "List of general rules governing the mechanics in question"]
-    definitions: Annotated[list[DefinitionEntry], ..., "List of term definitions found in or missing from the documents. Do not include definitions for things already defined under general_rules."]
-    exceptions: Annotated[list[ExceptionEntry], ..., "List of exceptions that might apply to the situation"]
-    precedence_analysis: Annotated[str, ..., "If multiple rules apply, explanation of which takes precedence and why (using rule #10)"]
-    final_answer: Annotated[str, ..., "Free-form markdown text following all citation requirements. Must follow rule #1 for document-first, quote-first answering, use blockquotes instead of inline quotes, and include citations in the form (Rulebook name, p. X). Do NOT refer to rule interpretation criteria names (e.g. 'Rule #10') in the final answer."]
-    sufficient_information_to_answer: Annotated[bool, ..., "Whether there is sufficient information in the documents to answer the query"]
-
-
 def get_all_chunks_from_message_history(messages: list[AnyMessage]) -> list[Chunk]:
     # Find the tool call ids for search_chunks
     tool_call_ids = set()
@@ -411,14 +328,6 @@ def dedupe_chunks_in_message_history(messages):
                 logger.error(f"Error deduping tool message content: {e}")
 
     return [m for m in messages if getattr(m, "id", None) in edited_ids]
-
-
-class QuoteValidationException(ValueError):
-    
-    def __init__(self, result: "TweakAndValidateQuotesResult"):
-        self.result = result
-        message = f"Quote validation failed: {len(result.invalid_quotes)} invalid quotes"
-        super().__init__(message)
 
 
 def create_chunks_for_quotes(quote_entries: Sequence[QuoteEntry], documents: Sequence[Chunk]) -> Sequence[Chunk|None]:
@@ -584,7 +493,8 @@ class QuoteMatch:
 @dataclass
 class LocatedQuote:
     quote: quote_util.ExtractedQuote
-    match: QuoteMatch | None       # None = could not be verified against any chunk
+    match: QuoteMatch | None        # high-confidence match (≥92); None = unverified
+    hint_match: QuoteMatch | None = None  # low-confidence match used only for chunk extraction
 
     @property
     def is_verified(self) -> bool:
@@ -750,8 +660,9 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
             # Lines before the first blockquote
             formatted_lines.append(line)
         elif line.strip().startswith('>'):
-            # Already a blockquote line
-            formatted_lines.append(line)
+            # Already a blockquote line — strip any leading indentation (LLMs sometimes
+            # indent blockquotes inside numbered lists; we normalise that here)
+            formatted_lines.append(line.lstrip(' \t'))
         elif line.strip():  # Non-empty line that doesn't start with >
             # Lazy continuation - add > prefix
             formatted_lines.append('> ' + line)
@@ -760,15 +671,12 @@ def format_blockquote_with_inline_citation(quote_text: str, citation_text: str) 
             formatted_lines.append(line)
 
     # When a citation was in its own separate blockquote (> quote\n\n> (citation)),
-    # text_before_citation ends with blank lines followed by a bare '>'. Strip those
-    # since they're an extraction artifact, not meaningful content.
+    # text_before_citation ends with blank blockquote lines followed by a bare '>'.
+    # Strip all trailing blank blockquote lines (both empty strings and bare '>'
+    # lines, whose .strip() is '>' not '') since they're extraction artefacts.
     if formatted_lines and formatted_lines[-1].strip() == '>':
-        i = len(formatted_lines) - 2
-        while i >= 0 and formatted_lines[i].strip() == '':
-            i -= 1
-        if i < len(formatted_lines) - 2:
-            # There were blank lines before the trailing >, strip them and it
-            formatted_lines = formatted_lines[:i + 1]
+        while formatted_lines and formatted_lines[-1].strip() in ('', '>'):
+            formatted_lines.pop()
 
     # Find the last non-empty line
     last_content_idx = -1
@@ -828,13 +736,10 @@ def locate_quotes(
     located: list[LocatedQuote] = []
     for quote in quotes:
         quote_text = quote["quote"]
-        has_ellipsis = "..." in quote_text or "\u2026" in quote_text
-        span_multiplier = 10 if has_ellipsis else 3
-
         match: QuoteMatch | None = None
         for index in rulebook_indices.values():
             m = quote_util.find_quote_with_gaps(index.combined, quote_text)
-            if m and (m.end - m.start) <= len(quote_text) * span_multiplier:
+            if m:
                 start_chunk_idx = max(0, bisect.bisect_right(index.offsets, m.start) - 1)
                 source_chunk = index.chunks[start_chunk_idx]
                 ref_chunks = find_chunks_for_span(m.start, m.end, index)
@@ -859,16 +764,47 @@ def locate_quotes(
                 )
                 break
 
-        located.append(LocatedQuote(quote=quote, match=match))
+        hint_match: QuoteMatch | None = None
+        if match is None:
+            for index in rulebook_indices.values():
+                m = quote_util.find_quote_with_gaps(index.combined, quote_text, min_score=50)
+                if m:
+                    start_chunk_idx = max(0, bisect.bisect_right(index.offsets, m.start) - 1)
+                    source_chunk = index.chunks[start_chunk_idx]
+                    ref_chunks = find_chunks_for_span(m.start, m.end, index)
+                    chunk_start_in_combined = index.offsets[start_chunk_idx]
+                    span_start = source_chunk["start_index"] + (m.start - chunk_start_in_combined)
+                    end_chunk_idx = max(0, bisect.bisect_right(index.offsets, m.end - 1) - 1)
+                    end_chunk = index.chunks[end_chunk_idx]
+                    span_end = end_chunk["start_index"] + (m.end - index.offsets[end_chunk_idx])
+                    matched_span = Chunk(
+                        rulebook_name=source_chunk["rulebook_name"],
+                        page=source_chunk["page"],
+                        start_index=span_start,
+                        end_index=span_end,
+                        content=m.matched_text,
+                    )
+                    hint_match = QuoteMatch(
+                        matched_text=m.matched_text,
+                        source_chunk=source_chunk,
+                        referenced_chunks=ref_chunks,
+                        match_ratio=m.score / 100.0,
+                        matched_span=matched_span,
+                    )
+                    break
+
+        located.append(LocatedQuote(quote=quote, match=match, hint_match=hint_match))
 
     return located
 
 
-def format_quote(located: LocatedQuote) -> QuoteReplacement:
+def format_quote(located: LocatedQuote, *, strip_invalid_blockquotes: bool = False) -> QuoteReplacement:
     """Stage 3: Determine the replacement text for a single quote.
 
-    Unverified quotes are returned unchanged (identity replacement). Verified
-    quotes have their citations corrected and blockquotes reformatted inline.
+    Unverified quotes are returned unchanged (identity replacement), except when
+    strip_invalid_blockquotes=True, in which case unverified blockquotes have
+    their '> ' markers stripped so they become plain prose. Verified quotes have
+    their citations corrected and blockquotes reformatted inline.
     This is the single place to add further formatting changes (e.g. a
     data-verified wrapper div).
     """
@@ -876,10 +812,17 @@ def format_quote(located: LocatedQuote) -> QuoteReplacement:
     original_text = quote["text"]
 
     if not located.is_verified:
+        if quote["quote_type"] == "blockquote":
+            if strip_invalid_blockquotes:
+                replacement = quote_util.strip_blockquote_markers_and_quotes(original_text)
+            else:
+                replacement = re.sub(r'^[ \t]+(>)', r'\1', original_text, flags=re.MULTILINE)
+        else:
+            replacement = original_text
         return QuoteReplacement(
             start_index=quote["start_index"],
             end_index=quote["end_index"],
-            replacement=original_text,
+            replacement=replacement,
             is_verified=False,
             quote_type=quote["quote_type"],
         )
@@ -937,7 +880,7 @@ def apply_replacements(text: str, replacements: list[QuoteReplacement]) -> str:
 # ── Segment model ─────────────────────────────────────────────────────────────
 
 
-def build_segments(text: str, located: list[LocatedQuote]) -> list[Segment]:
+def build_segments(text: str, located: list[LocatedQuote], *, strip_invalid_blockquotes: bool = False) -> list[Segment]:
     """Split text into alternating PlainText/QuoteSegment based on quote positions.
 
     Each QuoteSegment carries the full LocatedQuote metadata and its
@@ -954,7 +897,7 @@ def build_segments(text: str, located: list[LocatedQuote]) -> list[Segment]:
         result.append(QuoteSegment(
             original_text=lq.quote["text"],
             located=lq,
-            formatted_text=format_quote(lq).replacement,
+            formatted_text=format_quote(lq, strip_invalid_blockquotes=strip_invalid_blockquotes).replacement,
         ))
         cursor = end
     if cursor < len(text):
@@ -1022,154 +965,39 @@ def remove_quote_segments(
     return result
 
 
-def fix_quote_citations_in_text(text: str, chunks: list[Chunk]) -> FixQuoteCitationsResult:
+def fix_quote_citations_in_text(text: str, chunks: list[Chunk], *, strip_invalid_blockquotes: bool = False) -> FixQuoteCitationsResult:
     original_text = text
     quotes = quote_util.find_quotes_in_text(text)
     located = locate_quotes(quotes, chunks)
-    parsed = build_segments(text, located)
+    parsed = build_segments(text, located, strip_invalid_blockquotes=strip_invalid_blockquotes)
     fixed_text = materialize(parsed, wrap_verified=False)
 
     if original_text != fixed_text:
         logger.info("Fixed quote citations in text", text=original_text, fixed_text=fixed_text)
 
+    unfixable_quotes = [lq.quote for lq in located if not lq.is_verified]
+    valid_quotes = [lq.quote for lq in located if lq.is_verified]
+    referenced_chunks = dedupe_chunks([
+        chunk
+        for lq in located
+        for m in [lq.match or lq.hint_match]
+        if m
+        for chunk in m.referenced_chunks
+    ])
+
+    if unfixable_quotes:
+        logger.warning(
+            "Some quotes could not be verified and fixed",
+            invalid_quotes=[q["text"] for q in unfixable_quotes],
+            chunks=chunks,
+            text=text,
+        )
+
     return FixQuoteCitationsResult(
         fixed_text=fixed_text,
         segments=parsed,
-        unfixable_quotes=[lq.quote for lq in located if not lq.is_verified],
-        referenced_chunks=dedupe_chunks([lq.match.source_chunk for lq in located if lq.match]),
-        valid_quotes=[lq.quote for lq in located if lq.is_verified],
-    )
-
-
-@dataclass
-class TweakAndValidateQuotesResult:
-    revised_response: QaResponse
-    invalid_quotes: list[QuoteEntry]
-    valid_quotes: list[QuoteEntry]
-    chunks_referenced: list[Chunk]
-
-    @property
-    def valid(self) -> bool:
-        return len(self.invalid_quotes) == 0
-
-
-def tweak_and_validate_quotes_response(response: QaResponse, chunks: list[Chunk]) -> TweakAndValidateQuotesResult:
-    # Clone the QaResponse to avoid mutating the input
-    response = copy.deepcopy(response)
-
-    # Keep track of all chunks referenced in the response
-    referenced_chunks: list[Chunk] = []
-
-    # Keep track of all quotes
-    valid_quotes: list[QuoteEntry] = []
-
-    chunks_by_rulebook_and_page = get_chunks_by_rulebook_and_page(chunks)
-
-    # Check and fix quotes in the final answer
-    result = fix_quote_citations_in_text(response["final_answer"], chunks)
-    response["final_answer"] = materialize(result.segments, wrap_verified=True)
-    referenced_chunks.extend(result.referenced_chunks)
-
-    for _quote in result.valid_quotes:
-        valid_quotes.append(
-            QuoteEntry(
-                text=_quote["quote"],
-                rulebook_name=_quote["citation"]["ref_name"] if _quote["citation"] else "",
-                page=_quote["citation"]["page"] if _quote["citation"] else ""
-            )
-        )
-
-    # Check the final answer for invalid quotes
-    invalid_final_answer_quotes: list[QuoteEntry] = []
-    for extracted_quote in result.unfixable_quotes:
-        citation = extracted_quote["citation"]
-        if not citation:
-            citation = {"ref_name": "", "page": ""}
-        quote_entry: QuoteEntry = {
-            "text": extracted_quote["quote"],
-            "rulebook_name": citation["ref_name"],
-            "page": citation["page"]
-        }
-        invalid_final_answer_quotes.append(quote_entry)
-    
-    def _check_quote(quote: QuoteEntry) -> bool:
-        key = (quote["rulebook_name"], quote["page"])
-        if key not in chunks_by_rulebook_and_page:
-            return False
-        candidate_chunks = chunks_by_rulebook_and_page[key]
-        return_value = False
-        for candidate_chunk in candidate_chunks:
-            page_content = candidate_chunk["content"]
-            m = quote_util.find_quote_with_gaps(page_content, quote["text"])
-            if m:
-                return_value = True
-                referenced_chunks.append(candidate_chunk)
-        return return_value
-    
-    def _find_chunk_with_quote(text: str) -> Chunk | None:
-        found_chunk = None
-        for chunk in chunks:
-            m = quote_util.find_quote_with_gaps(chunk["content"], text)
-            if m:
-                found_chunk = chunk
-                referenced_chunks.append(chunk)
-        return found_chunk
-    
-    def check_quotes_in_list(quotes: list[QuoteEntry]) -> list[QuoteEntry]:
-        invalid_quotes: list[QuoteEntry] = []
-        for quote in quotes:
-            if not _check_quote(quote):
-                chunk_with_quote = _find_chunk_with_quote(quote["text"])
-                if chunk_with_quote:
-                    # Fix the quote to have the right rulebook and page
-                    quote["rulebook_name"] = chunk_with_quote["rulebook_name"]
-                    quote["page"] = chunk_with_quote["page"]
-                    valid_quotes.append(quote)
-                else:
-                    # Record invalid quote
-                    invalid_quotes.append(quote)
-            else:
-                valid_quotes.append(quote)
-        return invalid_quotes
-
-    # Validate definitions
-    invalid_definition_quotes: list[QuoteEntry] = []
-    for definition in response["definitions"]:
-        invalid_definition_quotes.extend(check_quotes_in_list(definition["quotes"]))
-
-    # Validate relationship_statements
-    invalid_relationship_quotes: list[QuoteEntry] = []
-    if "relationship_statements" in response:
-        for statement in response["relationship_statements"]:
-            invalid_relationship_quotes.extend(check_quotes_in_list(statement["quotes"]))
-
-    # Validate general_rules
-    invalid_general_rule_quotes: list[QuoteEntry] = []
-    for rule in response["general_rules"]:
-        invalid_general_rule_quotes.extend(check_quotes_in_list(rule["quotes"]))
-
-    # Validate exceptions (new nested structure)
-    invalid_exception_quotes: list[QuoteEntry] = []
-    for exception in response["exceptions"]:
-        # step3_relationship_check contains quotes
-        invalid_exception_quotes.extend(
-            check_quotes_in_list(exception["step3_relationship_check"]["quotes"])
-        )
-        # step4_separation_check contains quotes
-        invalid_exception_quotes.extend(
-            check_quotes_in_list(exception["step4_separation_check"]["quotes"])
-        )
-
-    return TweakAndValidateQuotesResult(
-        revised_response=response,
-        invalid_quotes=(
-            invalid_definition_quotes +
-            invalid_relationship_quotes +
-            invalid_general_rule_quotes +
-            invalid_exception_quotes +
-            invalid_final_answer_quotes
-        ),
-        chunks_referenced=dedupe_chunks(referenced_chunks),
+        unfixable_quotes=unfixable_quotes,
+        referenced_chunks=referenced_chunks,
         valid_quotes=valid_quotes,
     )
 
@@ -1244,7 +1072,6 @@ class GameAgentOutputState(MessagesState):
 
 
 class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
-    analysis: QaResponse
     rounds_clarification: int
     """The number of rounds of clarification performed"""
     validation_attempts: int
@@ -1853,11 +1680,11 @@ def _strip_invalid_quotes(fix_result: FixQuoteCitationsResult, documents: list[C
         if isinstance(seg, QuoteSegment) and not seg.located.is_verified
     }
     cleaned = remove_quote_segments(fix_result.segments, invalid_segs)
-    valid_entries = [extracted_quote_to_quote_entry(vq) for vq in fix_result.valid_quotes]
-    evidence = compile_evidence_from_documents(valid_entries, documents)
+    # Use referenced_chunks directly — it already includes chunks recovered via hint_match
+    # from low-confidence (paraphrase) matches, not just verified quotes.
     return {
         "response": materialize(cleaned, wrap_verified=True),
-        "evidence": list(evidence),
+        "evidence": fix_result.referenced_chunks,
         "invalid_quotes": [],
         "validation_attempts": 0,
     }
@@ -2196,12 +2023,14 @@ def build_question_answer_graph(
         chain = answer_prompt | chat_model
         chain = chain.with_config(run_name="qa_graph_answer_chain")
         result = await chain.ainvoke(input, config=config)
-        extracted = extract_reasoning_and_answer(result.text)
-    
-        logger.info("Answer question result", answer=extracted["answer"], document_count=len(documents))
+        fix_result = fix_quote_citations_in_text(result.text, documents, strip_invalid_blockquotes=True)
+        extracted = extract_reasoning_and_answer(fix_result.fixed_text)
+        referenced = fix_result.referenced_chunks
+        logger.info("Answer question result", answer=extracted["answer"], document_count=len(documents), valid_quotes=len(fix_result.valid_quotes), invalid_quotes=len(fix_result.unfixable_quotes), referenced_chunks=len(referenced))
         return {
             "answer": extracted["answer"],
             "reasoning": extracted["reasoning"],
+            "evidence": referenced,
         }
     
     def get_quotes(fix_quote_result: FixQuoteCitationsResult) -> Tuple[list[QuoteEntry], list[QuoteEntry]]:
@@ -2254,18 +2083,18 @@ def build_question_answer_graph(
         # of the answer + reasoning (since it hadn't been generated yet)
         format_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", system_prompt_template),
+                ("system", format_answer_system_prompt_template),
                 ("user", "Consider the user's query. Provide a step-by-step reasoning process concerning the user's query, then answer the user's query."),
-                ("assistant", "{{answer}}"),
+                ("assistant", "{{{answer}}}"),
                 ("user", markdown_format_response_template),
             ],
             template_format="mustache"
         )
 
         input = dict(
-            game_summary="",
+            game_summary=False,
             game_name=manifest["name"],
-            documents=documents,
+            documents=[],
             query=state["query"],
             reasoning=state["reasoning"],
             answer=state["answer"],
@@ -2274,9 +2103,10 @@ def build_question_answer_graph(
         chain = format_prompt | chat_model
         chain = chain.with_config(run_name="format_answer_chain")
         result = await chain.ainvoke(input, config=config)
+        extracted = extract_reasoning_and_answer(result.text)
 
         return {
-            "response": result.text,
+            "response": extracted["answer"],
         }
 
 

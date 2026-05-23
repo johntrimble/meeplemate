@@ -208,6 +208,15 @@ class ChatServiceConfig(BaseModel):
     api_key: SecretStr | None = Field(default=None, description="API key for authentication (if required)")
     explicit_disable_thinking: bool = Field(default=False, description="Explicitly disable thinking for certain models")
 
+    temperature: Optional[float] = Field(default=None, description="Temperature for models (overrides default if set)")
+    top_p: Optional[float] = Field(default=None, description="Top-p (nucleus sampling) for models (overrides default if set)")
+    top_k: Optional[int] = Field(default=None, description="Top-k sampling for models (overrides default if set)")
+    min_p: Optional[float] = Field(default=None, description="Minimum probability for token sampling (overrides default if set)")
+    presence_penalty: Optional[float] = Field(default=None, description="Presence penalty for models (overrides default if set)")
+    frequency_penalty: Optional[float] = Field(default=None, description="Frequency penalty for models (overrides default if set)")
+    repetition_penalty: Optional[float] = Field(default=None, description="Repetition penalty for models (overrides default if set)")
+
+
     @field_validator('endpoint')
     @classmethod
     def validate_endpoint(cls, v):
@@ -506,22 +515,30 @@ def create_app_system(cfg: Config) -> System[AppServices]:
             )
         elif cfg.chat.endpoint_type == "openai":
             api_key = config.api_key.get_secret_value() if config.api_key else "not-needed"
+
+            sampling_kwargs = {}
+            for param in ["temperature", "frequency_penalty", "presence_penalty", "top_p"]:
+                value = getattr(config, param)
+                if value is not None:
+                    sampling_kwargs[param] = value
+
+            extra_body_sampling_kwargs = {}
+            for param in ["top_k", "min_p", "repetition_penalty"]:
+                value = getattr(config, param)
+                if value is not None:
+                    extra_body_sampling_kwargs[param] = value
+
             chat_model = ChatOpenAI(
                 model=config.model_name,
-                # max_tokens=config.max_new_tokens,
                 max_tokens=config.max_new_tokens,
-                presence_penalty=1.5,
-                temperature=0.6,
-                top_p=0.8,
                 timeout=config.timeout,
                 base_url=config.endpoint,
                 api_key=api_key,
                 streaming=True,
                 stream_usage=True,
+                **sampling_kwargs,
                 extra_body={
-                    "top_k": 20,
-                    "min_p": 0.0,
-                    # "repetition_penalty": 1.1,
+                    **extra_body_sampling_kwargs,
                     **({
                         "chat_template_kwargs": {
                             "enable_thinking": False,

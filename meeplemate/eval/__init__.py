@@ -1,7 +1,7 @@
 from importlib import resources
 from langchain.chat_models import BaseChatModel
 from structlog import get_logger
-from typing import Iterator, override, Callable
+from typing import Iterator, Sequence, TypedDict, override, Callable
 import json
 from uuid import UUID
 from datetime import datetime
@@ -11,16 +11,41 @@ from langchain_core.tracers import Run
 from langchain_core.load import dumpd
 from meeplemate.util import slurp_yaml, snake_case
 
-# Load test_cases.yaml from this module
-test_suites = slurp_yaml(resources.files(__package__).joinpath("test_cases.yaml"))
-
 # Create tracer for persisting langchain runs during tests
 from langchain_core.tracers.base import AsyncBaseTracer
 from pathlib import Path
 
 from deepeval.models.base_model import DeepEvalBaseLLM
+from deepeval.dataset.golden import Golden
 
 logger = get_logger(__name__)    
+
+# Load test_cases.yaml from this module
+test_suites = slurp_yaml(resources.files(__package__).joinpath("test_cases.yaml"))
+
+def load_goldens() -> Sequence[Golden]:
+    goldens: list[Golden] = []
+    for test_suite in test_suites:
+        game_id = test_suite["params"]["game_id"]
+        for test_case in test_suite["test_cases"]:
+            if "reference_answer" not in test_case:
+                continue
+            metadata = {
+                "test_suite": test_suite["name"],
+                "game_id": game_id,
+            }
+            if "evidence" in test_case:
+                metadata["evidence"] = test_case["evidence"]
+
+            golden = Golden(
+                input=test_case["query"],
+                expected_output=test_case["reference_answer"],
+                name=test_case["name"],
+                additional_metadata=metadata,
+                multimodal=False,
+            )
+            goldens.append(golden)
+    return goldens
 
 
 class RunEncoder(json.JSONEncoder):
@@ -200,6 +225,62 @@ def collect_runs_by_type(run: Run, run_type: str) -> list[Run]:
     return runs
 
 
+class QuoteCounts(TypedDict):
+    total_quotes: int
+    quote_errors: int
+
+
+def count_quotes_and_quote_errors(run: Run) -> QuoteCounts:
+    
+    def count_quotes_in_response(response_text: str) -> int:
+        import re
+        # Count how many blocksquotes there are (groups of lines starting with
+        # `>`). Keeping in mind that multiple consecutive lines starting with
+        # `>` count as one quote. This will need to be multiline:
+        quote_count = len(re.findall(r'(?m)^>.*(?:\n>.*)*', response_text))
+        return quote_count
+
+    fix_nodes = list(collect_runs_by_name_iter(run, "fix_quote_chain"))
+    # fixed = sum(1 for n in fix_nodes if (n.outputs or {}).get('fixable') == True)
+    # unfixable = sum(1 for n in fix_nodes if (n.outputs or {}).get('fixable') == False)
+    provide_nodes = list(collect_runs_by_name_iter(run, 'provide_response'))
+    responses = [
+        (n.outputs or {}).get('response', '')
+        for n in provide_nodes
+    ]
+
+    quote_errors = len(fix_nodes)
+    quote_count = sum(
+        count_quotes_in_response(response)
+        for response in responses
+    )
+
+    return {"total_quotes": quote_count, "quote_errors": quote_errors}
+
+
+class RunawayGenerationCounts(TypedDict):
+    total_generations: int
+    runaway_generations: int
+
+
+def count_llm_runaway_generations(run: Run) -> RunawayGenerationCounts:
+    llm_runs = collect_runs_by_type(run, "llm")
+    total = 0
+    runaway = 0
+    for llm_run in llm_runs:
+        generations = (llm_run.outputs or {}).get("generations", [])
+        if not generations or not generations[0]:
+            continue
+        gen = generations[0][0]
+        msg = gen.get("message", {}) if isinstance(gen, dict) else {}
+        kwargs = msg.get("kwargs", {}) if isinstance(msg, dict) else {}
+        finish_reason = kwargs.get("response_metadata", {}).get("finish_reason")
+        total += 1
+        if finish_reason == "length":
+            runaway += 1
+    return {"total_generations": total, "runaway_generations": runaway}
+
+
 def get_llm_calls(run: Run) -> list[Run]:
     """Extract all LLM calls from a run tree.
 
@@ -322,53 +403,6 @@ def transform_run_tree(
 
     results = _inner(run)
     return results[0] if results else None
-
-
-def skip_run_types(skip_types: set[str]) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
-    """Create a transformer that skips certain run types/names.
-
-    Nodes matching the skip criteria are removed from the tree, but their children
-    are promoted to the parent level, preserving the execution trace.
-
-    Supports wildcard patterns using shell-style glob syntax:
-    - `*` matches everything
-    - `?` matches any single character
-    - `[seq]` matches any character in seq
-    - `[!seq]` matches any character not in seq
-
-    Args:
-        skip_types: Set of run names or run_type values to skip. Supports wildcards.
-
-    Returns:
-        A transformer function
-
-    Example:
-        # Exact match
-        transformer = skip_run_types({"RunnableLambda", "RunnableSequence"})
-
-        # Wildcard patterns
-        transformer = skip_run_types({"Runnable*"})  # Matches RunnableLambda, RunnableSequence, etc.
-        transformer = skip_run_types({"*Lambda", "*Sequence"})
-
-        pruned_run = transform_run_tree(run, transformer)
-    """
-    def matches_any_pattern(value: str, patterns: set[str]) -> bool:
-        """Check if value matches any pattern in the set."""
-        for pattern in patterns:
-            # Try exact match first (faster)
-            if value == pattern:
-                return True
-            # Try wildcard match
-            if fnmatch(value, pattern):
-                return True
-        return False
-
-    def transformer(run: Run, children: list[Run]) -> tuple[Run | None, list[Run]]:
-        if matches_any_pattern(run.name, skip_types) or matches_any_pattern(run.run_type, skip_types):
-            # Skip this run, promote children
-            return (None, children)
-        return (run, children)
-    return transformer
 
 
 def filter_children_by_predicate(
@@ -559,3 +593,23 @@ class TestRunTracer(AsyncBaseTracer):
             run_dict = _run_to_dict(run)
             f.write(json.dumps(run_dict, cls=RunEncoder, indent=2))
             f.flush()
+
+
+def next_group_run_id(generation_runs_dir: Path) -> str:
+    """Generate the next available group_run_id based on today's date.
+
+    Scans existing generation_runs directories and auto-increments:
+    2026-02-17, 2026-02-17-2, 2026-02-17-3, etc.
+    """
+    from datetime import datetime
+    base = datetime.now().strftime("%Y-%m-%d")
+    gen_dir = generation_runs_dir
+
+    if not gen_dir.exists() or not (gen_dir / base).exists():
+        return base
+
+    # Find the next available suffix
+    n = 2
+    while (gen_dir / f"{base}-{n}").exists():
+        n += 1
+    return f"{base}-{n}"
