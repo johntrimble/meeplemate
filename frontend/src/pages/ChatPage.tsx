@@ -33,6 +33,38 @@ import {
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
+// Rate limit error helpers
+// ---------------------------------------------------------------------------
+
+interface RateLimitDetail {
+  window: string
+  resets_at: string
+  message: string
+}
+
+function parseRateLimitDetail(error: Error): RateLimitDetail | null {
+  try {
+    const body = JSON.parse(error.message)
+    const detail = body?.detail
+    if (detail?.error === 'rate_limit_exceeded') return detail as RateLimitDetail
+  } catch {}
+  return null
+}
+
+function formatResetTime(isoTimestamp: string): string {
+  const resetAt = new Date(isoTimestamp)
+  const roundedMs = Math.ceil(resetAt.getTime() / 3_600_000) * 3_600_000
+  const rounded = new Date(roundedMs)
+  return rounded.toLocaleString(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    hour12: true,
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
 
@@ -289,6 +321,55 @@ function AssistantMsg({
           </MessageAction>
         </MessageActions>
       )}
+    </Message>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Chat error message
+// ---------------------------------------------------------------------------
+
+function ChatError({ error, onDismiss }: { error: Error; onDismiss: () => void }) {
+  const detail = parseRateLimitDetail(error)
+
+  if (detail) {
+    const resetLabel = formatResetTime(detail.resets_at)
+    const isAppWide = detail.message.startsWith('The service')
+    return (
+      <Message from="assistant">
+        <MessageContent>
+          <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-900 dark:text-amber-200 space-y-2">
+            <p className="font-medium">
+              {isAppWide
+                ? 'The service is temporarily at capacity.'
+                : `You've reached your ${detail.window} usage limit.`}
+            </p>
+            <p className="text-amber-700 dark:text-amber-400">
+              You can try again on {resetLabel}.
+            </p>
+            <div className="pt-1">
+              <Button size="sm" variant="ghost" className="text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-200 -ml-2" onClick={onDismiss}>
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        </MessageContent>
+      </Message>
+    )
+  }
+
+  return (
+    <Message from="assistant">
+      <MessageContent>
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive space-y-2">
+          <p className="font-medium">Something went wrong. Please try again.</p>
+          <div className="pt-1">
+            <Button size="sm" variant="ghost" className="text-destructive -ml-2" onClick={onDismiss}>
+              Dismiss
+            </Button>
+          </div>
+        </div>
+      </MessageContent>
     </Message>
   )
 }
@@ -599,7 +680,7 @@ function ChatView({
     return map
   })
 
-  const { messages: chatMessages, sendMessage, regenerate, status } = useChat({
+  const { messages: chatMessages, sendMessage, regenerate, status, error, clearError, setMessages } = useChat({
     messages: initialMessages,
     transport: new DefaultChatTransport({
       api: `${import.meta.env.VITE_API_URL ?? ''}/api/chats/${chatId}/stream`,
@@ -645,14 +726,25 @@ function ChatView({
     bottomRef.current?.scrollIntoView({ behavior: lengthChanged ? 'smooth' : 'instant' })
   }, [displayMessages])
 
+  const handleDismiss = () => {
+    const last = chatMessages[chatMessages.length - 1]
+    if (last?.role === 'user') setMessages(chatMessages.slice(0, -1))
+    clearError()
+  }
+
   const handleSubmit = (text: string) => {
+    if (error) {
+      const last = chatMessages[chatMessages.length - 1]
+      if (last?.role === 'user') setMessages(chatMessages.slice(0, -1))
+      clearError()
+    }
     sendMessage({ text })
   }
 
   return (
     <PageChrome game={game} gameId={gameId} chatId={chatId}>
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {displayMessages.length === 0 ? (
+        {displayMessages.length === 0 && !error ? (
           <EmptyState game={game} onSuggest={handleSubmit} />
         ) : (
           <div className="max-w-3xl mx-auto flex flex-col gap-6 px-4 py-6">
@@ -670,6 +762,7 @@ function ChatView({
                 />
               ),
             )}
+            {error && <ChatError error={error} onDismiss={handleDismiss} />}
             <div ref={bottomRef} />
           </div>
         )}
