@@ -26,8 +26,7 @@ cd frontend && npm run dev
 
 ## Running the code
 
-1. Download the Munchkin rule PDFs from https://munchkin.game/gameplay/rules/ and place them in the code/munchkin_rules directory
-5. Open in VS Code Dev Container
+1. Open in VS Code Dev Container
 
    - Open the project in VS Code.
    - If prompted, reopen the project in a dev container.
@@ -35,9 +34,5 @@ cd frontend && npm run dev
      ```
      Dev Containers: Rebuild and Reopen in Container
      ```
-6. Run chainlit app in the dev container terminal:
-   ```
-   chainlit run app.py
-   ```
-7. Open the URL printed in the terminal (usually http://localhost:8000)
+2. See [DEVELOPMENT.md](DEVELOPMENT.md) for instructions on running the backend and frontend.
 
