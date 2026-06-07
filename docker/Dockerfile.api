@@ -6,7 +6,7 @@ ARG PYTHON_VERSION=3.12
 ARG FASTEMBED_MODEL=BAAI/bge-small-en-v1.5
 ARG TOKENIZER_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 
-# ── Stage 1: builder ──────────────────────────────────────────────────────────
+# -- Stage 1: builder ----------------------------------------------------------
 FROM python:${PYTHON_VERSION} AS builder
 
 ARG PYTHON_VERSION
@@ -44,8 +44,12 @@ RUN /opt/venv/bin/python -c \
 COPY . .
 RUN uv sync --python /usr/local/bin/python${PYTHON_VERSION} --no-dev
 
+# Strip sympy, pulled in by onnxruntime as an optional shape-inference dep,
+# not needed for inference at serving time.
+RUN /opt/venv/bin/pip uninstall -y sympy
 
-# ── Stage 2: runtime ─────────────────────────────────────────────────────────
+
+# -- Stage 2: runtime ---------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim
 
 # Venv with pre-compiled bytecode
