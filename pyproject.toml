@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "numpy",
+    "fastapi",
     "langchain>=1.0,<2.0",
     "langchain-community",
     "langchain-openai",
