@@ -46,7 +46,7 @@ RUN uv sync --python /usr/local/bin/python${PYTHON_VERSION} --no-dev
 
 # Strip sympy, pulled in by onnxruntime as an optional shape-inference dep,
 # not needed for inference at serving time.
-RUN uv pip uninstall sympy
+RUN uv pip uninstall --python /opt/venv/bin/python sympy
 
 
 # -- Stage 2: runtime ---------------------------------------------------------
