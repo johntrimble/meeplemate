@@ -54,3 +54,44 @@ test('shows error state when API fails', async ({ page }) => {
   // The hook sets error state when the response is not ok; SelectGamePage renders it.
   await expect(page.getByText(/failed to fetch games/i)).toBeVisible()
 })
+
+// ---------------------------------------------------------------------------
+// Cache: in-memory query cache
+// ---------------------------------------------------------------------------
+
+test('games are visible from in-memory cache after SPA navigation away and back', async ({ page }) => {
+  await mockGameListRoutes(page)
+  await page.goto('/select-game')
+  await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
+
+  // Navigate away via SPA (click a game card).
+  await page.getByText(MUNCHKIN_GAME.name).first().click()
+  await expect(page).toHaveURL(`/chat/${MUNCHKIN_GAME.id}`)
+
+  // Block the API so any fresh fetch would fail.
+  await page.route('**/api/games?*', (route) => route.fulfill({ status: 500 }))
+  await page.route('**/api/recent-games', (route) => route.fulfill({ status: 500 }))
+
+  // Navigate back — React Query serves cached data without hitting the API.
+  await page.goBack()
+  await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
+})
+
+test('games are visible from localStorage cache after full page reload', async ({ page }) => {
+  await mockGameListRoutes(page)
+  await page.goto('/select-game')
+  await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
+
+  // Wait for the persister to write to localStorage (throttleTime:0 is async via setTimeout).
+  await page.waitForFunction(() => {
+    const raw = window.localStorage.getItem('boardbarian-cache-v1')
+    return raw !== null && raw.includes('Munchkin')
+  })
+
+  // Block API before reloading — the persisted localStorage cache should serve data.
+  await page.route('**/api/games?*', (route) => route.fulfill({ status: 500 }))
+  await page.route('**/api/recent-games', (route) => route.fulfill({ status: 500 }))
+
+  await page.reload()
+  await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
+})

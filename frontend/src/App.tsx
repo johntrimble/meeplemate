@@ -1,7 +1,9 @@
 import { Routes, Route } from 'react-router-dom'
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client'
 import { AuthProvider } from '@/auth/AuthProvider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ProtectedRoute } from '@/auth/ProtectedRoute'
+import { queryClient, localStoragePersister } from '@/lib/queryClient'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import SelectGamePage from './pages/SelectGamePage'
@@ -12,6 +14,10 @@ import MaintenancePage from './pages/MaintenancePage'
 
 function App() {
   return (
+    <PersistQueryClientProvider
+      client={queryClient}
+      persistOptions={{ persister: localStoragePersister }}
+    >
     <Routes>
       <Route path="/maintenance" element={<MaintenancePage />} />
       <Route path="*" element={
@@ -30,6 +36,7 @@ function App() {
         </AuthProvider>
       } />
     </Routes>
+    </PersistQueryClientProvider>
   )
 }
 

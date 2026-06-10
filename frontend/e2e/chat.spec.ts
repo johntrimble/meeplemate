@@ -208,6 +208,76 @@ test('rate limit error: sending a new message clears the error', async ({ page }
 })
 
 // ---------------------------------------------------------------------------
+// Cache: sidebar chat list
+// ---------------------------------------------------------------------------
+
+const SIDEBAR_CHAT = { chat_id: 'cached-chat-1', title: 'How does loot work?' }
+
+test('sidebar shows cached chats immediately on reopen when API is slow', async ({ page }) => {
+  await mockChatMessagesRoute(page, CHAT_ID, [])
+
+  let fetchCount = 0
+  await page.route(`**/api/games/${GAME_ID}/chats?*`, async (route) => {
+    fetchCount++
+    if (fetchCount >= 2) {
+      // Delay subsequent fetches to prove the cache renders first.
+      await new Promise((r) => setTimeout(r, 3000))
+    }
+    await route.fulfill({
+      json: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        data: [SIDEBAR_CHAT],
+      },
+    })
+  })
+
+  await page.goto(`/chat/${GAME_ID}/${CHAT_ID}`)
+
+  // First open: fetches from API and populates cache.
+  await page.getByRole('button', { name: 'Open menu' }).click()
+  await expect(page.getByText(SIDEBAR_CHAT.title)).toBeVisible()
+  await page.getByRole('button', { name: 'Close menu' }).click()
+
+  // Second open: API is slow but cached data renders instantly.
+  await page.getByRole('button', { name: 'Open menu' }).click()
+  await expect(page.getByText(SIDEBAR_CHAT.title)).toBeVisible({ timeout: 500 })
+})
+
+// ---------------------------------------------------------------------------
+// Optimistic: chat creation invalidates sidebar
+// ---------------------------------------------------------------------------
+
+test('sidebar reflects new chat after creation without manual refresh', async ({ page }) => {
+  const NEW_CHAT_ID = 'brand-new-chat'
+  const NEW_CHAT_TITLE = 'First question about Munchkin'
+
+  // Use `**` suffix to match both POST (no query string) and GET (with ?first=20 etc.).
+  await page.route(`**/api/games/${GAME_ID}/chats**`, (route) => {
+    if (route.request().method() === 'POST') {
+      route.fulfill({ json: { chat_id: NEW_CHAT_ID } })
+    } else {
+      route.fulfill({
+        json: {
+          pageInfo: { hasNextPage: false, endCursor: null },
+          data: [{ chat_id: NEW_CHAT_ID, title: NEW_CHAT_TITLE }],
+        },
+      })
+    }
+  })
+  await mockChatMessagesRoute(page, NEW_CHAT_ID, [])
+
+  await page.goto(`/chat/${GAME_ID}`)
+
+  // Submit a suggestion to trigger chat creation.
+  await page.locator('button').filter({ hasText: /\?/ }).first().click()
+  await expect(page).toHaveURL(`/chat/${GAME_ID}/${NEW_CHAT_ID}`)
+
+  // Open sidebar — chat list should include the newly created chat.
+  await page.getByRole('button', { name: 'Open menu' }).click()
+  await expect(page.getByText(NEW_CHAT_TITLE)).toBeVisible()
+})
+
+// ---------------------------------------------------------------------------
 // Verified blockquote rendering
 // ---------------------------------------------------------------------------
 
