@@ -7,8 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Generator, Iterable, TextIO, Type, cast
 
-from typing import Optional, TypeVar, TypedDict
-from pyparsing import Sequence
+from typing import Optional, Sequence, TypeVar, TypedDict
 import yaml
 
 

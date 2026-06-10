@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, Optional, Sequence, TypedDict, cast
+from typing import Any, AsyncIterator, Literal, Optional, Sequence, TypedDict, cast
 import os
 
-if TYPE_CHECKING:
-    from chainlit.data.base import BaseDataLayer
 from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_postgres import PGEngine
 from meeplemate.postgres.vectorstore import PartitionedPGVectorStore
@@ -39,6 +37,7 @@ from meeplemate.game_service import GameService
 from meeplemate.postgres.store import PostgresJSONStore, PostgresSerializableStore
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, load_lightweight_tokenizer, load_approximate_tokenizer, wrap_embeddings_with_instructions
+from meeplemate.db.datalayer import BaseDataLayer
 from meeplemate.db.repository import PostgresDataLayer
 
 from meeplemate.search import (
