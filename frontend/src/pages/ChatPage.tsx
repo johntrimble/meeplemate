@@ -3,7 +3,7 @@ import { DefaultChatTransport, isReasoningUIPart, isTextUIPart } from 'ai'
 import type { UIMessage } from 'ai'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Reasoning,
   ReasoningContent,
@@ -581,19 +581,17 @@ function ExistingChat({
 }) {
   const location = useLocation()
   const authFetch = useAuthFetch()
-  const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null)
 
-  useEffect(() => {
-    authFetch(`/api/chats/${chatId}/messages`)
-      .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() })
-      .then((msgs: UIMessage[]) => setInitialMessages(msgs))
-      .catch(() => setInitialMessages([]))
-  // authFetch identity is stable within a session; chatId is the real dep.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId])
+  const { data: initialMessages, isPending } = useQuery({
+    queryKey: ['messages', chatId],
+    queryFn: ({ signal }) =>
+      authFetch(`/api/chats/${chatId}/messages`, { signal })
+        .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<UIMessage[]> })
+        .catch(() => [] as UIMessage[]),
+  })
 
-  if (initialMessages === null) {
-    // Loading history — show minimal chrome so the page doesn't flash blank
+  if (isPending) {
+    // Only shown on first visit — cached chats render immediately.
     return (
       <PageChrome game={game} gameId={gameId} chatId={chatId}>
         <div className="flex-1 min-h-0 flex items-center justify-center">
@@ -611,7 +609,7 @@ function ExistingChat({
       gameId={gameId}
       chatId={chatId}
       game={game}
-      initialMessages={initialMessages}
+      initialMessages={initialMessages ?? []}
       pendingMessage={pendingMessage}
     />
   )
