@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useAuthFetch } from '@/auth/authFetch'
 import { apiGameToGame, type Game, type GamesPage } from '@/data/games'
 
@@ -9,17 +9,17 @@ interface UseRecentGamesResult {
 
 export function useRecentGames(): UseRecentGamesResult {
   const authFetch = useAuthFetch()
-  const [games, setGames] = useState<Game[]>([])
-  const [isLoading, setIsLoading] = useState(true)
 
-  useEffect(() => {
-    authFetch('/api/recent-games')
-      .then((r) => r.json() as Promise<GamesPage>)
-      .then((page) => setGames(page.data.map(apiGameToGame)))
-      .catch(() => {})
-      .finally(() => setIsLoading(false))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const query = useQuery({
+    queryKey: ['recent-games'],
+    queryFn: ({ signal }) =>
+      authFetch('/api/recent-games', { signal })
+        .then((r) => r.json() as Promise<GamesPage>)
+        .then((page) => page.data.map(apiGameToGame)),
+  })
 
-  return { games, isLoading }
+  return {
+    games: query.data ?? [],
+    isLoading: query.isPending,
+  }
 }

@@ -1,8 +1,9 @@
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport, isReasoningUIPart, isTextUIPart } from 'ai'
 import type { UIMessage } from 'ai'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Reasoning,
   ReasoningContent,
@@ -20,6 +21,7 @@ import { useAuthFetch } from '@/auth/authFetch'
 import { useAuth } from '@/auth/useAuth'
 import { type Game } from '@/data/games'
 import { useGame } from '@/hooks/useGame'
+import { useChats } from '@/hooks/useChats'
 import { cn } from '@/lib/utils'
 import {
   CheckIcon,
@@ -68,11 +70,6 @@ function formatResetTime(isoTimestamp: string): string {
 // Sidebar
 // ---------------------------------------------------------------------------
 
-interface ChatSummary {
-  chat_id: string
-  title: string
-}
-
 interface SidebarProps {
   open: boolean
   onClose: () => void
@@ -80,54 +77,21 @@ interface SidebarProps {
   currentChatId?: string
 }
 
-interface ChatsPage {
-  pageInfo: { hasNextPage: boolean; endCursor: string | null }
-  data: ChatSummary[]
-}
-
 function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
   const navigate = useNavigate()
-  const authFetch = useAuthFetch()
-  const [chats, setChats] = useState<ChatSummary[]>([])
-  const [endCursor, setEndCursor] = useState<string | null>(null)
-  const [hasNextPage, setHasNextPage] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const { chats, hasNextPage, loadMore, isFetching } = useChats(gameId, open)
   const sentinelRef = useRef<HTMLDivElement>(null)
-
-  const loadChats = useCallback((cursor: string | null) => {
-    setLoading(true)
-    const params = new URLSearchParams({ first: '20' })
-    if (cursor) params.set('cursor', cursor)
-    authFetch(`/api/games/${gameId}/chats?${params}`)
-      .then((r) => r.json())
-      .then((page: ChatsPage) => {
-        setChats((prev) => cursor ? [...prev, ...page.data] : page.data)
-        setHasNextPage(page.pageInfo.hasNextPage)
-        setEndCursor(page.pageInfo.endCursor ?? null)
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [gameId, authFetch])
-
-  // Reset and load first page when the sidebar opens or game changes.
-  useEffect(() => {
-    if (!open) return
-    setChats([])
-    setEndCursor(null)
-    setHasNextPage(false)
-    loadChats(null)
-  }, [open, gameId, loadChats])
 
   // Load the next page when the sentinel scrolls into view.
   useEffect(() => {
     const el = sentinelRef.current
-    if (!el || !hasNextPage || loading) return
+    if (!el || !hasNextPage || isFetching) return
     const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) loadChats(endCursor)
+      if (entry.isIntersecting) loadMore()
     })
     observer.observe(el)
     return () => observer.disconnect()
-  }, [hasNextPage, loading, endCursor, loadChats])
+  }, [hasNextPage, isFetching, loadMore])
 
   const go = (path: string) => {
     navigate(path)
@@ -196,7 +160,7 @@ function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
             </Button>
           ))}
           <div ref={sentinelRef} className="py-1 flex justify-center">
-            {loading && (
+            {isFetching && (
               <span className="text-xs text-muted-foreground">Loading…</span>
             )}
           </div>
@@ -571,20 +535,24 @@ function PageChrome({
 function NewChat({ gameId, game }: { gameId: string; game: Game }) {
   const navigate = useNavigate()
   const authFetch = useAuthFetch()
-  const [creating, setCreating] = useState(false)
+  const qc = useQueryClient()
 
-  const handleSubmit = async (text: string) => {
-    setCreating(true)
-    try {
-      const res = await authFetch(`/api/games/${gameId}/chats`, { method: 'POST' })
-      if (!res.ok) throw new Error('Failed to create chat')
-      const { chat_id } = (await res.json()) as { chat_id: string }
-      // Navigate to the permanent URL, carrying the first message as pending state.
+  const createChat = useMutation({
+    mutationFn: (text: string) =>
+      authFetch(`/api/games/${gameId}/chats`, { method: 'POST' })
+        .then((r) => {
+          if (!r.ok) throw new Error('Failed to create chat')
+          return r.json() as Promise<{ chat_id: string }>
+        })
+        .then((body) => ({ ...body, text })),
+    onSuccess: ({ chat_id, text }) => {
+      // Invalidate the chat list so the sidebar is fresh when next opened.
+      qc.invalidateQueries({ queryKey: ['chats', gameId] })
       navigate(`/chat/${gameId}/${chat_id}`, { state: { pendingMessage: text } })
-    } finally {
-      setCreating(false)
-    }
-  }
+    },
+  })
+
+  const handleSubmit = (text: string) => createChat.mutate(text)
 
   return (
     <PageChrome game={game} gameId={gameId}>
@@ -592,7 +560,7 @@ function NewChat({ gameId, game }: { gameId: string; game: Game }) {
         <EmptyState game={game} onSuggest={handleSubmit} />
       </div>
       <div className="shrink-0">
-        <ChatInput onSubmit={handleSubmit} disabled={creating} />
+        <ChatInput onSubmit={handleSubmit} disabled={createChat.isPending} />
       </div>
     </PageChrome>
   )
@@ -613,19 +581,17 @@ function ExistingChat({
 }) {
   const location = useLocation()
   const authFetch = useAuthFetch()
-  const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null)
 
-  useEffect(() => {
-    authFetch(`/api/chats/${chatId}/messages`)
-      .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() })
-      .then((msgs: UIMessage[]) => setInitialMessages(msgs))
-      .catch(() => setInitialMessages([]))
-  // authFetch identity is stable within a session; chatId is the real dep.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId])
+  const { data: initialMessages, isPending } = useQuery({
+    queryKey: ['messages', chatId],
+    queryFn: ({ signal }) =>
+      authFetch(`/api/chats/${chatId}/messages`, { signal })
+        .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<UIMessage[]> })
+        .catch(() => [] as UIMessage[]),
+  })
 
-  if (initialMessages === null) {
-    // Loading history — show minimal chrome so the page doesn't flash blank
+  if (isPending) {
+    // Only shown on first visit — cached chats render immediately.
     return (
       <PageChrome game={game} gameId={gameId} chatId={chatId}>
         <div className="flex-1 min-h-0 flex items-center justify-center">
@@ -643,7 +609,7 @@ function ExistingChat({
       gameId={gameId}
       chatId={chatId}
       game={game}
-      initialMessages={initialMessages}
+      initialMessages={initialMessages ?? []}
       pendingMessage={pendingMessage}
     />
   )
