@@ -47,8 +47,11 @@ test('shows empty state when no games available', async ({ page }) => {
 })
 
 test('shows error state when API fails', async ({ page }) => {
+  // A real application error is a JSON 5xx (from FastAPI). It is surfaced
+  // immediately, not retried as a transient cold-start failure. (A plain-text
+  // 5xx would instead be treated as a Cloud Run cold start — see cold-start.spec.ts.)
   await page.route('**/api/games?*', (route) =>
-    route.fulfill({ status: 500, body: 'Internal Server Error' })
+    route.fulfill({ status: 500, contentType: 'application/json', json: { detail: 'boom' } })
   )
   await page.goto('/select-game')
   // The hook sets error state when the response is not ok; SelectGamePage renders it.

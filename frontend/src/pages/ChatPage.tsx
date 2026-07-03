@@ -23,6 +23,8 @@ import { type Game } from '@/data/games'
 import { useGame } from '@/hooks/useGame'
 import { useChats } from '@/hooks/useChats'
 import { cn } from '@/lib/utils'
+import { createColdStartTracker } from '@/lib/coldStart'
+import { fetchWithRetry } from '@/lib/fetchWithRetry'
 import {
   CheckIcon,
   CopyIcon,
@@ -650,6 +652,11 @@ function ChatView({
     messages: initialMessages,
     transport: new DefaultChatTransport({
       api: `${import.meta.env.VITE_API_URL ?? ''}/api/chats/${chatId}/stream`,
+      // Retry through Cloud Run cold starts. Retries only fire before any stream
+      // bytes are written (network abort / non-JSON 5xx), so an in-progress
+      // generation is never re-sent; JSON 429 (rate limit) and JSON 5xx (app
+      // error) pass straight through to the error handling below.
+      fetch: (input, init) => fetchWithRetry(fetch, input, init, createColdStartTracker()),
       prepareSendMessagesRequest: async ({ messages, trigger, messageId }) => {
         const last = messages[messages.length - 1]
         const text =
