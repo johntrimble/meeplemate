@@ -7,7 +7,7 @@
 // instance is booting are rejected by the Cloud Run proxy. Those failures show
 // up in the browser as either:
 //
-//   - a `TypeError` (an aborted CORS *preflight* — JS can't see the status/body), or
+//   - a `TypeError` (an aborted CORS *preflight* - JS can't see the status/body), or
 //   - an HTTP 429/500/503 with a *plain-text* body ("...no available instance.").
 //
 // Both are transient and resolve once the instance is warm, so we retry them
@@ -42,9 +42,9 @@ export interface RetryOptions {
 
 /**
  * Classify an HTTP response. The `Content-Type` is the key signal:
- *   - non-JSON 429/503/5xx  → Cloud Run infra abort (retry)
- *   - JSON 5xx              → real FastAPI error (surface, don't retry)
- *   - everything else       → return as-is (incl. JSON 429 rate limits, 401/404)
+ *   - non-JSON 429/503/5xx  -> Cloud Run infra abort (retry)
+ *   - JSON 5xx              -> real FastAPI error (surface, don't retry)
+ *   - everything else       -> return as-is (incl. JSON 429 rate limits, 401/404)
  */
 export function classifyResponse(res: Response): ResponseClass {
   const contentType = res.headers.get('content-type') ?? ''
@@ -82,7 +82,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 /**
  * Fetch with cold-start retries. Wraps any `fetch`-like function, respecting an
- * optional caller `AbortSignal` (in `init.signal`) — a caller abort propagates
+ * optional caller `AbortSignal` (in `init.signal`) - a caller abort propagates
  * immediately and is never retried.
  *
  * The per-attempt timeout governs only *getting the Response* (headers). Once
@@ -126,7 +126,7 @@ export async function fetchWithRetry(
         callerSignal?.removeEventListener('abort', onCallerAbort)
       }
 
-      // A caller abort is intentional cancellation — surface it, never retry.
+      // A caller abort is intentional cancellation - surface it, never retry.
       if (callerSignal?.aborted) {
         if (caught !== undefined) throw caught
         return response as Response
@@ -144,7 +144,7 @@ export async function fetchWithRetry(
         reason = 'infra'
       }
 
-      // Not transient → return the response as-is ('ok' or 'app-error').
+      // Not transient -> return the response as-is ('ok' or 'app-error').
       if (reason === null) return response!
 
       // Transient: retry until the budget is exhausted, then surface the last

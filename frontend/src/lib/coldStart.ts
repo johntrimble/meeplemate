@@ -7,7 +7,7 @@ import type { RetryOptions } from './fetchWithRetry'
 //
 // Tracks how many in-flight requests are currently retrying through a cold
 // start (see fetchWithRetry). The UI subscribes via `useColdStart()` to show a
-// low-key "Waking up the server…" hint — not an error — while a slow Cloud Run
+// low-key "Waking up the server..." hint - not an error - while a slow Cloud Run
 // instance boots.
 
 let activeCount = 0

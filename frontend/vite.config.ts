@@ -7,7 +7,7 @@ import { defineConfig, type Plugin } from 'vite'
  * Dev-only plugin that simulates a Cloud Run cold start so a developer can see
  * how the UI retries and recovers. When `VITE_SIMULATE_COLD_START=<seconds>` is
  * set, every `/api/*` request during the first N seconds after the dev server
- * boots gets a plain-text 500 ("...no available instance.") — exactly what the
+ * boots gets a plain-text 500 ("...no available instance.") - exactly what the
  * Cloud Run proxy returns during a real cold start. After the window, requests
  * proxy to the real backend as usual.
  *

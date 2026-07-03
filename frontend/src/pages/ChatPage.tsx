@@ -51,7 +51,9 @@ function parseRateLimitDetail(error: Error): RateLimitDetail | null {
     const body = JSON.parse(error.message)
     const detail = body?.detail
     if (detail?.error === 'rate_limit_exceeded') return detail as RateLimitDetail
-  } catch {}
+  } catch {
+    // Not a rate-limit error (message wasn't the expected JSON) -- fall through.
+  }
   return null
 }
 

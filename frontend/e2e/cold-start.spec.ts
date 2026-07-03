@@ -16,7 +16,7 @@ const GAME_ID = MUNCHKIN_GAME.id
 const CHAT_ID = 'cold-start-chat'
 
 // ---------------------------------------------------------------------------
-// REST requests (game list) — transparent retry through a cold start
+// REST requests (game list) - transparent retry through a cold start
 // ---------------------------------------------------------------------------
 
 test('REST: retries plain-text 500 cold-start failures then renders data', async ({ page }) => {
@@ -62,7 +62,7 @@ test('REST: retries a network abort (failed CORS preflight) then renders data', 
   await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
 })
 
-test('REST: shows the "Waking up the server…" hint while retrying', async ({ page }) => {
+test('REST: shows the "Waking up the server..." hint while retrying', async ({ page }) => {
   await page.route('**/api/recent-games', (route) => route.fulfill({ json: RECENT_GAMES_PAGE }))
 
   let calls = 0
@@ -79,10 +79,10 @@ test('REST: shows the "Waking up the server…" hint while retrying', async ({ p
 
   await page.goto('/select-game')
 
-  await expect(page.getByText('Waking up the server…')).toBeVisible()
-  // …and it clears once the request succeeds.
+  await expect(page.getByText('Waking up the server...')).toBeVisible()
+  // ...and it clears once the request succeeds.
   await expect(page.getByText(CATAN_GAME.name).first()).toBeVisible()
-  await expect(page.getByText('Waking up the server…')).not.toBeVisible()
+  await expect(page.getByText('Waking up the server...')).not.toBeVisible()
 })
 
 test('REST: a JSON 500 application error is NOT retried', async ({ page }) => {
@@ -98,14 +98,14 @@ test('REST: a JSON 500 application error is NOT retried', async ({ page }) => {
 
   // The error surfaces immediately (no 90s retry loop).
   await expect(page.getByText(/failed to fetch games/i)).toBeVisible()
-  // The request count stops growing — proving it was not retried as transient.
+  // The request count stops growing - proving it was not retried as transient.
   const settled = calls
   await page.waitForTimeout(1500)
   expect(calls).toBe(settled)
 })
 
 // ---------------------------------------------------------------------------
-// Chat stream — retry cold starts without disturbing rate-limit / app errors
+// Chat stream - retry cold starts without disturbing rate-limit / app errors
 // ---------------------------------------------------------------------------
 
 const SSE_STREAM = [
