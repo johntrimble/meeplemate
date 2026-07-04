@@ -5,6 +5,7 @@ import { apiGameToGame, type Game, type GamesPage } from '@/data/games'
 interface UseGameListResult {
   games: Game[]
   isLoading: boolean
+  isFetchingMore: boolean
   error: string | null
   hasMore: boolean
   loadMore: () => void
@@ -32,6 +33,7 @@ export function useGameList(): UseGameListResult {
   return {
     games: query.data?.pages.flatMap((p) => p.data.map(apiGameToGame)) ?? [],
     isLoading: query.isPending,
+    isFetchingMore: query.isFetchingNextPage,
     error: query.error ? (query.error as Error).message : null,
     hasMore: query.hasNextPage,
     loadMore: () => query.fetchNextPage(),

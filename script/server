@@ -24,6 +24,9 @@ frontend_pid=$!
 
 echo "API server running (PID $api_pid) on http://localhost:8000"
 echo "Frontend running (PID $frontend_pid) on http://localhost:5173"
+if [ -n "$VITE_SIMULATE_COLD_START" ]; then
+    echo "Cold-start simulation ON: /api/* returns 500 for the first ${VITE_SIMULATE_COLD_START}s (unset VITE_SIMULATE_COLD_START to disable)"
+fi
 echo "Press Ctrl+C to stop."
 
 wait
