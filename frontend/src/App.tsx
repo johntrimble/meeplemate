@@ -3,7 +3,8 @@ import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client
 import { AuthProvider } from '@/auth/AuthProvider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { CacheGate } from '@/auth/CacheGate'
-import { queryClient, localStoragePersister } from '@/lib/queryClient'
+import { queryClient, persister } from '@/lib/queryClient'
+import { CACHE_SCHEMA_VERSION, RETENTION_MS, makeShouldDehydrateQuery } from '@/lib/cachePersist'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import SelectGamePage from './pages/SelectGamePage'
@@ -16,7 +17,12 @@ function App() {
   return (
     <PersistQueryClientProvider
       client={queryClient}
-      persistOptions={{ persister: localStoragePersister }}
+      persistOptions={{
+        persister,
+        maxAge: RETENTION_MS,
+        buster: CACHE_SCHEMA_VERSION,
+        dehydrateOptions: { shouldDehydrateQuery: makeShouldDehydrateQuery(queryClient) },
+      }}
     >
     <Routes>
       <Route path="/maintenance" element={<MaintenancePage />} />

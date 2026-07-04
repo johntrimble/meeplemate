@@ -1,4 +1,4 @@
-import { queryClient, localStoragePersister } from './queryClient'
+import { queryClient, persister } from './queryClient'
 
 // ---------------------------------------------------------------------------
 // Cache identity isolation
@@ -14,18 +14,21 @@ const LAST_UID_KEY = 'boardbarian-last-uid'
 
 function dropCache() {
   queryClient.clear()
-  localStoragePersister.removeClient()
+  persister.removeClient()
 }
 
 /**
- * Reconcile the cache against the current identity. Clears everything if the
- * last authenticated uid differs from `uid`; a matching uid is a no-op so the
- * warm cache survives (including after a lapsed session + re-login). Always
- * records `uid` as the last identity.
+ * Reconcile the cache against the current identity. Clears everything unless the
+ * last recorded uid matches `uid` — so a matching uid is a no-op (warm cache
+ * survives, including after a lapsed session + re-login), while a *different* or
+ * *unknown* owner is dropped. Treating an unknown owner (no recorded uid but a
+ * persisted cache present — e.g. a browser that had a cache before this feature
+ * shipped) as different prevents serving that stale cache to whoever logs in.
+ * Always records `uid` as the last identity.
  */
 export function reconcileUserCache(uid: string) {
   const lastUid = localStorage.getItem(LAST_UID_KEY)
-  if (lastUid && lastUid !== uid) {
+  if (lastUid !== uid) {
     dropCache()
   }
   localStorage.setItem(LAST_UID_KEY, uid)
