@@ -12,24 +12,29 @@ import { queryClient, persister } from './queryClient'
 
 const LAST_UID_KEY = 'boardbarian-last-uid'
 
-function dropCache() {
+async function dropCache() {
   queryClient.clear()
-  persister.removeClient()
+  // Await the IndexedDB deletion - the persister is async, so callers must not
+  // record new ownership until the old blob is actually gone (see below).
+  await persister.removeClient()
 }
 
 /**
  * Reconcile the cache against the current identity. Clears everything unless the
- * last recorded uid matches `uid` — so a matching uid is a no-op (warm cache
+ * last recorded uid matches `uid` - so a matching uid is a no-op (warm cache
  * survives, including after a lapsed session + re-login), while a *different* or
  * *unknown* owner is dropped. Treating an unknown owner (no recorded uid but a
- * persisted cache present — e.g. a browser that had a cache before this feature
+ * persisted cache present - e.g. a browser that had a cache before this feature
  * shipped) as different prevents serving that stale cache to whoever logs in.
- * Always records `uid` as the last identity.
+ *
+ * The new uid is recorded only *after* the old blob is deleted: if we're
+ * interrupted mid-delete, `last-uid` stays old so the next load re-clears rather
+ * than serving the previous user's data under the new owner.
  */
-export function reconcileUserCache(uid: string) {
+export async function reconcileUserCache(uid: string) {
   const lastUid = localStorage.getItem(LAST_UID_KEY)
   if (lastUid !== uid) {
-    dropCache()
+    await dropCache()
   }
   localStorage.setItem(LAST_UID_KEY, uid)
 }
@@ -39,7 +44,7 @@ export function reconcileUserCache(uid: string) {
  * user starts clean. A lapsed session (not an explicit logout) must NOT call
  * this, or a returning same user would lose their cache.
  */
-export function clearUserCache() {
-  dropCache()
+export async function clearUserCache() {
+  await dropCache()
   localStorage.removeItem(LAST_UID_KEY)
 }

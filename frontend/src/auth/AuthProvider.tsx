@@ -101,9 +101,10 @@ function FirebaseAuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
-    // Clear cached data on explicit logout — privacy at rest, and the next user
+    // Clear cached data on explicit logout - privacy at rest, and the next user
     // starts clean. (A lapsed session is handled by reconcile, not here.)
-    clearUserCache()
+    // Fire-and-forget: the async IndexedDB delete needn't block sign-out.
+    void clearUserCache().catch((err) => console.error('cache clear failed', err))
     signOut(auth).catch(console.error)
   }
 

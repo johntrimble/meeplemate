@@ -24,8 +24,17 @@ export function CacheGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (isRestoring || isLoading || !uid) return
+    let cancelled = false
+    // Only reveal children once the reconcile (incl. the async IndexedDB delete)
+    // has finished, and never set state after unmount or a uid change.
     reconcileUserCache(uid)
-    setReconciledUid(uid)
+      .then(() => {
+        if (!cancelled) setReconciledUid(uid)
+      })
+      .catch((err) => console.error('cache reconcile failed', err))
+    return () => {
+      cancelled = true
+    }
   }, [isRestoring, isLoading, uid])
 
   // Still settling (restoring cache or resolving auth).
