@@ -23,7 +23,7 @@ import { type Game } from '@/data/games'
 import { useGame } from '@/hooks/useGame'
 import { useChats } from '@/hooks/useChats'
 import { cn } from '@/lib/utils'
-import { createColdStartTracker } from '@/lib/coldStart'
+import { LoadingLabel } from '@/components/LoadingLabel'
 import { fetchWithRetry } from '@/lib/fetchWithRetry'
 import {
   CheckIcon,
@@ -83,7 +83,7 @@ interface SidebarProps {
 
 function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
   const navigate = useNavigate()
-  const { chats, hasNextPage, loadMore, isFetching } = useChats(gameId, open)
+  const { chats, hasNextPage, loadMore, isFetching, isPending, isFetchingMore } = useChats(gameId, open)
   const sentinelRef = useRef<HTMLDivElement>(null)
 
   // Load the next page when the sentinel scrolls into view.
@@ -164,8 +164,10 @@ function Sidebar({ open, onClose, gameId, currentChatId }: SidebarProps) {
             </Button>
           ))}
           <div ref={sentinelRef} className="py-1 flex justify-center">
-            {isFetching && (
-              <span className="text-xs text-muted-foreground">Loading…</span>
+            {/* Only on first load (no cache) or when paginating — a silent
+                background refetch over cached chats shows nothing. */}
+            {(isPending || isFetchingMore) && (
+              <LoadingLabel className="text-xs text-muted-foreground">Loading…</LoadingLabel>
             )}
           </div>
         </div>
@@ -599,7 +601,7 @@ function ExistingChat({
     return (
       <PageChrome game={game} gameId={gameId} chatId={chatId}>
         <div className="flex-1 min-h-0 flex items-center justify-center">
-          <span className="text-sm text-muted-foreground">Loading…</span>
+          <LoadingLabel className="text-sm text-muted-foreground">Loading…</LoadingLabel>
         </div>
       </PageChrome>
     )
@@ -658,7 +660,7 @@ function ChatView({
       // bytes are written (network abort / non-JSON 5xx), so an in-progress
       // generation is never re-sent; JSON 429 (rate limit) and JSON 5xx (app
       // error) pass straight through to the error handling below.
-      fetch: (input, init) => fetchWithRetry(fetch, input, init, createColdStartTracker()),
+      fetch: (input, init) => fetchWithRetry(fetch, input, init),
       prepareSendMessagesRequest: async ({ messages, trigger, messageId }) => {
         const last = messages[messages.length - 1]
         const text =
@@ -761,9 +763,11 @@ export default function ChatPage() {
   if (isLoading || !game) {
     return (
       <div className="fixed inset-0 bg-background flex items-center justify-center">
-        <span className="text-sm text-muted-foreground">
-          {error ?? 'Loading…'}
-        </span>
+        {error ? (
+          <span className="text-sm text-muted-foreground">{error}</span>
+        ) : (
+          <LoadingLabel className="text-sm text-muted-foreground">Loading…</LoadingLabel>
+        )}
       </div>
     )
   }

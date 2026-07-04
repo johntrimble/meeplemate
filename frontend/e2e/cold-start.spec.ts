@@ -62,27 +62,35 @@ test('REST: retries a network abort (failed CORS preflight) then renders data', 
   await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
 })
 
-test('REST: shows the "Waking up the server..." hint while retrying', async ({ page }) => {
+test('REST: the loading indicator switches to the cold-start hint, then recovers', async ({ page }) => {
   await page.route('**/api/recent-games', (route) => route.fulfill({ json: RECENT_GAMES_PAGE }))
 
+  // Keep the games request failing (retrying) until we let it succeed, so the
+  // loading indicator stays visible long enough to cross the slow threshold.
+  let allowSuccess = false
   let calls = 0
-  await page.route('**/api/games?*', async (route) => {
+  await page.route('**/api/games?*', (route) => {
     calls++
-    if (calls <= 2) {
-      // Small delay so the retry hint is observable.
-      await new Promise((r) => setTimeout(r, 300))
-      route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
-    } else {
+    if (allowSuccess) {
       route.fulfill({ json: GAMES_PAGE })
+    } else {
+      route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
     }
   })
 
   await page.goto('/select-game')
 
-  await expect(page.getByText('Waking up the server...')).toBeVisible()
-  // ...and it clears once the request succeeds.
-  await expect(page.getByText(CATAN_GAME.name).first()).toBeVisible()
+  // The normal loading text shows first...
+  await expect(page.getByText('Loading games…')).toBeVisible()
+  // ...then, once it's been pending a while, it reassures that the server is waking up.
+  await expect(page.getByText('Waking up the server...')).toBeVisible({ timeout: 15_000 })
+
+  // Let the "cold start" finish and confirm the UI recovers with no error.
+  allowSuccess = true
+  await expect(page.getByText(CATAN_GAME.name).first()).toBeVisible({ timeout: 15_000 })
   await expect(page.getByText('Waking up the server...')).not.toBeVisible()
+  await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
+  expect(calls).toBeGreaterThanOrEqual(2)
 })
 
 test('REST: a JSON 500 application error is NOT retried', async ({ page }) => {

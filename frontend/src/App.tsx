@@ -4,7 +4,6 @@ import { AuthProvider } from '@/auth/AuthProvider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ProtectedRoute } from '@/auth/ProtectedRoute'
 import { queryClient, localStoragePersister } from '@/lib/queryClient'
-import { ColdStartBanner } from '@/components/ColdStartBanner'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import SelectGamePage from './pages/SelectGamePage'
@@ -19,7 +18,6 @@ function App() {
       client={queryClient}
       persistOptions={{ persister: localStoragePersister }}
     >
-    <ColdStartBanner />
     <Routes>
       <Route path="/maintenance" element={<MaintenancePage />} />
       <Route path="*" element={

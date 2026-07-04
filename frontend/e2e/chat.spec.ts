@@ -241,6 +241,11 @@ test('sidebar shows cached chats immediately on reopen when API is slow', async 
   // Second open: API is slow but cached data renders instantly.
   await page.getByRole('button', { name: 'Open menu' }).click()
   await expect(page.getByText(SIDEBAR_CHAT.title)).toBeVisible({ timeout: 500 })
+
+  // The background refetch over cached data must stay silent — no loading
+  // indicator (and therefore no cold-start hint) when we already have chats.
+  await expect(page.getByText('Loading…')).not.toBeVisible()
+  await expect(page.getByText('Waking up the server...')).not.toBeVisible()
 })
 
 // ---------------------------------------------------------------------------

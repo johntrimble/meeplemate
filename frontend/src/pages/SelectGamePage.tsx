@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { LoadingLabel } from '@/components/LoadingLabel'
 import { type Game } from '@/data/games'
 import { MOCK_USER } from '@/data/user'
 import { useGameList } from '@/hooks/useGameList'
@@ -29,7 +30,7 @@ function GameCard({ game, size = 'md' }: { game: Game; size?: 'sm' | 'md' }) {
 
 export default function SelectGamePage() {
   const { games: recentGames, isLoading: recentLoading } = useRecentGames()
-  const { games, isLoading, error, hasMore, loadMore } = useGameList()
+  const { games, isLoading, isFetchingMore, error, hasMore, loadMore } = useGameList()
   const sentinelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -80,7 +81,9 @@ export default function SelectGamePage() {
           {/* All Games */}
           <section className="mt-8">
             {isLoading && games.length === 0 ? (
-              <div className="text-sm text-muted-foreground text-center py-8">Loading games…</div>
+              <LoadingLabel className="block text-sm text-muted-foreground text-center py-8">
+                Loading games…
+              </LoadingLabel>
             ) : error && games.length === 0 ? (
               <div className="text-sm text-destructive text-center py-8">{error}</div>
             ) : games.length === 0 ? (
@@ -94,8 +97,10 @@ export default function SelectGamePage() {
             )}
             {/* Sentinel for infinite scroll */}
             <div ref={sentinelRef} />
-            {isLoading && games.length > 0 && (
-              <div className="text-sm text-muted-foreground text-center py-4">Loading more…</div>
+            {isFetchingMore && (
+              <LoadingLabel className="block text-sm text-muted-foreground text-center py-4">
+                Loading more…
+              </LoadingLabel>
             )}
           </section>
         </div>

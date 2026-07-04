@@ -16,6 +16,8 @@ interface UseChatsResult {
   hasNextPage: boolean
   loadMore: () => void
   isFetching: boolean
+  isPending: boolean
+  isFetchingMore: boolean
 }
 
 export function useChats(gameId: string, enabled: boolean): UseChatsResult {
@@ -40,5 +42,7 @@ export function useChats(gameId: string, enabled: boolean): UseChatsResult {
     hasNextPage: query.hasNextPage,
     loadMore: () => query.fetchNextPage(),
     isFetching: query.isFetching,
+    isPending: query.isPending,
+    isFetchingMore: query.isFetchingNextPage,
   }
 }

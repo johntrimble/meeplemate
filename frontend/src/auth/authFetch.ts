@@ -1,6 +1,5 @@
 import { useCallback } from 'react'
 import { useAuth } from './useAuth'
-import { createColdStartTracker } from '@/lib/coldStart'
 import { fetchWithRetry } from '@/lib/fetchWithRetry'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
@@ -17,17 +16,12 @@ export function useAuthFetch() {
 
   return useCallback(async (url: string, options: RequestInit = {}): Promise<Response> => {
     const token = await getIdToken()
-    return fetchWithRetry(
-      fetch,
-      `${BASE_URL}${url}`,
-      {
-        ...options,
-        headers: {
-          ...options.headers,
-          Authorization: `Bearer ${token}`,
-        },
+    return fetchWithRetry(fetch, `${BASE_URL}${url}`, {
+      ...options,
+      headers: {
+        ...options.headers,
+        Authorization: `Bearer ${token}`,
       },
-      createColdStartTracker(),
-    )
+    })
   }, [getIdToken])
 }
