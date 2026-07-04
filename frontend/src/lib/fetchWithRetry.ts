@@ -74,7 +74,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(signal!.reason)
     }
     const timer = setTimeout(() => {
-      // Timer won — drop the abort listener so it doesn't accumulate on a
+      // Timer won - drop the abort listener so it doesn't accumulate on a
       // long-lived caller signal across many retries.
       signal?.removeEventListener('abort', onAbort)
       resolve()
@@ -91,6 +91,16 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * The per-attempt timeout governs only *getting the Response* (headers). Once
  * headers arrive the body/stream is left untouched, so a queued cold-start
  * request is never cut off and an in-progress stream is never interrupted.
+ *
+ * `retryWindowMs` and `requestTimeoutMs` are independent by design: the window
+ * bounds when a *new* attempt may start, while the timeout is the full time any
+ * single in-flight request is allowed before we give up on it. We deliberately
+ * do NOT shrink a late attempt's timeout to the remaining window - a request
+ * that starts near the end may be the one finally getting served after being
+ * queued through the cold start, and issue #48 requires we never abandon it
+ * before ~90s of silence. So worst-case wall time is ~retryWindowMs +
+ * requestTimeoutMs, but only if an attempt genuinely blocks that long; the
+ * transient failures we retry (immediate 500 / preflight abort) return at once.
  */
 export async function fetchWithRetry(
   fetchImpl: FetchLike,

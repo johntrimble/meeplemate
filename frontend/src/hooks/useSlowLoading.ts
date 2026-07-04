@@ -21,6 +21,8 @@ export function useSlowLoading(delayMs: number = SLOW_LOADING_MS): boolean {
   const [isSlow, setIsSlow] = useState(false)
 
   useEffect(() => {
+    // Reset so a changed delay re-arms from `false` instead of staying stuck on.
+    setIsSlow(false)
     const timer = setTimeout(() => setIsSlow(true), delayMs)
     return () => clearTimeout(timer)
   }, [delayMs])
