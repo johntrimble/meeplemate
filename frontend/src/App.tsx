@@ -2,8 +2,9 @@ import { Routes, Route } from 'react-router-dom'
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client'
 import { AuthProvider } from '@/auth/AuthProvider'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { ProtectedRoute } from '@/auth/ProtectedRoute'
-import { queryClient, localStoragePersister } from '@/lib/queryClient'
+import { CacheGate } from '@/auth/CacheGate'
+import { queryClient, persister } from '@/lib/queryClient'
+import { CACHE_SCHEMA_VERSION, RETENTION_MS, makeShouldDehydrateQuery } from '@/lib/cachePersist'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import SelectGamePage from './pages/SelectGamePage'
@@ -16,7 +17,12 @@ function App() {
   return (
     <PersistQueryClientProvider
       client={queryClient}
-      persistOptions={{ persister: localStoragePersister }}
+      persistOptions={{
+        persister,
+        maxAge: RETENTION_MS,
+        buster: CACHE_SCHEMA_VERSION,
+        dehydrateOptions: { shouldDehydrateQuery: makeShouldDehydrateQuery(queryClient) },
+      }}
     >
     <Routes>
       <Route path="/maintenance" element={<MaintenancePage />} />
@@ -26,9 +32,9 @@ function App() {
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/login" element={<LoginPage />} />
-              <Route path="/select-game" element={<SelectGamePage />} />
-              <Route path="/chat/:gameId" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
-              <Route path="/chat/:gameId/:chatId" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
+              <Route path="/select-game" element={<CacheGate><SelectGamePage /></CacheGate>} />
+              <Route path="/chat/:gameId" element={<CacheGate><ChatPage /></CacheGate>} />
+              <Route path="/chat/:gameId/:chatId" element={<CacheGate><ChatPage /></CacheGate>} />
               <Route path="/not-authorized" element={<NotAuthorizedPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Routes>

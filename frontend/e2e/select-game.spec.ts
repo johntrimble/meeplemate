@@ -80,18 +80,42 @@ test('games are visible from in-memory cache after SPA navigation away and back'
   await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
 })
 
-test('games are visible from localStorage cache after full page reload', async ({ page }) => {
+test('games are visible from persisted (IndexedDB) cache after full page reload', async ({ page }) => {
   await mockGameListRoutes(page)
   await page.goto('/select-game')
   await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
 
-  // Wait for the persister to write to localStorage (throttleTime:0 is async via setTimeout).
-  await page.waitForFunction(() => {
-    const raw = window.localStorage.getItem('boardbarian-cache-v1')
-    return raw !== null && raw.includes('Munchkin')
-  })
+  // Wait for the persister to write the cache to IndexedDB (idb-keyval store).
+  // Note: use page.evaluate (which awaits the promise) inside expect.poll — a
+  // bare waitForFunction returning a Promise resolves immediately (truthy object).
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            new Promise<boolean>((resolve) => {
+              const req = indexedDB.open('keyval-store')
+              req.onupgradeneeded = () => req.result.createObjectStore('keyval')
+              req.onsuccess = () => {
+                let store: IDBObjectStore
+                try {
+                  store = req.result.transaction('keyval', 'readonly').objectStore('keyval')
+                } catch {
+                  resolve(false)
+                  return
+                }
+                const g = store.get('boardbarian-cache-v1')
+                g.onsuccess = () => resolve(typeof g.result === 'string' && g.result.includes('Munchkin'))
+                g.onerror = () => resolve(false)
+              }
+              req.onerror = () => resolve(false)
+            }),
+        ),
+      { timeout: 10_000 },
+    )
+    .toBe(true)
 
-  // Block API before reloading — the persisted localStorage cache should serve data.
+  // Block API before reloading — the persisted IndexedDB cache should serve data.
   await page.route('**/api/games?*', (route) => route.fulfill({ status: 500 }))
   await page.route('**/api/recent-games', (route) => route.fulfill({ status: 500 }))
 
