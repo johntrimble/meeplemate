@@ -24,7 +24,9 @@ frontend_pid=$!
 
 echo "API server running (PID $api_pid) on http://localhost:8000"
 echo "Frontend running (PID $frontend_pid) on http://localhost:5173"
-if [ -n "$VITE_SIMULATE_COLD_START" ]; then
+# Only report the simulation as ON when the value is a positive number, matching
+# when the Vite plugin actually enables it (so "0" / non-numeric don't mislead).
+if [[ "$VITE_SIMULATE_COLD_START" =~ ^[0-9]+$ ]] && [ "$VITE_SIMULATE_COLD_START" -gt 0 ]; then
     echo "Cold-start simulation ON: /api/* returns 500 for the first ${VITE_SIMULATE_COLD_START}s (unset VITE_SIMULATE_COLD_START to disable)"
 fi
 echo "Press Ctrl+C to stop."

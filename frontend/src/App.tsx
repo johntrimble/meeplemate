@@ -2,7 +2,7 @@ import { Routes, Route } from 'react-router-dom'
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client'
 import { AuthProvider } from '@/auth/AuthProvider'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { ProtectedRoute } from '@/auth/ProtectedRoute'
+import { CacheGate } from '@/auth/CacheGate'
 import { queryClient, localStoragePersister } from '@/lib/queryClient'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
@@ -26,9 +26,9 @@ function App() {
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/login" element={<LoginPage />} />
-              <Route path="/select-game" element={<SelectGamePage />} />
-              <Route path="/chat/:gameId" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
-              <Route path="/chat/:gameId/:chatId" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
+              <Route path="/select-game" element={<CacheGate><SelectGamePage /></CacheGate>} />
+              <Route path="/chat/:gameId" element={<CacheGate><ChatPage /></CacheGate>} />
+              <Route path="/chat/:gameId/:chatId" element={<CacheGate><ChatPage /></CacheGate>} />
               <Route path="/not-authorized" element={<NotAuthorizedPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Routes>

@@ -85,7 +85,7 @@ test('games are visible from localStorage cache after full page reload', async (
   await page.goto('/select-game')
   await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
 
-  // Wait for the persister to write to localStorage (throttleTime:0 is async via setTimeout).
+  // Wait for the persister to write to localStorage (throttled, async via setTimeout).
   await page.waitForFunction(() => {
     const raw = window.localStorage.getItem('boardbarian-cache-v1')
     return raw !== null && raw.includes('Munchkin')

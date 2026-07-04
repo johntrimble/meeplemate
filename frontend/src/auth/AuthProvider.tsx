@@ -24,6 +24,7 @@ import {
   type User,
 } from 'firebase/auth'
 import { AuthContext, type AuthUser } from './AuthContext'
+import { clearUserCache } from '@/lib/userCache'
 
 const EMULATOR_MODE = import.meta.env.VITE_FIREBASE_EMULATOR === 'true'
 // If no explicit host is configured, use the same hostname the browser is using.
@@ -100,6 +101,9 @@ function FirebaseAuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
+    // Clear cached data on explicit logout — privacy at rest, and the next user
+    // starts clean. (A lapsed session is handled by reconcile, not here.)
+    clearUserCache()
     signOut(auth).catch(console.error)
   }
 

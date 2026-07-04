@@ -16,5 +16,4 @@ export const queryClient = new QueryClient({
 export const localStoragePersister = createSyncStoragePersister({
   storage: window.localStorage,
   key: 'boardbarian-cache-v1',
-  throttleTime: 0,
 })
