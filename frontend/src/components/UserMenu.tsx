@@ -24,10 +24,10 @@ export function UserMenu({ className }: { className?: string }) {
 
   const handleLogout = () => {
     logout()
-    navigate('/')
+    navigate('/', { replace: true })
   }
 
-  const label = user?.name || user?.email || 'Account'
+  const label = user?.name?.trim() || user?.email?.trim() || 'Account'
 
   return (
     <DropdownMenu>
