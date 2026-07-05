@@ -3,17 +3,26 @@ from langchain.chat_models import BaseChatModel
 from structlog import get_logger
 from typing import Iterator, Sequence, TypedDict, override, Callable
 import json
-from uuid import UUID
-from datetime import datetime
-from fnmatch import fnmatch
 
 from langchain_core.tracers import Run
-from langchain_core.load import dumpd
 from meeplemate.util import slurp_yaml, snake_case
 
 # Create tracer for persisting langchain runs during tests
 from langchain_core.tracers.base import AsyncBaseTracer
 from pathlib import Path
+
+# Run-tree serialization/transform helpers now live in meeplemate.tracing so the
+# server can reuse them without importing the eval package. Re-exported here for
+# backward compatibility with existing eval call sites.
+from meeplemate.tracing.serialization import (
+    RunEncoder,
+    compose_transformers,
+    filter_children_by_predicate,
+    limit_run_tree_depth,
+    run_to_dict as _run_to_dict,
+    skip_run_types,
+    transform_run_tree,
+)
 
 from deepeval.models.base_model import DeepEvalBaseLLM
 from deepeval.dataset.golden import Golden
@@ -46,22 +55,6 @@ def load_goldens() -> Sequence[Golden]:
             )
             goldens.append(golden)
     return goldens
-
-
-class RunEncoder(json.JSONEncoder):
-    """Custom JSON encoder for Run objects that handles UUIDs, datetimes, and other LangChain types."""
-
-    def default(self, o):
-        if isinstance(o, UUID):
-            return str(o)
-        if isinstance(o, datetime):
-            return o.isoformat()
-        # For any other complex object, try to use dumpd
-        try:
-            return dumpd(o)
-        except Exception:
-            # Fall back to string representation
-            return str(o)
 
 
 def get_test_run_file_path(
@@ -363,150 +356,6 @@ def get_run_summary(run: Run) -> dict:
         "run_type_counts": dict(count_by_type(run)),
         "error": run.error if run.error else None,
     }
-
-
-def transform_run_tree(
-    run: Run,
-    transform_fn: Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]
-) -> Run | None:
-    """Generic tree transformer for Run objects.
-
-    Recursively transforms a run tree by applying a transformation function to each node.
-    The transformer can modify nodes, skip them (promoting their children), or filter children.
-
-    Args:
-        run: The run to transform
-        transform_fn: Function that takes (run, transformed_children) and returns
-                     (transformed_run_or_None, children_to_use).
-                     - Return (None, children) to skip this node and promote children
-                     - Return (run, children) to keep the node with new children
-                     - Return (run, []) to keep node but remove all children
-
-    Returns:
-        Transformed run, or None if the root should be skipped
-    """
-    def _inner(run: Run) -> list[Run]:
-        # Recursively transform children, collecting promoted ones
-        transformed_children = []
-        for child in run.child_runs:
-            transformed_children.extend(_inner(child))
-
-        # Apply transformation to this node
-        transformed_run, final_children = transform_fn(run, transformed_children)
-
-        if transformed_run is not None:
-            transformed_run.child_runs = final_children
-            return [transformed_run]
-        else:
-            # Node was skipped — promote its children to the parent
-            return final_children
-
-    results = _inner(run)
-    return results[0] if results else None
-
-
-def filter_children_by_predicate(
-    predicate: Callable[[Run], bool]
-) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
-    """Create a transformer that filters children based on a predicate.
-
-    Args:
-        predicate: Function that returns True for children to keep
-
-    Returns:
-        A transformer function
-
-    Example:
-        transformer = filter_children_by_predicate(lambda r: r.run_type != "retriever")
-        filtered_run = transform_run_tree(run, transformer)
-    """
-    def transformer(run: Run, children: list[Run]) -> tuple[Run | None, list[Run]]:
-        filtered_children = [c for c in children if predicate(c)]
-        return (run, filtered_children)
-    return transformer
-
-
-def limit_run_tree_depth(run: Run, max_depth: int) -> Run:
-    """Limit the depth of a run tree.
-
-    Unlike the transformer-based approach, this function directly limits tree depth
-    by truncating children beyond the specified depth.
-
-    Args:
-        run: The run to limit
-        max_depth: Maximum depth to preserve (0 means only root with no children)
-
-    Returns:
-        Run with depth limited
-
-    Example:
-        limited_run = limit_run_tree_depth(run, max_depth=3)
-    """
-    def limit_depth_recursive(node: Run, current_depth: int) -> Run:
-        if current_depth >= max_depth:
-            # Truncate children at this level
-            node.child_runs = []
-            return node
-
-        # Recursively limit children
-        node.child_runs = [
-            limit_depth_recursive(child, current_depth + 1)
-            for child in node.child_runs
-        ]
-        return node
-
-    return limit_depth_recursive(run, 0)
-
-
-def compose_transformers(
-    *transformers: Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]
-) -> Callable[[Run, list[Run]], tuple[Run | None, list[Run]]]:
-    """Compose multiple transformers into a single transformer.
-
-    Transformers are applied in order. If any transformer removes a node,
-    subsequent transformers are skipped for that node.
-
-    Args:
-        *transformers: Variable number of transformer functions
-
-    Returns:
-        A composed transformer function
-
-    Example:
-        transformer = compose_transformers(
-            skip_run_types({"RunnableLambda"}),
-            filter_children_by_predicate(lambda r: r.run_type != "retriever")
-        )
-        transformed_run = transform_run_tree(run, transformer)
-
-        # For depth limiting, use limit_run_tree_depth separately:
-        transformed_run = transform_run_tree(run, transformer)
-        limited_run = limit_run_tree_depth(transformed_run, max_depth=5)
-    """
-    def composed(run: Run, children: list[Run]) -> tuple[Run | None, list[Run]]:
-        current_run = run
-        current_children = children
-
-        for transformer in transformers:
-            if current_run is None:
-                # If a previous transformer removed the node, just promote children
-                return (None, current_children)
-            current_run, current_children = transformer(current_run, current_children)
-
-        return (current_run, current_children)
-    return composed
-
-
-def _run_to_dict(run: Run) -> dict:
-    """Serialize a Run to dict, including child_runs.
-
-    langsmith >= 0.7 marks child_runs with exclude=True in the Pydantic model,
-    so model_dump() silently drops them. We re-add them manually.
-    """
-    d = run.model_dump()
-    if run.child_runs:
-        d["child_runs"] = [_run_to_dict(c) for c in run.child_runs]
-    return d
 
 
 class TestRunTracer(AsyncBaseTracer):

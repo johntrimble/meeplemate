@@ -8,7 +8,6 @@ from typing import Any, Iterator, Sequence, Tuple
 from langchain_core.documents import Document
 from langchain_core.load import dumps, loads
 from langchain_text_splitters import TextSplitter
-from posthog import page
 
 from meeplemate.ingest.gamepackage import GamePackage, Page, get_pages_iter, load_game_package, load_page_metadata, page_md, page_to_document, get_page_chunk_id
 from meeplemate.text_splitters import FixedRecursiveCharacterTextSplitter
