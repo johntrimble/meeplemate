@@ -45,6 +45,7 @@ from meeplemate.search import (
 )
 from meeplemate.server.deps import ApiDeps, CorsConfig
 from meeplemate.server.rate_limit import RateLimitConfig, RateLimiter
+from meeplemate.tracing import TraceSink, build_trace_sink
 
 
 class YamlConfigSettingsSource(PydanticBaseSettingsSource):
@@ -231,6 +232,31 @@ class FirebaseConfig(BaseModel):
     )
 
 
+class TraceConfig(BaseModel):
+    """Configuration for persisting agent run traces.
+
+    Interim persistence of LangChain run traces (issue #53) until a dedicated
+    tracing tool (Langfuse/LangSmith) is set up. Selects where completed run
+    trees are written, keyed by ``<chat_id>/<message_id>.json.gz``.
+    """
+    backend: Literal["gcs", "local", "noop"] = Field(
+        default="noop",
+        description="Trace sink backend: 'gcs' (prod), 'local' (dev/testing), or 'noop' (off). (MM_TRACE__BACKEND)",
+    )
+    bucket: Optional[str] = Field(
+        default=None,
+        description="GCS bucket name; required when backend='gcs'. Provisioned out-of-band with its retention/lifecycle rule. (MM_TRACE__BUCKET)",
+    )
+    prefix: str = Field(
+        default="",
+        description="Optional key prefix prepended to every GCS object. (MM_TRACE__PREFIX)",
+    )
+    local_dir: str = Field(
+        default="./traces",
+        description="Directory for the 'local' backend. (MM_TRACE__LOCAL_DIR)",
+    )
+
+
 class Config(BaseSettings):
     """Main application configuration with environment variable support.
 
@@ -259,6 +285,7 @@ class Config(BaseSettings):
     firebase: FirebaseConfig = Field(default_factory=FirebaseConfig)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
+    trace: TraceConfig = Field(default_factory=TraceConfig)
     auth_bypass: bool = Field(default=False, description="Skip token validation and use a hardcoded user (MM_AUTH_BYPASS)")
     auth_bypass_user: Optional[str] = Field(
         default=None,
@@ -315,6 +342,7 @@ class AppServices(TypedDict):
     qa_service: QAService
     game_service: GameService
     rate_limiter: RateLimiter
+    trace_sink: TraceSink
 
 
 class GameInfoDao:
@@ -546,6 +574,10 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 factory(RateLimiter)(cfg.rate_limit),
                 ["pg_data_layer"],
             ),
+            "trace_sink": (
+                factory(build_trace_sink)(cfg.trace),
+                [],
+            ),
             "api_deps": (
                 factory(ApiDeps)(cors_config=cfg.cors),
                 {
@@ -553,6 +585,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     "game_service": "game_service",
                     "data_layer": "pg_data_layer",
                     "rate_limiter": "rate_limiter",
+                    "trace_sink": "trace_sink",
                 }
             )
         }

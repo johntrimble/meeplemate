@@ -25,6 +25,7 @@ dependencies = [
     "alembic",
     "firebase-admin",
     "fastembed",
+    "google-cloud-storage",
 #    "glmocr @ git+https://github.com/zai-org/GLM-OCR.git@main"
 ]
 

@@ -30,6 +30,7 @@ from meeplemate.db.datalayer import Pagination, TextMessagePart
 from meeplemate.server.auth import AuthUser, get_current_user
 from meeplemate.server.deps import ApiDeps
 from meeplemate.server.rate_limit import RateLimitState, TokenCountingCallback, check_rate_limit
+from meeplemate.tracing import NoopTraceSink, PersistingTracer
 
 
 def get_deps(request: Request) -> ApiDeps:
@@ -384,12 +385,26 @@ async def stream_chat(
 
         final_answer = ""
 
+        # Persist the agent's run trace, keyed by chat/message id. The tracer's
+        # _persist_run fires when the root run completes — inside this generator,
+        # before the response closes — so the upload lands within Cloud Run's
+        # request CPU window. NoopTraceSink (the default) makes this a no-op.
+        callbacks: list = [token_callback]
+        if not isinstance(deps.trace_sink, NoopTraceSink):
+            callbacks.append(
+                PersistingTracer(
+                    deps.trace_sink,
+                    chat_id=chat_id,
+                    message_id=str(msg_id),
+                )
+            )
+
         from langchain_core.runnables import RunnableConfig
         async for _, _, event in chatloop_service.astream(
             service_input,
             subgraphs=True,
             stream_mode=["custom"],
-            config=RunnableConfig(callbacks=[token_callback]),
+            config=RunnableConfig(callbacks=callbacks),
         ):
             match event:
                 case {"type": "mm_step", "description": description}:

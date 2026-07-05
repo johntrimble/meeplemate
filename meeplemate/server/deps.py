@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -8,9 +8,11 @@ from pydantic import BaseModel, Field
 from meeplemate.chatloop import ChatLoopService
 from meeplemate.db.datalayer import BaseDataLayer
 from meeplemate.game_service import GameService
+from meeplemate.tracing import NoopTraceSink
 
 if TYPE_CHECKING:
     from meeplemate.server.rate_limit import RateLimiter
+    from meeplemate.tracing import TraceSink
 
 
 class CorsConfig(BaseModel):
@@ -30,3 +32,4 @@ class ApiDeps:
     data_layer: BaseDataLayer
     rate_limiter: RateLimiter
     cors_config: CorsConfig
+    trace_sink: TraceSink = field(default_factory=NoopTraceSink)
