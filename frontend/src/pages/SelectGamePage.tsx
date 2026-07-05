@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { LoadingLabel } from '@/components/LoadingLabel'
 import { type Game } from '@/data/games'
-import { MOCK_USER } from '@/data/user'
+import { UserMenu } from '@/components/UserMenu'
 import { useGameList } from '@/hooks/useGameList'
 import { useRecentGames } from '@/hooks/useRecentGames'
 
@@ -54,11 +54,9 @@ export default function SelectGamePage() {
     <div className="h-full bg-background flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-border bg-background shrink-0">
-        <div className="max-w-3xl mx-auto flex items-center justify-between px-4 pt-4 pb-3">
+        <div className="max-w-3xl mx-auto flex items-center justify-between px-4 py-3">
           <h1 className="text-lg font-semibold text-foreground">Select a Game</h1>
-          <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center shrink-0">
-            <span className="text-xs font-semibold text-muted-foreground">{MOCK_USER.initials}</span>
-          </div>
+          <UserMenu className="w-9 h-9" />
         </div>
       </header>
 

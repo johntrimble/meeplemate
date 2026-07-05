@@ -17,6 +17,7 @@ import {
   MessageResponse,
 } from '@/components/ai-elements/message'
 import { Button } from '@/components/ui/button'
+import { UserMenu } from '@/components/UserMenu'
 import { useAuthFetch } from '@/auth/authFetch'
 import { useAuth } from '@/auth/useAuth'
 import { type Game } from '@/data/games'
@@ -470,12 +471,6 @@ function EmptyState({
 // Shared page chrome (header + sidebar wrapper)
 // ---------------------------------------------------------------------------
 
-function initials(name: string | null, email: string | null): string {
-  if (name) return name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()
-  if (email) return email[0].toUpperCase()
-  return '?'
-}
-
 function PageChrome({
   game,
   gameId,
@@ -487,7 +482,6 @@ function PageChrome({
   chatId?: string
   children: React.ReactNode
 }) {
-  const { user } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
@@ -521,11 +515,7 @@ function PageChrome({
             {game.name}
           </span>
 
-          <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
-            <span className="text-xs font-semibold text-muted-foreground">
-              {initials(user?.name ?? null, user?.email ?? null)}
-            </span>
-          </div>
+          <UserMenu className="w-9 h-9" />
         </div>
       </header>
 
