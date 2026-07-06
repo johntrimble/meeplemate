@@ -70,15 +70,18 @@ function ChatDemo() {
   }, [reduced])
 
   // Fade a part in once its phase is reached, but keep it mounted the whole
-  // time so its space is always reserved and the card never resizes.
-  const reveal = (shown: boolean) =>
-    reduced
-      ? {}
-      : {
-          initial: { opacity: 0, y: 8 },
-          animate: { opacity: shown ? 1 : 0, y: shown ? 0 : 8 },
-          transition: { duration: 0.4 },
-        }
+  // time so its space is always reserved and the card never resizes. Under
+  // reduced motion every part is forced fully visible with no movement — even
+  // if the preference toggles on mid-cycle — so the demo is never left
+  // partially hidden.
+  const reveal = (shown: boolean) => {
+    const show = reduced || shown
+    return {
+      initial: reduced ? false : { opacity: 0, y: 8 },
+      animate: { opacity: show ? 1 : 0, y: show ? 0 : 8 },
+      transition: { duration: reduced ? 0 : 0.4 },
+    }
+  }
 
   return (
     <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
@@ -166,7 +169,11 @@ export default function HomePage() {
   const navigate = useNavigate()
   const { user } = useAuth()
 
-  const start = () => navigate(user ? '/select-game' : '/login')
+  // Always send the primary CTA to the auth-gated /select-game; CacheGate shows
+  // the sign-in screen when needed. Routing here rather than branching on `user`
+  // avoids misrouting a signed-in user to /login during the brief window where
+  // auth state is still resolving (`user` is momentarily null).
+  const start = () => navigate('/select-game')
 
   return (
     <div className="h-full overflow-y-auto bg-background text-foreground">
@@ -183,7 +190,7 @@ export default function HomePage() {
             </Button>
           ) : (
             <Button variant="outline" size="sm" onClick={() => navigate('/login')}>
-              Sign In
+              Sign in
             </Button>
           )}
         </header>
