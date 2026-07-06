@@ -1,43 +1,235 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { motion, useReducedMotion } from 'motion/react'
+import { ArrowRightIcon, BadgeCheckIcon, DicesIcon, MessageCircleQuestionIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useAuth } from '@/auth/useAuth'
+
+// ---------------------------------------------------------------------------
+// Demo content — a hard-coded sample Q&A used by the animated chat demo.
+// ---------------------------------------------------------------------------
+
+const DEMO_QUESTION = "In Munchkin, can I play a card during another player's combat?"
+const DEMO_ANSWER =
+  'Yes. Most cards can be played during any combat, not just your own — including one-shot items and cards that add monsters to the fight.'
+const DEMO_QUOTE = 'Anyone may play cards to add or remove monsters, or to modify either side, during a combat.'
+const DEMO_CITATION = 'Munchkin Rules — Combat, p. 4'
+
+// ---------------------------------------------------------------------------
+// Hero image — swaps in `public/hero.webp` when present, otherwise renders a
+// correctly-sized placeholder so the layout never looks broken.
+// ---------------------------------------------------------------------------
+
+function HeroImage() {
+  const [ok, setOk] = useState(true)
+
+  return (
+    <div className="w-full max-w-xl aspect-video rounded-2xl overflow-hidden border border-border bg-card shadow-sm">
+      {ok ? (
+        <img
+          src="/hero.webp"
+          alt="Boardbarian — a board game rules assistant"
+          className="w-full h-full object-cover"
+          onError={() => setOk(false)}
+        />
+      ) : (
+        <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-muted-foreground">
+          <span className="text-4xl">🎲</span>
+          <span className="text-xs uppercase tracking-wider">Hero image</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Chat demo — a looping sample conversation. Every part stays mounted so the
+// card reserves its full height from the first frame and simply fills in,
+// rather than growing as each part appears. The reveal loops by resetting
+// `phase` in place. Renders the final state statically under reduced motion.
+// ---------------------------------------------------------------------------
+
+function ChatDemo() {
+  const reduced = useReducedMotion() ?? false
+  // phase 0: question only · 1: + answer · 2: + cited, verified quote
+  const [phase, setPhase] = useState(reduced ? 2 : 0)
+
+  useEffect(() => {
+    if (reduced) return
+    let timers: number[] = []
+    const run = () => {
+      setPhase(0)
+      timers = [
+        window.setTimeout(() => setPhase(1), 900),
+        window.setTimeout(() => setPhase(2), 2100),
+        window.setTimeout(run, 6000),
+      ]
+    }
+    run()
+    return () => timers.forEach(window.clearTimeout)
+  }, [reduced])
+
+  // Fade a part in once its phase is reached, but keep it mounted the whole
+  // time so its space is always reserved and the card never resizes.
+  const reveal = (shown: boolean) =>
+    reduced
+      ? {}
+      : {
+          initial: { opacity: 0, y: 8 },
+          animate: { opacity: shown ? 1 : 0, y: shown ? 0 : 8 },
+          transition: { duration: 0.4 },
+        }
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+      <div className="mb-4 flex items-center gap-2">
+        <div className="flex size-7 items-center justify-center rounded-lg bg-[#7f1d1d] text-sm">⚔️</div>
+        <span className="text-sm font-medium text-foreground">Munchkin</span>
+      </div>
+
+      <div className="flex flex-col gap-4">
+        {/* User question */}
+        <motion.div {...reveal(true)} className="flex justify-end">
+          <div className="max-w-[80%] rounded-2xl bg-muted px-3.5 py-2 text-sm text-foreground">
+            {DEMO_QUESTION}
+          </div>
+        </motion.div>
+
+        {/* Assistant answer */}
+        <motion.div
+          {...reveal(phase >= 1)}
+          aria-hidden={phase < 1}
+          className="text-sm text-foreground leading-relaxed"
+        >
+          {DEMO_ANSWER}
+        </motion.div>
+
+        {/* Cited, verified quote */}
+        <motion.div {...reveal(phase >= 2)} aria-hidden={phase < 2} className="space-y-2">
+          <blockquote className="border-l-2 border-border pl-3 text-sm text-muted-foreground italic">
+            "{DEMO_QUOTE}"
+            <div className="mt-1 not-italic text-xs text-muted-foreground/80">{DEMO_CITATION}</div>
+          </blockquote>
+          <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-400">
+            <BadgeCheckIcon className="size-3.5" />
+            Verified against the rulebook
+          </div>
+        </motion.div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// How it works
+// ---------------------------------------------------------------------------
+
+const STEPS = [
+  {
+    icon: DicesIcon,
+    title: 'Pick a game',
+    body: 'Choose from the games in the library — from Munchkin to Catan to Gloomhaven.',
+  },
+  {
+    icon: MessageCircleQuestionIcon,
+    title: 'Ask in plain English',
+    body: 'Type your rules question the way you would ask a friend across the table.',
+  },
+  {
+    icon: BadgeCheckIcon,
+    title: 'Get a cited answer',
+    body: 'Every answer quotes the actual rulebook, so you can trust it and settle the argument.',
+  },
+]
+
+function HowItWorks() {
+  return (
+    <section className="grid gap-4 sm:grid-cols-3">
+      {STEPS.map(({ icon: Icon, title, body }) => (
+        <div key={title} className="rounded-2xl border border-border bg-card p-5">
+          <div className="mb-3 flex size-9 items-center justify-center rounded-lg bg-muted text-foreground">
+            <Icon className="size-5" />
+          </div>
+          <h3 className="mb-1 text-sm font-semibold text-foreground">{title}</h3>
+          <p className="text-sm text-muted-foreground leading-relaxed">{body}</p>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 export default function HomePage() {
   const navigate = useNavigate()
+  const { user } = useAuth()
+
+  const start = () => navigate(user ? '/select-game' : '/login')
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="max-w-3xl mx-auto px-4 flex flex-col">
-      {/* Header */}
-      <header className="flex items-center justify-end pt-4 pb-2">
-        <Button variant="outline" size="sm" onClick={() => navigate('/login')}>
-          Sign In
-        </Button>
-      </header>
-
-      {/* Hero */}
-      <main className="flex-1 flex items-start gap-4 pt-8">
-        {/* Logo card */}
-        <div className="flex-shrink-0 w-36 h-36 rounded-2xl border border-border bg-card flex items-center justify-center shadow-sm">
-          <div className="flex flex-col items-center gap-1">
-            <span className="text-3xl">🎲</span>
-            <span className="text-xs font-semibold text-muted-foreground tracking-wide uppercase">
-              Boardbarian
-            </span>
+    <div className="h-full overflow-y-auto bg-background text-foreground">
+      <div className="mx-auto max-w-5xl px-4 pb-16">
+        {/* Header */}
+        <header className="flex items-center justify-between py-4">
+          <div className="flex items-center gap-2">
+            <span className="text-xl">🎲</span>
+            <span className="text-sm font-semibold tracking-wide">Boardbarian</span>
           </div>
-        </div>
+          {user ? (
+            <Button variant="ghost" size="sm" onClick={() => navigate('/select-game')}>
+              Open app
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => navigate('/login')}>
+              Sign In
+            </Button>
+          )}
+        </header>
 
-        {/* Marketing copy */}
-        <div className="flex-1 pt-2">
-          <h1 className="text-base font-semibold text-foreground mb-2">
-            Rules questions, answered instantly.
-          </h1>
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            Boardbarian is an AI assistant that answers board game rules
-            questions so you can spend less time flipping through rulebooks and
-            more time playing.
+        {/* Hero */}
+        <section className="grid items-center gap-8 py-10 md:grid-cols-2 md:gap-10 md:py-16">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl md:text-5xl">
+              Rules questions, answered instantly.
+            </h1>
+            <p className="mt-4 max-w-md text-base text-muted-foreground leading-relaxed">
+              Boardbarian is an AI assistant that answers board game rules questions — with
+              citations straight from the rulebook — so you spend less time flipping pages and
+              more time playing.
+            </p>
+            <div className="mt-7 flex items-center gap-3">
+              <Button size="lg" onClick={start}>
+                Get started
+                <ArrowRightIcon className="size-4" />
+              </Button>
+              {!user && (
+                <Button size="lg" variant="ghost" onClick={() => navigate('/login')}>
+                  Sign in
+                </Button>
+              )}
+            </div>
+          </div>
+          <div className="flex justify-center md:justify-end">
+            <HeroImage />
+          </div>
+        </section>
+
+        {/* Live demo */}
+        <section className="py-6">
+          <p className="mb-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            See it in action
           </p>
+          <div className="mx-auto max-w-2xl">
+            <ChatDemo />
+          </div>
+        </section>
+
+        {/* How it works */}
+        <div className="py-10 md:py-14">
+          <HowItWorks />
         </div>
-      </main>
       </div>
     </div>
   )
