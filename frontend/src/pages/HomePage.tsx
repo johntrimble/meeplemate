@@ -9,11 +9,11 @@ import { useAuth } from '@/auth/useAuth'
 // Demo content — a hard-coded sample Q&A used by the animated chat demo.
 // ---------------------------------------------------------------------------
 
-const DEMO_QUESTION = "In Munchkin, can I play a card during another player's combat?"
+const DEMO_QUESTION = "Can I play a Go Up a Level card during combat?"
 const DEMO_ANSWER =
-  'Yes. Most cards can be played during any combat, not just your own — including one-shot items and cards that add monsters to the fight.'
-const DEMO_QUOTE = 'Anyone may play cards to add or remove monsters, or to modify either side, during a combat.'
-const DEMO_CITATION = 'Munchkin Rules — Combat, p. 4'
+  'Yes, you can play a Go Up a Level card during combat. The rules explicitly state: '
+const DEMO_QUOTE = 'Go Up a Level cards may be played on yourself or any other player at any time, even during combat. Discard them once they are played. Exception: You cannot play a Go Up a Level card to give a player the winning level!'
+const DEMO_CITATION = '(Munchkin Rules, p. 2)'
 
 // ---------------------------------------------------------------------------
 // Hero image — swaps in `public/hero.webp` when present, otherwise renders a
@@ -62,7 +62,7 @@ function ChatDemo() {
       timers = [
         window.setTimeout(() => setPhase(1), 900),
         window.setTimeout(() => setPhase(2), 2100),
-        window.setTimeout(run, 6000),
+        window.setTimeout(run, 18000),
       ]
     }
     run()
