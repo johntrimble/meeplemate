@@ -16,7 +16,7 @@ from langchain_core.prompts.prompt import PromptTemplate
 
 from langchain_classic.output_parsers.regex import RegexParser
 
-from meeplemate.ingest.gamepackage import amap, get_document_page_aiter, get_game_presentation_path, get_game_setting_summary_path, save_manifest, document_keys
+from meeplemate.ingest.gamepackage import amap, get_document_page_aiter, get_game_example_questions_path, get_game_presentation_path, get_game_setting_summary_path, save_manifest, document_keys
 from meeplemate.ingest.ocr import GamePackage, aspit
 from meeplemate.util import achain, aenumerate, apairwise, arepeat, aslurp, aspit_yaml, atakewhile, compose, queue_to_async_iter, sink_into_queue, pipeline, to_async_iter, xf_amap
 
@@ -696,4 +696,135 @@ class PresentationJob:
         # Save the output
         presentation_path = get_game_presentation_path(self.gp)
         await aspit_yaml(output, presentation_path)
+
+
+GENERATE_QUESTIONS_TEMPLATE = """
+You are helping players of the board game "{{game_name}}" discover what they can ask a rules
+assistant. Below is a summary of the game's rules.
+
+<summary>
+{{summary}}
+</summary>
+
+Brainstorm 15-20 example rules questions a real player might ask mid-game — phrased naturally, the
+way you'd ask a friend across the table (concise, spoken-aloud, not formal).
+
+Requirements:
+- Every question must be answerable from the game's actual rules (no theme/lore/trivia).
+- Cover a deliberate spread: setup, turn structure, common points of confusion or tricky rule
+  interactions, card/ability/component edge cases, and win conditions.
+- Favor the kinds of tricky, specific edge cases players actually get stuck on over generic
+  "what are the rules?" questions.
+
+Give your response in the following JSON format:
+
+{
+"reasoning": "<...brief reasoning about the coverage spread...>",
+"questions": ["<question 1>", "<question 2>", ...]
+}
+""".strip()
+
+GENERATE_QUESTIONS_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("human", GENERATE_QUESTIONS_TEMPLATE),
+    ],
+    template_format="mustache",
+)
+
+
+SELECT_QUESTIONS_TEMPLATE = """
+You are curating example rules questions to show players of the board game "{{game_name}}" before
+they start chatting with a rules assistant. Below is a list of candidate questions.
+
+<candidates>
+{{#questions}}
+- {{.}}
+{{/questions}}
+</candidates>
+
+Select the best {{count}} questions to display. When selecting:
+- Remove near-duplicates and near-identical phrasings.
+- Prefer a diverse mix that showcases the assistant's ability to handle tricky, specific rule
+  interactions — not just generic questions.
+- Keep phrasing concise and natural, the way a player would actually speak. Lightly clean up
+  wording if needed.
+
+Give your response in the following JSON format:
+
+{
+"reasoning": "<...brief reasoning about the final selection...>",
+"questions": ["<question 1>", "<question 2>", ...]
+}
+""".strip()
+
+SELECT_QUESTIONS_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("human", SELECT_QUESTIONS_TEMPLATE),
+    ],
+    template_format="mustache",
+)
+
+
+class GenerateQuestionsOutput(TypedDict):
+    reasoning: str
+    questions: list[str]
+
+
+class SelectQuestionsOutput(TypedDict):
+    reasoning: str
+    questions: list[str]
+
+
+@dataclass
+class ExampleQuestionsJob:
+    path: Path
+    gp: GamePackage
+    chat_model: BaseChatModel
+    num_questions: int = 5
+
+    async def run(self):
+        # Source text: the game rules summary. Prefer the on-disk asset, fall back to the
+        # summary folded into the manifest.
+        summary = ""
+        summary_path = game_summary_path(self.gp)
+        if summary_path.exists():
+            summary = await aslurp(summary_path)
+        if not summary.strip():
+            summary = self.gp.get("summary", "") or ""
+
+        if not summary.strip():
+            logger.warning(
+                "No summary available for example question generation; skipping",
+                game_id=self.gp["game_id"],
+            )
+            return
+
+        game_name = self.gp["name"]
+
+        # Prompt 1: brainstorm a broad spread of candidate questions.
+        generate_chain = GENERATE_QUESTIONS_PROMPT | self.chat_model.with_structured_output(
+            GenerateQuestionsOutput
+        )
+        generated = await generate_chain.ainvoke({"game_name": game_name, "summary": summary})
+        candidates = [q.strip() for q in generated["questions"] if q and q.strip()]
+        logger.info("Generated candidate questions", game_id=self.gp["game_id"], candidates=candidates)
+
+        if not candidates:
+            logger.warning("No candidate questions generated; skipping", game_id=self.gp["game_id"])
+            return
+
+        # Prompt 2: select and polish the best diverse subset.
+        select_chain = SELECT_QUESTIONS_PROMPT | self.chat_model.with_structured_output(
+            SelectQuestionsOutput
+        )
+        selected = await select_chain.ainvoke(
+            {"game_name": game_name, "questions": candidates, "count": self.num_questions}
+        )
+        final_questions = [q.strip() for q in selected["questions"] if q and q.strip()]
+        final_questions = final_questions[: self.num_questions]
+        logger.info("Selected example questions", game_id=self.gp["game_id"], questions=final_questions)
+
+        # Persist the asset. Import into the DB happens later via the import job.
+        example_questions_path = get_game_example_questions_path(self.gp)
+        await aspit_yaml({"questions": final_questions}, example_questions_path)
         

@@ -13,7 +13,7 @@ from langchain_core.stores import BaseStore
 from langchain_core.vectorstores.base import VectorStore
 
 from meeplemate.ingest.chunkbuild import ChildChunkDescriptor, ChunkDescriptor, child_chunks_for_chunk_iter, chunks_for_page_iter, get_child_chunk_path, get_chunk_path
-from meeplemate.ingest.gamepackage import GamePackage, get_game_presentation_path, get_page, get_pages_iter, page_to_document, get_game_key
+from meeplemate.ingest.gamepackage import GamePackage, get_game_example_questions_path, get_game_presentation_path, get_page, get_pages_iter, page_to_document, get_game_key
 from structlog import get_logger
 
 from meeplemate.util import amap, achain_from_aiterable, aslurp, aslurp_yaml, sem_guard
@@ -28,6 +28,7 @@ class ImportDocumentsJob:
     full_page_store: BaseStore[str, Document]
     game_data_store: BaseStore[str, Any]
     game_version_store: BaseStore[str, Any]
+    game_questions_store: BaseStore[str, Any]
     chunk_store: BaseStore[str, Document]
     path: Path
     concurrency: int
@@ -72,8 +73,27 @@ async def import_game_data(job: ImportDocumentsJob) -> None:
         game_data["background_color"] = presentation_data["background_color"]
     
     logger.info("Saving game data", game_data=game_data)
-    
+
     await job.game_data_store.amset([(get_game_key(job.gp), game_data)])
+
+
+async def import_example_questions(gp: GamePackage, game_questions_store: BaseStore[str, Any]) -> None:
+    # Example questions are an optional asset produced by ExampleQuestionsJob. They are keyed by
+    # game_id (not version) since they carry across game versions. This is called both from the
+    # full import job and standalone (see the `import-example-questions` CLI command).
+    example_questions_path = get_game_example_questions_path(gp)
+    if not example_questions_path.exists():
+        logger.info("No example questions asset to import", game_id=gp["game_id"])
+        return
+
+    data = await aslurp_yaml(example_questions_path)
+    questions = data.get("questions") if isinstance(data, dict) else None
+    if not questions:
+        logger.info("Example questions asset had no questions", game_id=gp["game_id"])
+        return
+
+    logger.info("Saving example questions", game_id=gp["game_id"], questions=questions)
+    await game_questions_store.amset([(gp["game_id"], questions)])
 
 
 def get_all_chunks_iter(gp: GamePackage) -> AsyncIterator[ChunkDescriptor]:
@@ -175,6 +195,11 @@ async def run_import_documents(job: ImportDocumentsJob) -> None:
     # Import the game data
     add_sem_guarded_task(
         import_game_data(job)
+    )
+
+    # Import example questions (optional asset)
+    add_sem_guarded_task(
+        import_example_questions(job.gp, job.game_questions_store)
     )
 
     # Wait for all tasks to complete

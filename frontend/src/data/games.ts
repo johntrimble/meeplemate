@@ -4,6 +4,7 @@ export interface Game {
   shortName: string
   emoji: string
   bgColor: string
+  exampleQuestions?: string[]
 }
 
 export interface GameInfo {
@@ -12,6 +13,7 @@ export interface GameInfo {
   summary?: string
   emoji?: string
   background_color?: string
+  example_questions?: string[]
 }
 
 export interface GamesPage {
@@ -30,6 +32,7 @@ export function apiGameToGame(g: GameInfo): Game {
     shortName: g.name,
     emoji: g.emoji ?? '🎲',
     bgColor: g.background_color ?? '#374151',
+    exampleQuestions: g.example_questions,
   }
 }
 

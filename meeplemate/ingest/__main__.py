@@ -8,12 +8,12 @@ from meeplemate.component_system import System, afactory, factory, subsystem
 from meeplemate.config import Config, create_app_system
 from meeplemate.ingest.chunkbuild import BuildChunksJob
 from meeplemate.ingest.cleardata import ClearOldDataJob
-from meeplemate.ingest.dataimport import ImportDocumentsJob, run_import_documents
+from meeplemate.ingest.dataimport import ImportDocumentsJob, import_example_questions, run_import_documents
 from meeplemate.ingest.gamepackage import load_game_package
 from meeplemate.ingest.initgp import InitGamePackageJob
 from meeplemate.ingest.ocr import OcrJob, PageNumberFixUpJob, PageNumberOcrJob
 from meeplemate.ingest.documentmetadata import DocumentMetadataJobJob
-from meeplemate.ingest.summary import ExtractTerminologyJob, GenerateGameReferenceJob, PresentationJob, SettingSummaryJob, save_manifest
+from meeplemate.ingest.summary import ExampleQuestionsJob, ExtractTerminologyJob, GenerateGameReferenceJob, PresentationJob, SettingSummaryJob, save_manifest
 
 logger = structlog.get_logger(__name__)
 
@@ -235,7 +235,8 @@ def import_documents(path: Path):
                     "game_version_store": "game_version_store",
                     "chunk_store": "docstore",
                     "full_page_store": "full_page_store",
-                    "game_data_store": "game_data_store"
+                    "game_data_store": "game_data_store",
+                    "game_questions_store": "game_questions_store"
                 },
             )
         }
@@ -380,7 +381,56 @@ def generate_presentation(path: Path):
     async def _run():
         async with system.astart() as services:
             pass
-    
+
+    asyncio.run(_run())
+
+
+@cli.command()
+@click.argument("path", type=Path)
+def generate_example_questions(path: Path):
+    settings: Config = Config() # type: ignore
+    settings.chat.max_new_tokens = 10_000
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "generate_example_questions_job": (
+                afactory(
+                    ExampleQuestionsJob,
+                    astart=ExampleQuestionsJob.run,
+                )(
+                    gp=load_game_package(path),
+                    path=path,
+                ),
+                {
+                    "chat_model": "chat_model",
+                }
+            )
+        },
+    )
+
+    async def _run():
+        async with system.astart() as services:
+            pass
+
+    asyncio.run(_run())
+
+
+@cli.command("import-example-questions")
+@click.argument("path", type=Path)
+def import_example_questions_command(path: Path):
+    """Persist the example_questions.yaml asset to the DB without a full re-import."""
+    settings: Config = Config() # type: ignore
+    app_system: System = create_app_system(settings)
+    system = System.subsystem(app_system, names=["game_questions_store"])
+
+    async def _run():
+        async with system.astart() as services:
+            await import_example_questions(
+                load_game_package(path),
+                services["game_questions_store"],
+            )
+
     asyncio.run(_run())
 
 

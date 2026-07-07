@@ -9,6 +9,14 @@ from meeplemate.ingest.gamepackage import GamePackage
 class GameService:
     data_store: BaseStore
     version_store: BaseStore
+    questions_store: BaseStore
+
+    async def get_example_questions(self, game_ids: list[str]) -> list[list[str] | None]:
+        """Fetch example questions for each game_id. Preserves order; None where absent."""
+        if not game_ids:
+            return []
+        results = await self.questions_store.amget(game_ids)
+        return [list(r) if r else None for r in results]
 
     async def get_current_version_for_game(self, game_id: str) -> str | None:
         results = await self.version_store.amget([game_id])
