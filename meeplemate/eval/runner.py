@@ -299,10 +299,11 @@ class E2ERunner(Runner):
         assert golden.name is not None, "Golden name is required for creating test case"
 
         # With both the golden and the run, we can create the test case
-        if run.outputs is None or "response" not in run.outputs:
+        response = run.outputs.get("response") if run.outputs else None
+        if  response is None or not response.strip():
             actual_output = "[Run failed to produce a response]"
         else:
-            actual_output = run.outputs["response"]
+            actual_output = response
         
         run_metadata = run.metadata or {}
         run_number = run_metadata.get("run_number")
