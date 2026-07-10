@@ -14,7 +14,7 @@ import yaml
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.engine import URL, make_url
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, ConfigDict
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource
 
 
@@ -37,6 +37,7 @@ from meeplemate.game_service import GameService
 from meeplemate.postgres.store import PostgresJSONStore, PostgresSerializableStore
 from meeplemate.qa_graph import QAService, build_qa_service
 from meeplemate.llm_models import load_tgi_chat_model, load_tokenizer, load_lightweight_tokenizer, load_approximate_tokenizer, wrap_embeddings_with_instructions
+from meeplemate.failover_chat_model import FailoverChatModel
 from meeplemate.db.datalayer import BaseDataLayer
 from meeplemate.db.repository import PostgresDataLayer
 
@@ -160,8 +161,13 @@ class PGSettings(BaseSettings):
         return (init_settings, env_settings, dotenv_settings, YamlConfigSettingsSource(settings_cls))
 
 
-class ChatServiceConfig(BaseModel):
-    """Configuration for chat/LLM service."""
+class ChatModelConfig(BaseModel):
+    """Configuration for a single chat/LLM model (one provider/endpoint).
+
+    A ``ChatConfig`` holds an ordered list of these; the failover chat model
+    tries them in priority order. Each entry carries its own endpoint, thinking
+    convention, and sampling params, since providers differ on all three.
+    """
     model_name: str = Field(description="Name of the chat model")
     endpoint_type: Literal["tgi", "openai"] = Field(description="Type of endpoint (TGI or OpenAI-compatible)")
     endpoint: str = Field(description="Chat service endpoint URL")
@@ -178,6 +184,22 @@ class ChatServiceConfig(BaseModel):
     frequency_penalty: Optional[float] = Field(default=None, description="Frequency penalty for models (overrides default if set)")
     repetition_penalty: Optional[float] = Field(default=None, description="Repetition penalty for models (overrides default if set)")
 
+    # Provider-specific extra_body passthroughs (non-standard OpenAI fields). Left
+    # as free-form dicts because their shape varies by provider (e.g. OpenRouter).
+    provider: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Provider-routing options passed through in extra_body (e.g. OpenRouter's `provider` object).",
+    )
+    reasoning: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Reasoning options passed through in extra_body (provider-specific).",
+    )
+    chat_template_kwargs: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Extra chat-template kwargs passed through in extra_body. Merged with the "
+                    "enable_thinking=False that explicit_disable_thinking adds; keys set here win.",
+    )
+
 
     @field_validator('endpoint')
     @classmethod
@@ -185,6 +207,70 @@ class ChatServiceConfig(BaseModel):
         if not v.startswith(('http://', 'https://')):
             raise ValueError("Endpoint must be a valid HTTP/HTTPS URL")
         return v.rstrip('/')
+
+
+class ChatConfig(BaseModel):
+    """Configuration for the chat service: an ordered list of models plus the
+    failover circuit-breaker policy shared across them.
+
+    At call time models are tried in priority order (index 0 first); a model
+    whose breaker is open is skipped until its cooldown expires. See
+    ``meeplemate.failover_chat_model``.
+    """
+    models: list[ChatModelConfig] = Field(
+        min_length=1,
+        description="Ordered list of chat models to try (index 0 is highest priority)",
+    )
+    api_key: SecretStr | None = Field(
+        default=None,
+        description="Shared API key applied to any model in `models` that does not set its own "
+                    "`api_key`. Lets the model list and the token be configured via separate "
+                    "environment variables (e.g. MM_CHAT__MODELS as JSON and MM_CHAT__API_KEY).",
+    )
+    max_failures: int = Field(
+        default=3, ge=1,
+        description="Consecutive failures before a model's circuit breaker opens",
+    )
+    cooldown_seconds: float = Field(
+        default=300.0, ge=0,
+        description="How long a tripped model is skipped before being retried",
+    )
+
+    @model_validator(mode="after")
+    def _apply_shared_api_key(self) -> "ChatConfig":
+        """Fill in each model's api_key from the shared top-level key when the
+        model doesn't specify its own. A per-model api_key always wins."""
+        if self.api_key is not None:
+            for model in self.models:
+                if model.api_key is None:
+                    model.api_key = self.api_key
+        return self
+
+
+def build_openai_extra_body(config: ChatModelConfig) -> dict[str, Any]:
+    """Assemble the ``extra_body`` for an OpenAI-compatible chat model.
+
+    Carries the non-standard sampling params (``top_k``/``min_p``/
+    ``repetition_penalty``) and provider extensions (``provider``/``reasoning``)
+    that aren't part of the standard OpenAI schema. ``chat_template_kwargs`` is
+    the merge of the ``explicit_disable_thinking`` convenience flag (which adds
+    ``enable_thinking=False``) with any explicit ``chat_template_kwargs``; keys
+    set explicitly win over the convenience flag.
+    """
+    extra_body: dict[str, Any] = {}
+    for param in ["top_k", "min_p", "repetition_penalty", "provider", "reasoning"]:
+        value = getattr(config, param)
+        if value is not None:
+            extra_body[param] = value
+
+    chat_template_kwargs = {
+        **({"enable_thinking": False} if config.explicit_disable_thinking else {}),
+        **(config.chat_template_kwargs or {}),
+    }
+    if chat_template_kwargs:
+        extra_body["chat_template_kwargs"] = chat_template_kwargs
+
+    return extra_body
 
 
 class EmbeddingServiceConfig(BaseModel):
@@ -278,7 +364,7 @@ class Config(BaseSettings):
 
     pg: PGConfig = Field(default_factory=PGConfig)
     ingest: IngestConfig = Field(default_factory=IngestConfig)
-    chat: ChatServiceConfig
+    chat: ChatConfig
     embedding: EmbeddingServiceConfig
     model_name: str = Field(description="Primary model name for tokenizer/other purposes")
     qa_chain_config: QAChainConfig = Field(default_factory=QAChainConfig)
@@ -375,8 +461,8 @@ class FullPageMdDao:
 
 def create_app_system(cfg: Config) -> System[AppServices]:
 
-    def build_chat_model(config: ChatServiceConfig, tokenizer) -> BaseChatModel:
-        if cfg.chat.endpoint_type == "tgi":
+    def build_single_chat_model(config: ChatModelConfig, tokenizer) -> BaseChatModel:
+        if config.endpoint_type == "tgi":
             chat_model = load_tgi_chat_model(
                 tokenizer=tokenizer,
                 endpoint_url=config.endpoint,
@@ -385,7 +471,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 do_sample=False,
                 temperature=0.01,
             )
-        elif cfg.chat.endpoint_type == "openai":
+        elif config.endpoint_type == "openai":
             api_key = config.api_key.get_secret_value() if config.api_key else "not-needed"
 
             sampling_kwargs = {}
@@ -393,12 +479,6 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 value = getattr(config, param)
                 if value is not None:
                     sampling_kwargs[param] = value
-
-            extra_body_sampling_kwargs = {}
-            for param in ["top_k", "min_p", "repetition_penalty"]:
-                value = getattr(config, param)
-                if value is not None:
-                    extra_body_sampling_kwargs[param] = value
 
             chat_model = ChatOpenAI(
                 model=config.model_name,
@@ -409,18 +489,19 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 streaming=True,
                 stream_usage=True,
                 **sampling_kwargs,
-                extra_body={
-                    **extra_body_sampling_kwargs,
-                    **({
-                        "chat_template_kwargs": {
-                            "enable_thinking": False,
-                        }
-                    } if cfg.chat.explicit_disable_thinking else {})
-                }
+                extra_body=build_openai_extra_body(config),
             )
         else:
-            raise ValueError(f"Unsupported chat endpoint type: {cfg.chat.endpoint_type}")
+            raise ValueError(f"Unsupported chat endpoint type: {config.endpoint_type}")
         return chat_model
+
+    def build_chat_model(chat_cfg: ChatConfig, tokenizer) -> BaseChatModel:
+        models = [build_single_chat_model(m, tokenizer) for m in chat_cfg.models]
+        return FailoverChatModel(
+            models=models,
+            max_failures=chat_cfg.max_failures,
+            cooldown_seconds=chat_cfg.cooldown_seconds,
+        )
 
     system = System[AppServices](
         {

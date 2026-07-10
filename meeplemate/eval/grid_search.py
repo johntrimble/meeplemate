@@ -1,3 +1,4 @@
+import hashlib
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -16,17 +17,42 @@ from meeplemate.config import Config
 
 logger = get_logger(__name__)
 
+# Keep run-directory names comfortably under the common 255-byte filesystem
+# limit for a single path component.
+_MAX_RUN_NAME_LEN = 200
+
+
+def _longest_common_dotted_prefix(keys: Sequence[str]) -> str:
+    """Longest shared leading dotted-path segments across keys (with trailing
+    dot). E.g. ["chat.models.0.temperature", "chat.models.0.top_p"] -> the
+    prefix "chat.models.0.". Used to trim redundant repetition from run names."""
+    if not keys:
+        return ""
+    segment_lists = [k.split(".") for k in keys]
+    common: list[str] = []
+    for parts in zip(*segment_lists):
+        if len(set(parts)) == 1:
+            common.append(parts[0])
+        else:
+            break
+    return ".".join(common) + "." if common else ""
+
 class E2ERunnerWithHyperparameters(E2ERunner):
     def apply_hyperparameters_to_config(self, config: Config, hyperparameters: Mapping[str, Any]) -> Config:
         # We will mutate the config based on the hyperparameters. The keys in
-        # hyperparameters are dot-separated paths to the config fields, e.g.
-        # "chat.temperature"
+        # hyperparameters are dot-separated paths to the config fields. Numeric
+        # parts index into lists (e.g. "chat.models.0.temperature" targets the
+        # primary model of the failover list).
         for key, value in hyperparameters.items():
             parts = key.split(".")
             current = config
             for part in parts[:-1]:
-                current = getattr(current, part)
-            setattr(current, parts[-1], value)
+                current = current[int(part)] if part.isdigit() else getattr(current, part)
+            leaf = parts[-1]
+            if leaf.isdigit():
+                current[int(leaf)] = value
+            else:
+                setattr(current, leaf, value)
         return config
 
 
@@ -40,12 +66,20 @@ class GridSearchE2ERunner:
     generation_concurrency: int = 5
 
     def _hyperparameters_to_group_run_name(self, hyperparameters: Mapping[str, Any]) -> str:
-        # Sort keys by name
         keys = sorted(hyperparameters.keys())
-        # Create a string representation of the hyperparameters
-        s = "__".join(f"{key}={hyperparameters[key]}" for key in keys)
+        # Strip the shared dotted prefix (e.g. "chat.models.0.") that would
+        # otherwise repeat on every key and blow past the filesystem's 255-char
+        # filename limit. What remains still distinguishes each key.
+        prefix = _longest_common_dotted_prefix(keys)
+        s = "__".join(f"{key[len(prefix):]}={hyperparameters[key]}" for key in keys)
         # Replace all non-alphanumeric characters with underscores
         s = "".join(c if c.isalnum() else "_" for c in s)
+        # Guard against pathological lengths (long model names, large grids):
+        # truncate and append a deterministic hash so names stay unique and
+        # reproducible (generate and evaluate derive the same name).
+        if len(s) > _MAX_RUN_NAME_LEN:
+            digest = hashlib.sha1(s.encode()).hexdigest()[:12]
+            s = s[: _MAX_RUN_NAME_LEN - len(digest) - 2] + "__" + digest
         return s
     
     def _build_e2e_runner(self) -> E2ERunnerWithHyperparameters:

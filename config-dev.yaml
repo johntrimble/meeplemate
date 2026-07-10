@@ -14,26 +14,38 @@ pg:
   max_overflow: 20
 
 # Chat/LLM Service Configuration
+# `models` is an ordered failover list: index 0 is tried first, and a model
+# whose circuit breaker trips (after `max_failures` consecutive failures) is
+# skipped for `cooldown_seconds`. Each entry has its own endpoint and sampling
+# params, since providers differ on which params (and thinking conventions) they
+# support.
 chat:
+  max_failures: 3
+  cooldown_seconds: 300
+
+  models:
   # model_name: "Qwen/Qwen3-32B"
-  model_name: "Qwen/Qwen3-30B-A3B-Instruct-2507"
+  # model_name: "qwen/qwen3.6-35b-a3b"
   # model_name: "NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4"
   # model_name: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
-  endpoint_type: "openai"
-  endpoint: "http://vllm:8000/v1"
-  # endpoint: http://192.168.0.44:8000/v1
-  max_new_tokens: 3072
-  timeout: 900
-  explicit_disable_thinking: true
+  - model_name: "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    endpoint_type: "openai"
+    # endpoint: "http://vllm:8000/v1"
+    endpoint: http://192.168.0.44:8000/v1
+    max_new_tokens: 3072
+    timeout: 900
 
-  # Sampling config
-  temperature: 0.7
-  top_p: 1.0 # was 0.8
-  top_k: -1
-  min_p: 0.10
-  presence_penalty: 1.2 # was 1.6
-  frequency_penalty: 0.2
-  repetition_penalty: 1.0
+    chat_template_kwargs:
+      enable_thinking: false
+
+    # Sampling config
+    temperature: 0.7
+    top_p: 1.0 # was 0.8
+    top_k: -1
+    min_p: 0.10
+    presence_penalty: 1.2 # was 1.6
+    frequency_penalty: 0.2
+    repetition_penalty: 1.0
 
 # Embedding Service Configuration
 embedding:

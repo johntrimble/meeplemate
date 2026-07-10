@@ -59,14 +59,14 @@ class Runner:
 def create_eval_system(names: Optional[Sequence[str]]=None, config:Config|None=None) -> System:
     if config is None:
         config = Config()
-    config.chat.endpoint = "http://192.168.0.44:8000/v1"
+    config.chat.models[0].endpoint = "http://192.168.0.44:8000/v1"
 
     extra_components = {
         "deepeval_llm": (
             factory(StructuredLocalModel)(
                 model="Qwen/Qwen3-30B-A3B-Instruct-2507",
                 api_key="dummy",
-                base_url=config.chat.endpoint,
+                base_url=config.chat.models[0].endpoint,
                 temperature=0.7,
                 generation_kwargs={
                     "presence_penalty": 0.6,
