@@ -1,30 +1,45 @@
 """Unit tests for TokenCountingCallback."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, LLMResult
 
 from meeplemate.server.rate_limit import TokenCountingCallback
 
-
-def _llm_result(prompt_tokens: int, completion_tokens: int) -> ChatResult:
-    result = MagicMock(spec=ChatResult)
-    result.generations = [[MagicMock(spec=ChatGeneration)]]
-    result.llm_output = {
-        "token_usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-        }
-    }
-    return result
+# on_llm_end receives an LLMResult, whose `.generations` is nested (list[list]).
 
 
-def _llm_result_no_usage() -> ChatResult:
-    result = MagicMock(spec=ChatResult)
-    result.generations = [[MagicMock(spec=ChatGeneration)]]
-    result.llm_output = {}
-    return result
+def _llm_result(prompt_tokens: int, completion_tokens: int) -> LLMResult:
+    """Non-streaming shape: usage in llm_output["token_usage"]."""
+    return LLMResult(
+        generations=[[ChatGeneration(message=AIMessage(content="hi"))]],
+        llm_output={
+            "token_usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            }
+        },
+    )
+
+
+def _llm_result_streaming(input_tokens: int, output_tokens: int) -> LLMResult:
+    """Streaming shape: llm_output empty, usage on message.usage_metadata."""
+    message = AIMessage(
+        content="hi",
+        usage_metadata={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    )
+    return LLMResult(generations=[[ChatGeneration(message=message)]], llm_output=None)
+
+
+def _llm_result_no_usage() -> LLMResult:
+    return LLMResult(
+        generations=[[ChatGeneration(message=AIMessage(content="hi"))]],
+        llm_output={},
+    )
 
 
 def test_accumulates_tokens_with_output_multiplier() -> None:
@@ -66,3 +81,33 @@ def test_zero_estimated_with_no_usage_returns_zero() -> None:
     cb = TokenCountingCallback(estimated=0)
     cb.on_llm_end(_llm_result_no_usage())
     assert cb.tokens == 0
+
+
+def test_counts_streaming_usage_metadata() -> None:
+    """Streaming responses (empty llm_output) are counted via usage_metadata."""
+    cb = TokenCountingCallback(estimated=9_999, output_token_multiplier=4)
+    cb.on_llm_end(_llm_result_streaming(input_tokens=23, output_tokens=447))
+    assert cb._has_real_count is True
+    assert cb.tokens == 23 + 447 * 4  # 1811
+
+
+def test_streaming_and_nonstreaming_accumulate_together() -> None:
+    cb = TokenCountingCallback(estimated=0, output_token_multiplier=1)
+    cb.on_llm_end(_llm_result(10, 20))              # 30 via llm_output
+    cb.on_llm_end(_llm_result_streaming(5, 15))     # 20 via usage_metadata
+    assert cb.tokens == 50
+
+
+def test_llm_output_takes_precedence_over_usage_metadata() -> None:
+    """When both are present, llm_output is used and usage_metadata is not double-counted."""
+    message = AIMessage(
+        content="hi",
+        usage_metadata={"input_tokens": 999, "output_tokens": 999, "total_tokens": 1998},
+    )
+    result = LLMResult(
+        generations=[[ChatGeneration(message=message)]],
+        llm_output={"token_usage": {"prompt_tokens": 10, "completion_tokens": 20}},
+    )
+    cb = TokenCountingCallback(estimated=0, output_token_multiplier=1)
+    cb.on_llm_end(result)
+    assert cb.tokens == 30  # from llm_output only, not 1998 + 30

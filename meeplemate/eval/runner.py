@@ -59,14 +59,14 @@ class Runner:
 def create_eval_system(names: Optional[Sequence[str]]=None, config:Config|None=None) -> System:
     if config is None:
         config = Config()
-    config.chat.endpoint = "http://192.168.0.44:8000/v1"
+    config.chat.models[0].endpoint = "http://192.168.0.44:8000/v1"
 
     extra_components = {
         "deepeval_llm": (
             factory(StructuredLocalModel)(
                 model="Qwen/Qwen3-30B-A3B-Instruct-2507",
                 api_key="dummy",
-                base_url=config.chat.endpoint,
+                base_url=config.chat.models[0].endpoint,
                 temperature=0.7,
                 generation_kwargs={
                     "presence_penalty": 0.6,
@@ -299,10 +299,11 @@ class E2ERunner(Runner):
         assert golden.name is not None, "Golden name is required for creating test case"
 
         # With both the golden and the run, we can create the test case
-        if run.outputs is None or "response" not in run.outputs:
+        response = run.outputs.get("response") if run.outputs else None
+        if response is None or not response.strip():
             actual_output = "[Run failed to produce a response]"
         else:
-            actual_output = run.outputs["response"]
+            actual_output = response
         
         run_metadata = run.metadata or {}
         run_number = run_metadata.get("run_number")

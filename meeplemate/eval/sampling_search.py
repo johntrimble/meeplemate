@@ -20,15 +20,20 @@ def get_base_directory() -> Path:
 
 
 def hyperparameters_generator() -> Iterator[Mapping[str, Any]]:
+    # `chat` is now a failover list of models; the grid search sweeps the
+    # primary model's sampling params, so keys are pinned to models.0.
     grid = {
-        "chat.model_name": ["Qwen/Qwen3-30B-A3B-Instruct-2507"],
-        "chat.temperature": [0.7],
-        "chat.top_p": [1.0],
-        "chat.top_k": [-1],
-        "chat.min_p": [0.05, 0.1],
-        "chat.presence_penalty": [0.0, 0.4, 0.8, 1.2],
-        "chat.frequency_penalty": [0.0, 0.2, 0.6, 1.0],
-        "chat.repetition_penalty": [1.0]
+        "chat.models.0.model_name": ["Qwen/Qwen3-30B-A3B-Instruct-2507"],
+        # "chat.models.0.model_name": ["Qwen/Qwen3.6-35B-A3B"],
+        "chat.models.0.temperature": [0.7],
+        # "chat.models.0.top_p": [1.0],
+        "chat.models.0.top_p": [0.8],
+        "chat.models.0.top_k": [-1],
+        # "chat.models.0.min_p": [0.05, 0.1],
+        "chat.models.0.min_p": [0.0],
+        "chat.models.0.presence_penalty": [0.0, 0.4, 0.8, 1.2],
+        "chat.models.0.frequency_penalty": [0.0, 0.2, 0.6, 1.0],
+        "chat.models.0.repetition_penalty": [1.0]
     }
 
     # Yield all combinations of the above hyperparameters

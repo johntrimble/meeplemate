@@ -95,9 +95,7 @@ jobs:
           docker run -d --name api-test --network host \
             -e MM_AUTH_BYPASS=true \
             -e MM_PG__URL=postgresql+asyncpg://postgres:password@localhost:5432/postgres \
-            -e MM_CHAT__ENDPOINT=http://localhost:9999/v1 \
-            -e MM_CHAT__ENDPOINT_TYPE=openai \
-            -e MM_CHAT__MODEL_NAME=dummy \
+            -e MM_CHAT__MODELS='[{"model_name":"dummy","endpoint_type":"openai","endpoint":"http://localhost:9999/v1"}]' \
             -e MM_MODEL_NAME=dummy \
             -e MM_EMBEDDING__MODEL=BAAI/bge-small-en-v1.5 \
             -e MM_EMBEDDING__API_KEY=dummy \

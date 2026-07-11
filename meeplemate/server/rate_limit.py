@@ -83,10 +83,23 @@ class TokenCountingCallback(BaseCallbackHandler):
         self._has_real_count = False
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
-        # OpenAI-style: usage in llm_output["token_usage"]
+        # Non-streaming OpenAI-style responses report usage in
+        # llm_output["token_usage"] as prompt/completion tokens.
         usage = (response.llm_output or {}).get("token_usage") or {}
         prompt = int(usage.get("prompt_tokens", 0) or 0)
         completion = int(usage.get("completion_tokens", 0) or 0)
+
+        # Streaming responses leave llm_output empty; usage instead rides on each
+        # message's usage_metadata (input/output tokens), populated because the
+        # chat model sets stream_usage=True. Fall back to summing that.
+        if not (prompt or completion):
+            for generations in response.generations:
+                for generation in generations:
+                    message = getattr(generation, "message", None)
+                    usage_metadata = getattr(message, "usage_metadata", None) or {}
+                    prompt += int(usage_metadata.get("input_tokens", 0) or 0)
+                    completion += int(usage_metadata.get("output_tokens", 0) or 0)
+
         if prompt or completion:
             self._has_real_count = True
             self.total += prompt + completion * self.output_token_multiplier
