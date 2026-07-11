@@ -29,8 +29,16 @@ def _longest_common_dotted_prefix(keys: Sequence[str]) -> str:
     if not keys:
         return ""
     segment_lists = [k.split(".") for k in keys]
+    # Never consume the final segment of the shortest key: every key must keep
+    # at least one distinguishing segment, otherwise a key can be trimmed to an
+    # empty string (e.g. a single-key grid would strip to "" -> name "=0.7").
+    # For real multi-key grids the keys already diverge before their last
+    # segment, so this cap leaves their prefix unchanged.
+    max_common = min(len(parts) for parts in segment_lists) - 1
     common: list[str] = []
     for parts in zip(*segment_lists):
+        if len(common) >= max_common:
+            break
         if len(set(parts)) == 1:
             common.append(parts[0])
         else:

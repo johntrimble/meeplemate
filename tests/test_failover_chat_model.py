@@ -1,5 +1,6 @@
 """Tests for the priority-ordered failover chat model and its circuit breaker."""
 
+import asyncio
 from typing import Any, AsyncIterator, Iterator
 
 import pytest
@@ -12,7 +13,9 @@ from pydantic import ConfigDict, PrivateAttr
 from meeplemate.failover_chat_model import (
     CircuitBreaker,
     FailoverChatModel,
+    _afailover,
     _FailoverRunnable,
+    _sfailover,
 )
 
 
@@ -242,6 +245,60 @@ def test_transform_methods_return_failover_runnable_matching_children():
 def test_requires_at_least_one_model():
     with pytest.raises(ValueError):
         FailoverChatModel(models=[])
+
+
+# --- cancellation must never be treated as a provider failure --------------
+#
+# asyncio.CancelledError derives from BaseException (not Exception) since
+# Python 3.8, so the deliberately-broad `except Exception` failover guards do
+# not catch it: a cancelled request/task propagates immediately, is never
+# counted as a provider failure, and never trips the circuit breaker or falls
+# over to the next model. These tests pin that behavior on each failover path.
+
+
+async def _cancel_attempt(i: int, target: Any) -> Any:
+    if i == 0:
+        raise asyncio.CancelledError()
+    return "second"  # pragma: no cover - must never be reached
+
+
+def _sync_cancel_attempt(i: int, target: Any) -> Any:
+    if i == 0:
+        raise asyncio.CancelledError()
+    return "second"  # pragma: no cover - must never be reached
+
+
+@pytest.mark.asyncio
+async def test_cancellederror_propagates_on_async_failover():
+    breaker = CircuitBreaker(2, max_failures=3, cooldown_seconds=100)
+    with pytest.raises(asyncio.CancelledError):
+        await _afailover([object(), object()], breaker, _cancel_attempt, "generate")
+    assert breaker._failures[0] == 0  # not recorded as a failure
+    assert not breaker.is_open(0)
+
+
+def test_cancellederror_propagates_on_sync_failover():
+    breaker = CircuitBreaker(2, max_failures=3, cooldown_seconds=100)
+    with pytest.raises(asyncio.CancelledError):
+        _sfailover([object(), object()], breaker, _sync_cancel_attempt, "generate")
+    assert breaker._failures[0] == 0
+    assert not breaker.is_open(0)
+
+
+@pytest.mark.asyncio
+async def test_cancellederror_propagates_on_stream_failover():
+    def boom(_):
+        raise asyncio.CancelledError()
+
+    breaker = CircuitBreaker(2, max_failures=3, cooldown_seconds=100)
+    fr = _FailoverRunnable(
+        [RunnableLambda(boom), RunnableLambda(lambda x: "second")], breaker, "test"
+    )
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in fr.astream("in"):
+            pass
+    assert breaker._failures[0] == 0
+    assert not breaker.is_open(0)
 
 
 class StreamingOnlyChatModel(BaseChatModel):

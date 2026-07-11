@@ -33,6 +33,11 @@ def test_common_prefix_stripped():
     ) == "chat.models."
     # No shared prefix
     assert _longest_common_dotted_prefix(["a.b", "c.d"]) == ""
+    # A single key must keep its leaf segment rather than being stripped whole
+    # (otherwise the run name collapses to "=<value>", e.g. "_0_7").
+    assert _longest_common_dotted_prefix(["chat.models.0.temperature"]) == "chat.models.0."
+    name = _name(None, {"chat.models.0.temperature": 0.7})
+    assert "temperature" in name  # leaf key preserved, not stripped to "_0_7"
 
 
 def test_run_name_under_filesystem_limit():

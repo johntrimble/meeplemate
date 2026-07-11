@@ -300,7 +300,7 @@ class E2ERunner(Runner):
 
         # With both the golden and the run, we can create the test case
         response = run.outputs.get("response") if run.outputs else None
-        if  response is None or not response.strip():
+        if response is None or not response.strip():
             actual_output = "[Run failed to produce a response]"
         else:
             actual_output = response
