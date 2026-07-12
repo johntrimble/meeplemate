@@ -144,7 +144,21 @@ def add_game_metadata_to_document(document: Document, gp: GamePackage) -> Docume
     return document
 
 
-async def run_import_documents(job: ImportDocumentsJob) -> None:
+async def run_import_documents(job: ImportDocumentsJob, *, overwrite: bool = False) -> None:
+    # Refuse to silently clobber a version that has already been imported. The
+    # game data record is keyed by game_key (game_id#game_version) and written on
+    # every import, so its presence means this exact version is already in the DB.
+    game_key = get_game_key(job.gp)
+    if not overwrite:
+        existing = (await job.game_data_store.amget([game_key]))[0]
+        if existing is not None:
+            raise ValueError(
+                f"Game version already imported: {game_key}. Re-importing would "
+                f"overwrite the existing data in place. Bump the version first with "
+                f"`mm-ingest update-version <package>` to import as a new version, "
+                f"or pass --overwrite to re-import this version in place."
+            )
+
     # Ensure the vector store partition exists before spawning concurrent tasks
     ensure_partition = getattr(job.vector_store, "ensure_partition", None)
     if callable(ensure_partition):
@@ -206,5 +220,4 @@ async def run_import_documents(job: ImportDocumentsJob) -> None:
     await asyncio.gather(*tasks)
 
     # Data imported! Lets update the current game version
-    game_key = get_game_key(job.gp)
     await job.game_version_store.amset([(job.gp['game_id'], game_key)])

@@ -13,7 +13,7 @@ from meeplemate.ingest.gamepackage import load_game_package
 from meeplemate.ingest.initgp import InitGamePackageJob
 from meeplemate.ingest.ocr import OcrJob, PageNumberFixUpJob, PageNumberOcrJob
 from meeplemate.ingest.documentmetadata import DocumentMetadataJobJob
-from meeplemate.ingest.summary import ExampleQuestionsJob, ExtractTerminologyJob, GenerateGameReferenceJob, PresentationJob, SettingSummaryJob, save_manifest
+from meeplemate.ingest.summary import ExampleQuestionsJob, GenerateGameReferenceJob, PresentationJob, SettingSummaryJob, save_manifest
 
 logger = structlog.get_logger(__name__)
 
@@ -217,7 +217,8 @@ def build_chunks(path: Path):
 
 @cli.command()
 @click.argument("path", type=Path)
-def import_documents(path: Path):
+@click.option("--overwrite", is_flag=True, help="Re-import in place even if this game_version already exists in the DB.")
+def import_documents(path: Path, overwrite: bool):
     settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
@@ -245,7 +246,7 @@ def import_documents(path: Path):
 
     async def _import_documents():
         async with system.astart() as services:
-            await run_import_documents(services["import_job"])
+            await run_import_documents(services["import_job"], overwrite=overwrite)
 
     asyncio.run(_import_documents())
 
@@ -436,36 +437,6 @@ def import_example_questions_command(path: Path):
 
     asyncio.run(_run())
 
-
-@cli.command()
-@click.argument("output", type=Path)
-def extract_terminology(output: Path):
-    settings: Config = Config() # type: ignore
-    app_system: System = create_app_system(settings)
-    system = subsystem(
-        app_system,
-        extra_components={
-            "extract_terminology_job": (
-                afactory(
-                    ExtractTerminologyJob,
-                    astart=ExtractTerminologyJob.run,
-                )(
-                    gp=load_game_package(output),
-                    output_dir=output,
-                ),
-                {
-                    "chat_model": "chat_model",
-                    "tokenizer": "tokenizer",
-                }
-            )
-        },
-    )
-
-    async def _run():
-        async with system.astart() as services:
-            pass
-    
-    asyncio.run(_run())
 
 if __name__ == "__main__":
     cli()
