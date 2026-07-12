@@ -28,7 +28,6 @@ class ImportDocumentsJob:
     full_page_store: BaseStore[str, Document]
     game_data_store: BaseStore[str, Any]
     game_version_store: BaseStore[str, Any]
-    game_questions_store: BaseStore[str, Any]
     chunk_store: BaseStore[str, Document]
     path: Path
     concurrency: int
@@ -79,8 +78,8 @@ async def import_game_data(job: ImportDocumentsJob) -> None:
 
 async def import_example_questions(gp: GamePackage, game_questions_store: BaseStore[str, Any]) -> None:
     # Example questions are an optional asset produced by ExampleQuestionsJob. They are keyed by
-    # game_id (not version) since they carry across game versions. This is called both from the
-    # full import job and standalone (see the `import-example-questions` CLI command).
+    # game_id (not version) since they carry across game versions, so they're imported on their
+    # own via the `import-example-questions` CLI command rather than as part of import-documents.
     example_questions_path = get_game_example_questions_path(gp)
     if not example_questions_path.exists():
         logger.info("No example questions asset to import", game_id=gp["game_id"])
@@ -211,10 +210,9 @@ async def run_import_documents(job: ImportDocumentsJob, *, overwrite: bool = Fal
         import_game_data(job)
     )
 
-    # Import example questions (optional asset)
-    add_sem_guarded_task(
-        import_example_questions(job.gp, job.game_questions_store)
-    )
+    # Note: example questions are game-scoped (keyed by game_id, not game_version)
+    # and are imported separately via the `import-example-questions` command, not
+    # as part of the version-scoped document import.
 
     # Wait for all tasks to complete
     await asyncio.gather(*tasks)

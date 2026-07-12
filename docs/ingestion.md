@@ -78,11 +78,15 @@ init-game-package          → raw_documents/, rulebooks.yaml (game_version, pag
         │              ▼                 generate-presentation (reads game_setting_summary.md)
         │        generate-example-questions      → presentation.yaml
         │         (reads summary.md; soft)         │
-        │              → example_questions.yaml    │
-        ▼              ▼                           ▼
-                    import-documents  ◄────────────┘
+        │              ▼                           │
+        │        import-example-questions          │
+        │        (→ game_questions_store,          │
+        │          keyed by game_id;               │
+        │          NOT part of import-documents)   │
+        ▼                                          ▼
+                    import-documents  ◄─────────────┘
    (reads: NNNN.md, NNNN.metadata.yaml, chunks/, presentation.yaml [required],
-           example_questions.yaml [optional], manifest summaries [used if present])
+           manifest summaries [used if present])
 ```
 
 ### What `import-documents` actually requires
@@ -103,10 +107,12 @@ It will **succeed but produce a degraded game** without:
 
 - `generate-reference` — writes the game-level and per-rulebook `summary` fields
   **into the manifest**, and `import_game_data` deep-copies the manifest into the
-  stored game data. Skip it and the game imports with no summary. It's also a
-  prerequisite for `generate-example-questions`.
-- `generate-example-questions` — `example_questions.yaml` is imported only if it
-  exists (existence-guarded).
+  stored game data. Skip it and the game imports with no summary.
+
+Example questions are separate and don't affect `import-documents`:
+`generate-example-questions` needs `generate-reference`, and the resulting
+`example_questions.yaml` is loaded by `import-example-questions` (keyed by
+`game_id`), not by `import-documents`.
 
 ---
 
@@ -293,7 +299,8 @@ mm-ingest generate-presentation $PKG         # presentation.yaml (emoji + bg col
   lifts `unicode_character` → `emoji` and `background_color` into the game data,
   so a missing `presentation.yaml` fails the import with `FileNotFoundError`.
 
-Optionally also generate example questions here (see
+Optionally also generate example questions here — note these are imported with a
+separate command, not by `import-documents` (see
 [Example questions](#example-questions-per-game-not-per-version) below):
 
 ```bash
@@ -302,10 +309,11 @@ mm-ingest generate-example-questions $PKG    # example_questions.yaml (needs gen
 
 ### 8. Import into Postgres
 
-Load chunks, embeddings, docstore parents, full-page markdown, game data (from
-the manifest + `presentation.yaml`), and — if present — example questions into
-the vectorstore/stores. Finishes by publishing the new `game_version` as the
-current version for this `game_id`.
+Load chunks, embeddings, docstore parents, full-page markdown, and game data
+(from the manifest + `presentation.yaml`) into the vectorstore/stores. Finishes
+by publishing the new `game_version` as the current version for this `game_id`.
+Example questions are **not** imported here — they're game-scoped and handled by a
+separate command (see [Example questions](#example-questions-per-game-not-per-version)).
 
 ```bash
 mm-ingest import-documents $PKG
@@ -330,19 +338,19 @@ At this point the game is searchable by the local backend.
 
 `generate-example-questions` reads the game-level and per-rulebook `summary.md`
 files produced by `generate-reference` (falling back to the manifest `summary`,
-and skipping entirely if neither exists). `import-documents` then imports
-`example_questions.yaml` **only if it exists** (existence-guarded, so it's
-optional).
+and skipping entirely if neither exists) and writes `example_questions.yaml`.
 
 These questions are keyed by `game_id` — **not** `game_version` — so they carry
-across game versions rather than being tied to a single ingest, which is why
-they're handled differently from the version-scoped chunks and presentation data.
-
-To persist just the example questions to the DB without re-importing everything:
+across game versions rather than being tied to a single ingest. For that reason
+they are **not** imported by `import-documents`; persist them with a dedicated
+command instead:
 
 ```bash
 mm-ingest import-example-questions $PKG
 ```
+
+This has no version check and doesn't touch the version-scoped document data, so
+it's also the way to refresh questions for a game that's already been imported.
 
 ---
 

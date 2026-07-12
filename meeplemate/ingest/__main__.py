@@ -237,7 +237,6 @@ def import_documents(path: Path, overwrite: bool):
                     "chunk_store": "docstore",
                     "full_page_store": "full_page_store",
                     "game_data_store": "game_data_store",
-                    "game_questions_store": "game_questions_store"
                 },
             )
         }
