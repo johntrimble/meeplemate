@@ -326,7 +326,8 @@ def generate_reference(path: Path):
 @click.argument("path", type=Path)
 def generate_setting_summary(path: Path):
     settings: Config = Config() # type: ignore
-    settings.chat.max_new_tokens = 10_000
+    for model in settings.chat.models:
+        model.max_new_tokens = 10_000
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -358,7 +359,8 @@ def generate_setting_summary(path: Path):
 @click.argument("path", type=Path)
 def generate_presentation(path: Path):
     settings: Config = Config() # type: ignore
-    settings.chat.max_new_tokens = 10_000
+    for model in settings.chat.models:
+        model.max_new_tokens = 10_000
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,
@@ -389,7 +391,8 @@ def generate_presentation(path: Path):
 @click.argument("path", type=Path)
 def generate_example_questions(path: Path):
     settings: Config = Config() # type: ignore
-    settings.chat.max_new_tokens = 10_000
+    for model in settings.chat.models:
+        model.max_new_tokens = 10_000
     app_system: System = create_app_system(settings)
     system = subsystem(
         app_system,

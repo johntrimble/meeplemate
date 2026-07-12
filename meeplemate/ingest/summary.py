@@ -700,17 +700,27 @@ class PresentationJob:
 
 GENERATE_QUESTIONS_TEMPLATE = """
 You are helping players of the board game "{{game_name}}" discover what they can ask a rules
-assistant. Below is a summary of the game's rules.
+assistant.
 
-<summary>
-{{summary}}
-</summary>
+Here is an overall summary of the game, for context:
 
-Brainstorm 15-20 example rules questions a real player might ask mid-game — phrased naturally, the
-way you'd ask a friend across the table (concise, spoken-aloud, not formal).
+<game_summary>
+{{game_summary}}
+</game_summary>
+
+Focus specifically on the rulebook titled "{{rulebook_name}}". Here is its summary:
+
+<rulebook_summary>
+{{rulebook_summary}}
+</rulebook_summary>
+
+Brainstorm {{count}} example rules questions grounded in the content of THIS rulebook
+("{{rulebook_name}}") — phrased naturally, the way a real player would ask a friend across the
+table mid-game (concise, spoken-aloud, not formal). Use the overall game context only to
+disambiguate; the questions themselves should be about this rulebook's material.
 
 Requirements:
-- Every question must be answerable from the game's actual rules (no theme/lore/trivia).
+- Every question must be answerable from this rulebook's actual rules (no theme/lore/trivia).
 - Cover a deliberate spread: setup, turn structure, common points of confusion or tricky rule
   interactions, card/ability/component edge cases, and win conditions.
 - Favor the kinds of tricky, specific edge cases players actually get stuck on over generic
@@ -781,39 +791,82 @@ class ExampleQuestionsJob:
     gp: GamePackage
     chat_model: BaseChatModel
     num_questions: int = 5
+    candidates_per_rulebook: int = 10
 
     async def run(self):
-        # Source text: the game rules summary. Prefer the on-disk asset, fall back to the
-        # summary folded into the manifest.
-        summary = ""
-        summary_path = game_summary_path(self.gp)
-        if summary_path.exists():
-            summary = await aslurp(summary_path)
-        if not summary.strip():
-            summary = self.gp.get("summary", "") or ""
-
-        if not summary.strip():
-            logger.warning(
-                "No summary available for example question generation; skipping",
-                game_id=self.gp["game_id"],
-            )
-            return
-
         game_name = self.gp["name"]
 
-        # Prompt 1: brainstorm a broad spread of candidate questions.
+        # Overall game summary — used as context for every rulebook. Prefer the on-disk asset,
+        # fall back to the summary folded into the manifest.
+        game_summary = ""
+        summary_path = game_summary_path(self.gp)
+        if summary_path.exists():
+            game_summary = await aslurp(summary_path)
+        if not game_summary.strip():
+            game_summary = self.gp.get("summary", "") or ""
+
+        # Collect the per-rulebook summaries. Each rulebook is brainstormed independently so that
+        # smaller rulebooks / expansions aren't drowned out by the game-level summary.
+        rulebooks: list[tuple[str, str]] = []
+        for rulebook in self.gp["rulebooks"]:
+            rb_summary_path = rulebook_summary_path(self.gp, rulebook["document_key"])
+            if rb_summary_path.exists():
+                rb_summary = await aslurp(rb_summary_path)
+                if rb_summary.strip():
+                    rulebooks.append((rulebook["name"], rb_summary))
+
+        # Fall back to a single pass over the game summary if no per-rulebook summaries exist.
+        if not rulebooks:
+            if not game_summary.strip():
+                logger.warning(
+                    "No summaries available for example question generation; skipping",
+                    game_id=self.gp["game_id"],
+                )
+                return
+            rulebooks = [(game_name, game_summary)]
+
+        # Prompt 1: brainstorm candidates per rulebook, concurrently.
         generate_chain = GENERATE_QUESTIONS_PROMPT | self.chat_model.with_structured_output(
             GenerateQuestionsOutput
         )
-        generated = await generate_chain.ainvoke({"game_name": game_name, "summary": summary})
-        candidates = [q.strip() for q in generated["questions"] if q and q.strip()]
+        tasks = [
+            generate_chain.ainvoke(
+                {
+                    "game_name": game_name,
+                    "game_summary": game_summary,
+                    "rulebook_name": rb_name,
+                    "rulebook_summary": rb_summary,
+                    "count": self.candidates_per_rulebook,
+                }
+            )
+            for rb_name, rb_summary in rulebooks
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for (rb_name, _), result in zip(rulebooks, results):
+            if isinstance(result, BaseException):
+                logger.exception(
+                    "Failed to brainstorm questions for rulebook",
+                    game_id=self.gp["game_id"],
+                    rulebook_name=rb_name,
+                    exc_info=result,
+                )
+                continue
+            for q in result["questions"]:
+                q = (q or "").strip()
+                if q and q.lower() not in seen:
+                    seen.add(q.lower())
+                    candidates.append(q)
+
         logger.info("Generated candidate questions", game_id=self.gp["game_id"], candidates=candidates)
 
         if not candidates:
             logger.warning("No candidate questions generated; skipping", game_id=self.gp["game_id"])
             return
 
-        # Prompt 2: select and polish the best diverse subset.
+        # Prompt 2: select and polish the best diverse subset across all rulebooks.
         select_chain = SELECT_QUESTIONS_PROMPT | self.chat_model.with_structured_output(
             SelectQuestionsOutput
         )
