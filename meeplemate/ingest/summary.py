@@ -16,7 +16,7 @@ from langchain_core.prompts.prompt import PromptTemplate
 
 from langchain_classic.output_parsers.regex import RegexParser
 
-from meeplemate.ingest.gamepackage import amap, get_document_page_aiter, get_game_presentation_path, get_game_setting_summary_path, save_manifest, document_keys
+from meeplemate.ingest.gamepackage import amap, get_document_page_aiter, get_game_example_questions_path, get_game_presentation_path, get_game_setting_summary_path, save_manifest, document_keys
 from meeplemate.ingest.ocr import GamePackage, aspit
 from meeplemate.util import achain, aenumerate, apairwise, arepeat, aslurp, aspit_yaml, atakewhile, compose, queue_to_async_iter, sink_into_queue, pipeline, to_async_iter, xf_amap
 
@@ -483,122 +483,6 @@ class GenerateGameReferenceJob:
         save_manifest(gp)
 
 
-EXTRACT_TERMINOLOGY_SYSTEM_TEMPLATE = """\
-You are an expert at board game design and rule analysis. Your goal is to extract and define key terminology used in the rules for the board game "{{game_name}}" based on the provided rulebook content. The extracted terminology should help players quickly understand important terms and concepts used in the game's rules. You will receive a current list of terminology definitions and one or more rulebook pages that should be used to update and improve the terminology list. This list will act as both a glossary and an index for the game's rules.
-"""
-
-EXTRACT_TERMINOLOGY_TEMPLATE = """\
-## Current Terminology
-
-<terminology>
-{{current_terminology}}
-</terminology>
-
-## Rulebook Pages
-
-{{#documents}}
-<document name="{{metadata.rulebook_name}}" page="{{metadata.page_num}}">
-{{page_content}}
-</document>
-{{/documents}}
-
-## Instructions
-
-- Read the current terminology list and the provided rulebook pages carefully.
-- Provide a step-by-step analysis of how to update the terminology list based on the new information from the rulebook pages.
-- Identify any important terms or concepts that are missing from the current terminology list.
-- For each new term, provide a clear and concise definition based on the rulebook content.
-- Update the terminology list to include these new definitions while ensuring it remains concise and easy to understand.
-- Maintain a neutral and informative tone throughout the terminology list.
-- Keep each definition brief and to the point, about one or two sentences.
-- Use bullet points for each term and its definition.
-- Ignore fluff or non-essential content from the rulebook pages that do not contribute to understanding key terminology.
-- The final terminology list should be comprehensive yet succinct, providing players with a clear understanding of important terms used in the game's rules.
-- If there is no new terminology to add, retain and output the current terminology list as is.
-
-## Formatting
-
-- Output reasoning steps as a bulleted list.
-- Output the terminology list enclosed within <terminology> and </terminology> tags.
-"""
-
-
-EXTRACT_TERMINOLOGY_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        ("system", EXTRACT_TERMINOLOGY_SYSTEM_TEMPLATE),
-        ("human", EXTRACT_TERMINOLOGY_TEMPLATE),
-    ],
-    template_format="mustache"
-)
-
-
-@dataclass
-class ExtractTerminologyJob:
-    output_dir: Path
-    gp: GamePackage
-    chat_model: BaseChatModel
-    tokenizer: Any
-    summary_tag: str = "terminology"
-
-    async def run(self):
-        logger.info("Starting terminology extraction job")
-
-        # We need to be careful here. We want pairs of consecutive pages to
-        # ensure we don't split important context. However, if we just use
-        # apairwise, we might not process any pages is there's only one page.
-
-        # Get the page iterator
-        page_iter = get_document_page_aiter(self.gp)
-
-        # Convert pages to dictionaries for use with the prompt template
-        page_iter = amap(Document.model_dump, page_iter)
-
-        # Have the iterator produce None when exhausted
-        page_iter = achain(page_iter, arepeat(None))
-
-        # Now we get pairs
-        page_pairs_iter = apairwise(page_iter)
-
-        # Only take pairs while the first element is not None
-        # This will give us all non-None pairs for documents with 2+ pages and
-        # a single pair of (page, None) for documents with 1 page.
-        page_pairs_iter = atakewhile(lambda pair: pair[0] is not None, page_pairs_iter)
-
-        # Define summary tag regex, being sure to escape any special characters
-        # in the tag name
-        escaped_tag = re.escape(self.summary_tag)
-        regex_pattern = rf".*<{escaped_tag}>([\s\S]*)</{escaped_tag}>.*"
-
-        output_parser = RegexParser(
-            regex=regex_pattern,
-            output_keys=["summary"],
-        )
-
-        # Run the summary chain on successive page pairs, refining the summary
-        # at each step
-        summary_chain = (
-            EXTRACT_TERMINOLOGY_PROMPT | self.chat_model | output_parser
-        )
-
-        current_summary = ""
-        async for idx, (page1, page2) in aenumerate(page_pairs_iter):
-            try:
-                input = {
-                    "game_name": self.gp["name"],
-                    "current_terminology": current_summary,
-                    "documents": [
-                        page for page in [page1, page2] if page is not None
-                    ],
-                }
-                logger.info(f"Processing page pair", idx=idx, input=input)
-                output = await summary_chain.ainvoke(input)
-                logger.info(f"Received output for page pair", idx=idx, output=output)
-                current_summary = output["summary"]
-                print(f"Updated Summary:\n{current_summary}\n\n\n")
-            except:
-                logger.exception("Failed to process pages")
-
-
 @dataclass
 class SettingSummaryJob:
     path: Path
@@ -696,4 +580,188 @@ class PresentationJob:
         # Save the output
         presentation_path = get_game_presentation_path(self.gp)
         await aspit_yaml(output, presentation_path)
+
+
+GENERATE_QUESTIONS_TEMPLATE = """
+You are helping players of the board game "{{game_name}}" discover what they can ask a rules
+assistant.
+
+Here is an overall summary of the game, for context:
+
+<game_summary>
+{{game_summary}}
+</game_summary>
+
+Focus specifically on the rulebook titled "{{rulebook_name}}". Here is its summary:
+
+<rulebook_summary>
+{{rulebook_summary}}
+</rulebook_summary>
+
+Brainstorm {{count}} example rules questions grounded in the content of THIS rulebook
+("{{rulebook_name}}") — phrased naturally, the way a real player would ask a friend across the
+table mid-game (concise, spoken-aloud, not formal). Use the overall game context only to
+disambiguate; the questions themselves should be about this rulebook's material.
+
+Requirements:
+- Every question must be answerable from this rulebook's actual rules (no theme/lore/trivia).
+- Cover a deliberate spread: setup, turn structure, common points of confusion or tricky rule
+  interactions, card/ability/component edge cases, and win conditions.
+- Favor the kinds of tricky, specific edge cases players actually get stuck on over generic
+  "what are the rules?" questions.
+
+Give your response in the following JSON format:
+
+{
+"reasoning": "<...brief reasoning about the coverage spread...>",
+"questions": ["<question 1>", "<question 2>", ...]
+}
+""".strip()
+
+GENERATE_QUESTIONS_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("human", GENERATE_QUESTIONS_TEMPLATE),
+    ],
+    template_format="mustache",
+)
+
+
+SELECT_QUESTIONS_TEMPLATE = """
+You are curating example rules questions to show players of the board game "{{game_name}}" before
+they start chatting with a rules assistant. Below is a list of candidate questions.
+
+<candidates>
+{{#questions}}
+- {{.}}
+{{/questions}}
+</candidates>
+
+Select the best {{count}} questions to display. When selecting:
+- Remove near-duplicates and near-identical phrasings.
+- Prefer a diverse mix that showcases the assistant's ability to handle tricky, specific rule
+  interactions — not just generic questions.
+- Keep phrasing concise and natural, the way a player would actually speak. Lightly clean up
+  wording if needed.
+
+Give your response in the following JSON format:
+
+{
+"reasoning": "<...brief reasoning about the final selection...>",
+"questions": ["<question 1>", "<question 2>", ...]
+}
+""".strip()
+
+SELECT_QUESTIONS_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("human", SELECT_QUESTIONS_TEMPLATE),
+    ],
+    template_format="mustache",
+)
+
+
+class GenerateQuestionsOutput(TypedDict):
+    reasoning: str
+    questions: list[str]
+
+
+class SelectQuestionsOutput(TypedDict):
+    reasoning: str
+    questions: list[str]
+
+
+@dataclass
+class ExampleQuestionsJob:
+    path: Path
+    gp: GamePackage
+    chat_model: BaseChatModel
+    num_questions: int = 5
+    candidates_per_rulebook: int = 10
+
+    async def run(self):
+        game_name = self.gp["name"]
+
+        # Overall game summary — used as context for every rulebook. Prefer the on-disk asset,
+        # fall back to the summary folded into the manifest.
+        game_summary = ""
+        summary_path = game_summary_path(self.gp)
+        if summary_path.exists():
+            game_summary = await aslurp(summary_path)
+        if not game_summary.strip():
+            game_summary = self.gp.get("summary", "") or ""
+
+        # Collect the per-rulebook summaries. Each rulebook is brainstormed independently so that
+        # smaller rulebooks / expansions aren't drowned out by the game-level summary.
+        rulebooks: list[tuple[str, str]] = []
+        for rulebook in self.gp["rulebooks"]:
+            rb_summary_path = rulebook_summary_path(self.gp, rulebook["document_key"])
+            if rb_summary_path.exists():
+                rb_summary = await aslurp(rb_summary_path)
+                if rb_summary.strip():
+                    rulebooks.append((rulebook["name"], rb_summary))
+
+        # Fall back to a single pass over the game summary if no per-rulebook summaries exist.
+        if not rulebooks:
+            if not game_summary.strip():
+                logger.warning(
+                    "No summaries available for example question generation; skipping",
+                    game_id=self.gp["game_id"],
+                )
+                return
+            rulebooks = [(game_name, game_summary)]
+
+        # Prompt 1: brainstorm candidates per rulebook, concurrently.
+        generate_chain = GENERATE_QUESTIONS_PROMPT | self.chat_model.with_structured_output(
+            GenerateQuestionsOutput
+        )
+        tasks = [
+            generate_chain.ainvoke(
+                {
+                    "game_name": game_name,
+                    "game_summary": game_summary,
+                    "rulebook_name": rb_name,
+                    "rulebook_summary": rb_summary,
+                    "count": self.candidates_per_rulebook,
+                }
+            )
+            for rb_name, rb_summary in rulebooks
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for (rb_name, _), result in zip(rulebooks, results):
+            if isinstance(result, BaseException):
+                logger.exception(
+                    "Failed to brainstorm questions for rulebook",
+                    game_id=self.gp["game_id"],
+                    rulebook_name=rb_name,
+                    exc_info=result,
+                )
+                continue
+            for q in result["questions"]:
+                q = (q or "").strip()
+                if q and q.lower() not in seen:
+                    seen.add(q.lower())
+                    candidates.append(q)
+
+        logger.info("Generated candidate questions", game_id=self.gp["game_id"], candidates=candidates)
+
+        if not candidates:
+            logger.warning("No candidate questions generated; skipping", game_id=self.gp["game_id"])
+            return
+
+        # Prompt 2: select and polish the best diverse subset across all rulebooks.
+        select_chain = SELECT_QUESTIONS_PROMPT | self.chat_model.with_structured_output(
+            SelectQuestionsOutput
+        )
+        selected = await select_chain.ainvoke(
+            {"game_name": game_name, "questions": candidates, "count": self.num_questions}
+        )
+        final_questions = [q.strip() for q in selected["questions"] if q and q.strip()]
+        final_questions = final_questions[: self.num_questions]
+        logger.info("Selected example questions", game_id=self.gp["game_id"], questions=final_questions)
+
+        # Persist the asset. Import into the DB happens later via the import job.
+        example_questions_path = get_game_example_questions_path(self.gp)
+        await aspit_yaml({"questions": final_questions}, example_questions_path)
         

@@ -13,7 +13,7 @@ from langchain_core.stores import BaseStore
 from langchain_core.vectorstores.base import VectorStore
 
 from meeplemate.ingest.chunkbuild import ChildChunkDescriptor, ChunkDescriptor, child_chunks_for_chunk_iter, chunks_for_page_iter, get_child_chunk_path, get_chunk_path
-from meeplemate.ingest.gamepackage import GamePackage, get_game_presentation_path, get_page, get_pages_iter, page_to_document, get_game_key
+from meeplemate.ingest.gamepackage import GamePackage, get_game_example_questions_path, get_game_presentation_path, get_page, get_pages_iter, page_to_document, get_game_key
 from structlog import get_logger
 
 from meeplemate.util import amap, achain_from_aiterable, aslurp, aslurp_yaml, sem_guard
@@ -72,8 +72,27 @@ async def import_game_data(job: ImportDocumentsJob) -> None:
         game_data["background_color"] = presentation_data["background_color"]
     
     logger.info("Saving game data", game_data=game_data)
-    
+
     await job.game_data_store.amset([(get_game_key(job.gp), game_data)])
+
+
+async def import_example_questions(gp: GamePackage, game_questions_store: BaseStore[str, Any]) -> None:
+    # Example questions are an optional asset produced by ExampleQuestionsJob. They are keyed by
+    # game_id (not version) since they carry across game versions, so they're imported on their
+    # own via the `import-example-questions` CLI command rather than as part of import-documents.
+    example_questions_path = get_game_example_questions_path(gp)
+    if not example_questions_path.exists():
+        logger.info("No example questions asset to import", game_id=gp["game_id"])
+        return
+
+    data = await aslurp_yaml(example_questions_path)
+    questions = data.get("questions") if isinstance(data, dict) else None
+    if not questions:
+        logger.info("Example questions asset had no questions", game_id=gp["game_id"])
+        return
+
+    logger.info("Saving example questions", game_id=gp["game_id"], questions=questions)
+    await game_questions_store.amset([(gp["game_id"], questions)])
 
 
 def get_all_chunks_iter(gp: GamePackage) -> AsyncIterator[ChunkDescriptor]:
@@ -124,7 +143,21 @@ def add_game_metadata_to_document(document: Document, gp: GamePackage) -> Docume
     return document
 
 
-async def run_import_documents(job: ImportDocumentsJob) -> None:
+async def run_import_documents(job: ImportDocumentsJob, *, overwrite: bool = False) -> None:
+    # Refuse to silently clobber a version that has already been imported. The
+    # game data record is keyed by game_key (game_id#game_version) and written on
+    # every import, so its presence means this exact version is already in the DB.
+    game_key = get_game_key(job.gp)
+    if not overwrite:
+        existing = (await job.game_data_store.amget([game_key]))[0]
+        if existing is not None:
+            raise ValueError(
+                f"Game version already imported: {game_key}. Re-importing would "
+                f"overwrite the existing data in place. Bump the version first with "
+                f"`mm-ingest update-version <package>` to import as a new version, "
+                f"or pass --overwrite to re-import this version in place."
+            )
+
     # Ensure the vector store partition exists before spawning concurrent tasks
     ensure_partition = getattr(job.vector_store, "ensure_partition", None)
     if callable(ensure_partition):
@@ -177,9 +210,12 @@ async def run_import_documents(job: ImportDocumentsJob) -> None:
         import_game_data(job)
     )
 
+    # Note: example questions are game-scoped (keyed by game_id, not game_version)
+    # and are imported separately via the `import-example-questions` command, not
+    # as part of the version-scoped document import.
+
     # Wait for all tasks to complete
     await asyncio.gather(*tasks)
 
     # Data imported! Lets update the current game version
-    game_key = get_game_key(job.gp)
     await job.game_version_store.amset([(job.gp['game_id'], game_key)])

@@ -420,21 +420,8 @@ function EmptyState({
   game: Game
   onSuggest: (q: string) => void
 }) {
-  const suggestions: Record<string, string[]> = {
-    munchkin: [
-      'Can I discard my class card during combat?',
-      'What happens when two players want to help with a fight?',
-      'How do I loot the room?',
-    ],
-    warhammer_5th_edition: [
-      'Do Grail Knights need to take break tests?',
-      'What is the flying high rule?',
-      'How does magic work?',
-    ],
-  }
-
   const defaultSuggestions = ['What are the basic rules?', 'How does setup work?', 'What is the win condition?']
-  const qs = suggestions[game.id] ?? defaultSuggestions
+  const qs = game.exampleQuestions?.length ? game.exampleQuestions : defaultSuggestions
 
   return (
     <div className="max-w-3xl mx-auto w-full flex flex-col items-center px-4 pt-10 pb-4">

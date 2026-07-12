@@ -92,6 +92,7 @@ class GameInfo(BaseModel):
     summary: str | None = None
     emoji: str | None = None
     background_color: str | None = None
+    example_questions: list[str] | None = None
 
 
 class PageInfo(BaseModel):
@@ -116,9 +117,10 @@ async def get_games(
     games, has_next, start_cursor, end_cursor = await deps.game_service.list_games(
         after=cursor, limit=first
     )
+    questions = await deps.game_service.get_example_questions([g["game_id"] for g in games])
     return GamesPage(
         pageInfo=PageInfo(hasNextPage=has_next, startCursor=start_cursor, endCursor=end_cursor),
-        data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary"), emoji=g.get("emoji"), background_color=g.get("background_color")) for g in games],
+        data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary"), emoji=g.get("emoji"), background_color=g.get("background_color"), example_questions=q) for g, q in zip(games, questions)],
     )
 
 
@@ -132,7 +134,8 @@ async def get_game(
     manifest = await deps.game_service.get_manifest(game_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail="Game not found")
-    return GameInfo(id=manifest["game_id"], name=manifest["name"], summary=manifest.get("summary"), emoji=manifest.get("emoji"), background_color=manifest.get("background_color"))
+    questions = (await deps.game_service.get_example_questions([game_id]))[0]
+    return GameInfo(id=manifest["game_id"], name=manifest["name"], summary=manifest.get("summary"), emoji=manifest.get("emoji"), background_color=manifest.get("background_color"), example_questions=questions)
 
 
 @router.get("/api/recent-games")
@@ -148,9 +151,10 @@ async def get_recent_games(
         pagination=Pagination(first=first, cursor=cursor),
     )
     games = await deps.game_service.get_games_by_ids(recent.data)
+    questions = await deps.game_service.get_example_questions([g["game_id"] for g in games])
     return GamesPage(
         pageInfo=PageInfo(hasNextPage=recent.pageInfo.hasNextPage, startCursor=recent.pageInfo.startCursor, endCursor=recent.pageInfo.endCursor),
-        data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary"), emoji=g.get("emoji"), background_color=g.get("background_color")) for g in games],
+        data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary"), emoji=g.get("emoji"), background_color=g.get("background_color"), example_questions=q) for g, q in zip(games, questions)],
     )
 
 

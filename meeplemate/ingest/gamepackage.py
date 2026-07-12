@@ -100,6 +100,11 @@ def get_game_presentation_path(gp: GamePackage) -> Path:
     return presentation_path
 
 
+def get_game_example_questions_path(gp: GamePackage) -> Path:
+    example_questions_path = gp["path"] / "example_questions.yaml"
+    return example_questions_path
+
+
 def page_md_path(page: Page) -> Path:
     page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
     markdown_path = page_base.with_suffix(".md")

@@ -422,6 +422,7 @@ class AppServices(TypedDict):
     chat_model: BaseChatModel
     game_data_store: BaseStore
     game_version_store: BaseStore
+    game_questions_store: BaseStore
     full_page_store: BaseStore
     chunk_search_service: ChunkSearchService
     chatloop_service: ChatLoopService
@@ -591,6 +592,14 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     "engine": "async_engine",
                 }
             ),
+            "game_questions_store": (
+                factory(PostgresJSONStore)(
+                    namespace="game_questions",
+                ),
+                {
+                    "engine": "async_engine",
+                }
+            ),
             "full_page_store": (
                 factory(PostgresSerializableStore)(
                     namespace="full_page_store",
@@ -631,6 +640,7 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                 {
                     "data_store": "game_data_store",
                     "version_store": "game_version_store",
+                    "questions_store": "game_questions_store",
                 }
             ),
             "async_engine": (
