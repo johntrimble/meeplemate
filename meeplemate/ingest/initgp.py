@@ -65,6 +65,14 @@ class InitGamePackageJob:
         if "game_version" not in manifest:
             game_version = str(uuid7())
             manifest["game_version"] = game_version
+
+    def maybe_add_game_id(self, manifest: Manifest) -> None:
+        if "game_id" in manifest and manifest["game_id"]:
+            return
+
+        # Get the last element of the output_dir path
+        game_id = self.output_dir.name
+        manifest["game_id"] = game_id
         
     async def run(self):
         # Make sure the output directory exists
@@ -87,6 +95,9 @@ class InitGamePackageJob:
 
         # Add game_version if missing
         self.maybe_add_game_version(manifest)
+
+        # Add game_id
+        self.maybe_add_game_id(manifest)
 
         # Write out the updated manifest
         manifest_path = self.output_dir / "rulebooks.yaml"
