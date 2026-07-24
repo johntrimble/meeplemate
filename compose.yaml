@@ -203,7 +203,13 @@ services:
       - --no-enable-prefix-caching
       - --mm-processor-cache-gb
       - "0"
- 
+      - --max-model-len
+      - "32768"
+      # Sizes the multimodal encoder cache; must exceed the vision-token count
+      # of the largest page image (default was 4800, dense pages hit ~5000+).
+      - --max-num-batched-tokens
+      - "32768"
+
     volumes:
       # vLLM uses HF cache under /root/.cache/huggingface in the official image
       - ./data/vllm_ocr_data:/root/.cache/huggingface:cached
