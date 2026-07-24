@@ -37,6 +37,25 @@ WINDOWS: list[tuple[str, int]] = [
 # Configuration
 # ---------------------------------------------------------------------------
 
+def calc_token_limits():
+    cost_per_million_input = 0.10
+    cost_per_million_output = 0.30
+    output_token_multiplier = cost_per_million_output / cost_per_million_input
+
+    # Find limit such that never more than $50 in one month
+    max_cost = 50.0
+    max_tokens_per_month = max_cost / cost_per_million_input * 1_000_000
+
+    return {
+        "app_8h": int(max_tokens_per_month * (8 / (24 * 30))),
+        "app_7d": int(max_tokens_per_month * (7 / 30)),
+        "app_30d": int(max_tokens_per_month),
+        "user_8h": int(max_tokens_per_month * (8 / (24 * 30)) / 50),
+        "user_7d": int(max_tokens_per_month * (7 / 30) / 50),
+        "user_30d": int(max_tokens_per_month / 50),
+        "output_token_multiplier": output_token_multiplier,
+    }
+
 class RateLimitConfig(BaseModel):
     """Token-based rate limiting configuration (loaded from MM_RATE_LIMIT__* env vars)."""
 
