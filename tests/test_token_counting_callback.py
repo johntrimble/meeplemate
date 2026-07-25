@@ -1,10 +1,11 @@
 """Unit tests for TokenCountingCallback."""
 from __future__ import annotations
 
+import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
-from meeplemate.server.rate_limit import TokenCountingCallback
+from meeplemate.server.rate_limit import RateLimitConfig, TokenCountingCallback
 
 # on_llm_end receives an LLMResult, whose `.generations` is nested (list[list]).
 
@@ -50,11 +51,28 @@ def test_accumulates_tokens_with_output_multiplier() -> None:
     assert cb.tokens == 1_250
 
 
-def test_default_multiplier_is_four() -> None:
-    """Default output_token_multiplier is 4."""
+def test_default_multiplier_is_unweighted() -> None:
+    """Without an explicit weight, output tokens count the same as input ones."""
     cb = TokenCountingCallback(estimated=0)
-    cb.on_llm_end(_llm_result(0, 10))
-    assert cb.tokens == 40
+    cb.on_llm_end(_llm_result(100, 10))
+    assert cb.tokens == 110
+
+
+def test_configured_multiplier_is_the_price_ratio() -> None:
+    """What api.py passes in: the weight is derived from the configured prices."""
+    cfg = RateLimitConfig(cost_per_m_input_usd=0.14, cost_per_m_output_usd=1.00)
+    cb = TokenCountingCallback(output_token_multiplier=cfg.output_token_multiplier)
+    cb.on_llm_end(_llm_result(100, 7))
+    assert cb.tokens == 150  # 100 + 7 * 7.142857
+
+
+def test_fractional_multiplier_is_rounded_once() -> None:
+    """A price-ratio multiplier is fractional; only the persisted total rounds."""
+    cb = TokenCountingCallback(estimated=0, output_token_multiplier=1.00 / 0.14)
+    cb.on_llm_end(_llm_result(100, 10))     # 100 + 10*7.142857 = 171.42857
+    cb.on_llm_end(_llm_result(100, 10))     # running total 342.857...
+    assert cb.total == pytest.approx(342.857, abs=0.001)
+    assert cb.tokens == 343
 
 
 def test_multiplier_of_one_counts_all_tokens_equally() -> None:
