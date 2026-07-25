@@ -3,7 +3,7 @@ import { DefaultChatTransport, isReasoningUIPart, isTextUIPart } from 'ai'
 import type { UIMessage } from 'ai'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Reasoning,
   ReasoningContent,
@@ -26,6 +26,7 @@ import { useChats } from '@/hooks/useChats'
 import { cn } from '@/lib/utils'
 import { LoadingLabel } from '@/components/LoadingLabel'
 import { fetchWithRetry } from '@/lib/fetchWithRetry'
+import { randomUUID } from '@/lib/uuid'
 import {
   CheckIcon,
   CopyIcon,
@@ -517,25 +518,16 @@ function PageChrome({
 
 function NewChat({ gameId, game }: { gameId: string; game: Game }) {
   const navigate = useNavigate()
-  const authFetch = useAuthFetch()
-  const qc = useQueryClient()
 
-  const createChat = useMutation({
-    mutationFn: (text: string) =>
-      authFetch(`/api/games/${gameId}/chats`, { method: 'POST' })
-        .then((r) => {
-          if (!r.ok) throw new Error('Failed to create chat')
-          return r.json() as Promise<{ chat_id: string }>
-        })
-        .then((body) => ({ ...body, text })),
-    onSuccess: ({ chat_id, text }) => {
-      // Invalidate the chat list so the sidebar is fresh when next opened.
-      qc.invalidateQueries({ queryKey: ['chats', gameId] })
-      navigate(`/chat/${gameId}/${chat_id}`, { state: { pendingMessage: text } })
-    },
-  })
-
-  const handleSubmit = (text: string) => createChat.mutate(text)
+  // Optimistic: mint the chat id client-side and navigate straight into the chat
+  // view carrying the first message. The backend creates the chat on the first
+  // streamed message (idempotent upsert), so there is no blocking create round-trip
+  // to cold-start behind — the user sees their message immediately. `randomUUID`
+  // works even over insecure-context dev (LAN http). See tasks/optimistic-new-chat-plan.md.
+  const handleSubmit = (text: string) => {
+    const chatId = randomUUID()
+    navigate(`/chat/${gameId}/${chatId}`, { state: { pendingMessage: text } })
+  }
 
   return (
     <PageChrome game={game} gameId={gameId}>
@@ -543,7 +535,7 @@ function NewChat({ gameId, game }: { gameId: string; game: Game }) {
         <EmptyState game={game} onSuggest={handleSubmit} />
       </div>
       <div className="shrink-0">
-        <ChatInput onSubmit={handleSubmit} disabled={createChat.isPending} />
+        <ChatInput onSubmit={handleSubmit} />
       </div>
     </PageChrome>
   )
@@ -565,15 +557,26 @@ function ExistingChat({
   const location = useLocation()
   const authFetch = useAuthFetch()
 
-  const { data: initialMessages, isPending } = useQuery({
+  const pendingMessage =
+    (location.state as { pendingMessage?: string } | null)?.pendingMessage ?? null
+
+  // A brand-new chat (navigated from NewChat with a pending message) has no
+  // server-side history yet, and its client-minted id may not exist server-side
+  // until the first stream creates it. Skip the history fetch entirely so we don't
+  // 404 or — worse — block on that GET cold-starting the backend, which would
+  // re-freeze the screen. Captured once so it stays stable across re-renders.
+  const [isNewChat] = useState(() => !!pendingMessage)
+
+  const { data: fetchedMessages, isPending } = useQuery({
     queryKey: ['messages', chatId],
+    enabled: !isNewChat,
     queryFn: ({ signal }) =>
       authFetch(`/api/chats/${chatId}/messages`, { signal })
         .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<UIMessage[]> })
         .catch(() => [] as UIMessage[]),
   })
 
-  if (isPending) {
+  if (!isNewChat && isPending) {
     // Only shown on first visit — cached chats render immediately.
     return (
       <PageChrome game={game} gameId={gameId} chatId={chatId}>
@@ -584,15 +587,12 @@ function ExistingChat({
     )
   }
 
-  const pendingMessage =
-    (location.state as { pendingMessage?: string } | null)?.pendingMessage ?? null
-
   return (
     <ChatView
       gameId={gameId}
       chatId={chatId}
       game={game}
-      initialMessages={initialMessages ?? []}
+      initialMessages={isNewChat ? [] : (fetchedMessages ?? [])}
       pendingMessage={pendingMessage}
     />
   )
@@ -618,6 +618,7 @@ function ChatView({
   const navigate = useNavigate()
   const location = useLocation()
   const { getIdToken } = useAuth()
+  const qc = useQueryClient()
   const bottomRef = useRef<HTMLDivElement>(null)
   const pendingSent = useRef(false)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 0 | 1 | null>>(() => {
@@ -631,6 +632,13 @@ function ChatView({
 
   const { messages: chatMessages, sendMessage, regenerate, status, error, clearError, setMessages } = useChat({
     messages: initialMessages,
+    onFinish: () => {
+      // The first message of a new chat just created it server-side
+      // (create-on-first-message), so refresh the sidebar list and recent games.
+      // This replaces the invalidation the old blocking create mutation did.
+      qc.invalidateQueries({ queryKey: ['chats', gameId] })
+      qc.invalidateQueries({ queryKey: ['recent-games'] })
+    },
     transport: new DefaultChatTransport({
       api: `${import.meta.env.VITE_API_URL ?? ''}/api/chats/${chatId}/stream`,
       // Retry through Cloud Run cold starts. Retries only fire before any stream
@@ -650,6 +658,9 @@ function ChatView({
           body: {
             message: text,
             game_id: gameId,
+            // Forward the client message id so a retried first stream (cold start)
+            // dedupes server-side instead of double-saving the user message.
+            message_id: last?.id,
             ...(trigger === 'regenerate-message' && messageId ? { retry_message_id: messageId } : {}),
           },
           headers: { Authorization: `Bearer ${token}` },

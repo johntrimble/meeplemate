@@ -94,6 +94,14 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
         "user_id": "test-uid",
         "created_at": "2026-01-01T00:00:00",
     }
+    # The stream endpoint now create-on-first-message via ensure_chat (returns the
+    # current row, owned by the test user for the test game) instead of get_chat.
+    mock_data_layer.ensure_chat.return_value = {
+        "chat_id": "00000000-0000-0000-0000-000000000001",
+        "game_id": "test-game",
+        "user_id": "test-uid",
+        "created_at": "2026-01-01T00:00:00",
+    }
     mock_data_layer.get_messages.return_value = []
     mock_data_layer.save_message.return_value = None
     mock_data_layer.get_message_owner.return_value = "test-uid"

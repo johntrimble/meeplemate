@@ -11,6 +11,15 @@ import {
 
 const GAME_ID = MUNCHKIN_GAME.id
 const CHAT_ID = 'test-chat-123'
+const NEW_CHAT_URL = new RegExp(`/chat/${GAME_ID}/[0-9a-f-]{36}$`)
+
+// A minimal Vercel AI UI message stream that just starts and finishes.
+const FINISH_SSE = [
+  'data: {"type":"start","messageId":"m1"}\n\n',
+  'data: {"type":"finish"}\n\n',
+  'data: [DONE]\n\n',
+].join('')
+const SSE_HEADERS = { 'Content-Type': 'text/event-stream', 'x-vercel-ai-ui-message-stream': 'v1' }
 
 test.beforeEach(async ({ page }) => {
   await mockGameRoute(page)
@@ -35,20 +44,39 @@ test('shows suggested questions in empty state', async ({ page }) => {
   await expect(suggestions.first()).toBeVisible()
 })
 
-test('clicking a suggestion creates a chat and navigates', async ({ page }) => {
-  await page.route(`**/api/games/${GAME_ID}/chats`, (route) => {
-    if (route.request().method() === 'POST') {
-      route.fulfill({ json: { chat_id: CHAT_ID } })
-    } else {
-      route.continue()
-    }
-  })
-  await mockChatMessagesRoute(page, CHAT_ID, [])
+test('clicking a suggestion navigates to a new client-minted chat and shows the message', async ({ page }) => {
+  // No create round-trip: the client mints the id and the chat is created on the
+  // first stream. Navigation is immediate and the question shows as a message.
+  await page.route('**/api/chats/*/stream', (route) =>
+    route.fulfill({ status: 200, headers: SSE_HEADERS, body: FINISH_SSE }),
+  )
 
   await page.goto(`/chat/${GAME_ID}`)
   const suggestion = page.locator('button').filter({ hasText: /\?/ }).first()
+  const questionText = (await suggestion.textContent())!.trim()
   await suggestion.click()
-  await expect(page).toHaveURL(`/chat/${GAME_ID}/${CHAT_ID}`)
+
+  await expect(page).toHaveURL(NEW_CHAT_URL)
+  await expect(page.getByText(questionText).last()).toBeVisible()
+})
+
+test('new chat: a terminal stream error keeps the message and shows a dismissible error', async ({ page }) => {
+  // A JSON 5xx is a terminal app error (not a cold-start retry) — it surfaces at once.
+  await page.route('**/api/chats/*/stream', (route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'boom' }) }),
+  )
+
+  await page.goto(`/chat/${GAME_ID}`)
+  const suggestion = page.locator('button').filter({ hasText: /\?/ }).first()
+  const questionText = (await suggestion.textContent())!.trim()
+  await suggestion.click()
+
+  await expect(page).toHaveURL(NEW_CHAT_URL)
+  // Optimistic message stays; the error renders below it with a dismiss.
+  await expect(page.getByText(questionText).last()).toBeVisible()
+  await expect(page.getByText('Something went wrong. Please try again.')).toBeVisible()
+  await page.getByRole('button', { name: 'Dismiss' }).click()
+  await expect(page.getByText('Something went wrong. Please try again.')).not.toBeVisible()
 })
 
 // ---------------------------------------------------------------------------
@@ -252,30 +280,28 @@ test('sidebar shows cached chats immediately on reopen when API is slow', async 
 // Optimistic: chat creation invalidates sidebar
 // ---------------------------------------------------------------------------
 
-test('sidebar reflects new chat after creation without manual refresh', async ({ page }) => {
-  const NEW_CHAT_ID = 'brand-new-chat'
+test('sidebar reflects the new chat after the first message', async ({ page }) => {
   const NEW_CHAT_TITLE = 'First question about Munchkin'
 
-  // Use `**` suffix to match both POST (no query string) and GET (with ?first=20 etc.).
-  await page.route(`**/api/games/${GAME_ID}/chats**`, (route) => {
-    if (route.request().method() === 'POST') {
-      route.fulfill({ json: { chat_id: NEW_CHAT_ID } })
-    } else {
-      route.fulfill({
-        json: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          data: [{ chat_id: NEW_CHAT_ID, title: NEW_CHAT_TITLE }],
-        },
-      })
-    }
-  })
-  await mockChatMessagesRoute(page, NEW_CHAT_ID, [])
+  await page.route('**/api/chats/*/stream', (route) =>
+    route.fulfill({ status: 200, headers: SSE_HEADERS, body: FINISH_SSE }),
+  )
+  // Once the first message finishes, the chat exists server-side; the sidebar fetch
+  // returns it (onFinish invalidated the list).
+  await page.route(`**/api/games/${GAME_ID}/chats?*`, (route) =>
+    route.fulfill({
+      json: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        data: [{ chat_id: 'created-chat', title: NEW_CHAT_TITLE }],
+      },
+    }),
+  )
 
   await page.goto(`/chat/${GAME_ID}`)
 
-  // Submit a suggestion to trigger chat creation.
+  // Submit a suggestion — navigates immediately; the chat is created on the stream.
   await page.locator('button').filter({ hasText: /\?/ }).first().click()
-  await expect(page).toHaveURL(`/chat/${GAME_ID}/${NEW_CHAT_ID}`)
+  await expect(page).toHaveURL(NEW_CHAT_URL)
 
   // Open sidebar — chat list should include the newly created chat.
   await page.getByRole('button', { name: 'Open menu' }).click()
