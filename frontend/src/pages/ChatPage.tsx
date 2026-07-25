@@ -621,6 +621,7 @@ function ChatView({
   const qc = useQueryClient()
   const bottomRef = useRef<HTMLDivElement>(null)
   const pendingSent = useRef(false)
+  const listsRefreshed = useRef(false)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 0 | 1 | null>>(() => {
     const map: Record<string, 0 | 1 | null> = {}
     for (const msg of initialMessages) {
@@ -633,9 +634,14 @@ function ChatView({
   const { messages: chatMessages, sendMessage, regenerate, status, error, clearError, setMessages } = useChat({
     messages: initialMessages,
     onFinish: () => {
-      // The first message of a new chat just created it server-side
-      // (create-on-first-message), so refresh the sidebar list and recent games.
-      // This replaces the invalidation the old blocking create mutation did.
+      // A new chat appears in the sidebar/recent lists only when its FIRST message
+      // completes (create-on-first-message). Refresh those lists once, then never
+      // again for this chat: later messages don't change either list — no new chat is
+      // created, and recent-games orders by chat created_at, not message time. Firing
+      // on every assistant finish would be redundant work. (ExistingChat is keyed by
+      // chatId, so this ref resets per chat.)
+      if (listsRefreshed.current) return
+      listsRefreshed.current = true
       qc.invalidateQueries({ queryKey: ['chats', gameId] })
       qc.invalidateQueries({ queryKey: ['recent-games'] })
     },
