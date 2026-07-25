@@ -210,8 +210,14 @@ class BaseDataLayer(ABC):
         """All chats for a game belonging to user_id, newest first, each with a derived title."""
 
     @abstractmethod
-    async def create_chat(self, game_id: str, user_id: str) -> UUID:
-        """Create a new chat session for user_id and return its UUID."""
+    async def ensure_chat(self, *, chat_id: UUID, game_id: str, user_id: str) -> ChatDict:
+        """Idempotently create the chat for a client-supplied ``chat_id`` if absent, then
+        return the current row.
+
+        Never overwrites an existing row: if ``chat_id`` already exists (e.g. a retried
+        first message, or a collision/tamper), the stored row is returned unchanged.
+        Callers MUST verify ownership/game on the result before writing to the chat.
+        """
 
     @abstractmethod
     async def delete_chat(self, chat_id: UUID) -> bool:

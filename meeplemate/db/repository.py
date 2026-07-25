@@ -107,13 +107,26 @@ class PostgresDataLayer(BaseDataLayer):
                 data=summaries,
             )
 
-    async def create_chat(self, game_id: str, user_id: str) -> UUID:
+    async def ensure_chat(self, *, chat_id: UUID, game_id: str, user_id: str) -> ChatDict:
         async with self._session_factory() as session:
-            chat = Chat(game_id=game_id, user_id=user_id)
-            session.add(chat)
+            # Atomic create-if-absent: on a conflicting chat_id (retry, collision, or
+            # tamper) the existing row is left untouched — we never overwrite ownership.
+            await session.execute(
+                pg_insert(Chat)
+                .values(chat_id=chat_id, game_id=game_id, user_id=user_id)
+                .on_conflict_do_nothing(index_elements=[Chat.chat_id])
+            )
             await session.commit()
-            await session.refresh(chat)
-            return cast(UUID, chat.chat_id)
+
+            chat = (
+                await session.execute(select(Chat).where(Chat.chat_id == chat_id))
+            ).scalar_one()
+            return ChatDict(
+                chat_id=str(chat.chat_id),
+                game_id=str(chat.game_id),
+                user_id=str(chat.user_id),
+                created_at=_encode_cursor(chat.created_at),
+            )
 
     async def delete_chat(self, chat_id: UUID) -> bool:
         async with self._session_factory() as session:
@@ -235,15 +248,26 @@ class PostgresDataLayer(BaseDataLayer):
         parts: list[MessagePart],
     ) -> None:
         async with self._session_factory() as session:
-            session.add(ChatMessage(message_id=message_id, chat_id=chat_id, role=role))
+            # Idempotent on message_id: a retried first stream (cold start) can re-send
+            # the same client-supplied user message id, so re-saving must be a no-op
+            # rather than a duplicate row / PK violation.
+            await session.execute(
+                pg_insert(ChatMessage)
+                .values(message_id=message_id, chat_id=chat_id, role=role)
+                .on_conflict_do_nothing(index_elements=[ChatMessage.message_id])
+            )
             for ordinal, part in enumerate(parts):
-                session.add(
-                    ChatMessagePart(
+                await session.execute(
+                    pg_insert(ChatMessagePart)
+                    .values(
                         message_id=message_id,
                         part_id=_part_id(part, ordinal),
                         part_type=part["type"],
                         ordinal=ordinal,
                         payload=part,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=[ChatMessagePart.message_id, ChatMessagePart.part_id]
                     )
                 )
             await session.commit()

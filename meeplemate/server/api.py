@@ -12,7 +12,7 @@ if "transformers" not in sys.modules:
 
 import json
 import logging
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
@@ -35,6 +35,37 @@ from meeplemate.tracing import NoopTraceSink, PersistingTracer
 
 def get_deps(request: Request) -> ApiDeps:
     return request.app.state.deps
+
+
+def _parse_chat_uuid(chat_id: str) -> UUID:
+    """Parse a URL chat id into a UUID, returning 400 on malformed input.
+
+    Chat ids are now client-supplied (the frontend mints one before the chat exists
+    server-side), so junk ids are expected and must fail cleanly instead of raising a
+    bare ValueError -> 500.
+    """
+    try:
+        return UUID(chat_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid chat id")
+
+
+# Namespace for deriving a stable message UUID from a client-supplied id that isn't
+# already a UUID (the AI SDK generates short non-UUID ids like "tUph1jxlmpniKcBi").
+_CLIENT_MESSAGE_NAMESPACE = UUID("6f9b9e6a-4c1e-4b6a-9c2d-000000000001")
+
+
+def _coerce_message_uuid(value: str) -> UUID:
+    """Map a client message id to a UUID for storage as the message PK.
+
+    Pass real UUIDs through; deterministically derive one (uuid5) for the AI SDK's
+    non-UUID ids. Determinism keeps `save_message` idempotent when a first stream is
+    retried through a cold start with the same client id.
+    """
+    try:
+        return UUID(value)
+    except ValueError:
+        return uuid5(_CLIENT_MESSAGE_NAMESPACE, value)
 
 
 router = APIRouter()
@@ -200,28 +231,6 @@ async def list_game_chats(
     )
 
 
-class CreateChatResponse(BaseModel):
-    chat_id: str
-
-
-@router.post("/api/games/{game_id}/chats")
-async def create_chat(
-    game_id: str,
-    user: AuthUser = Depends(get_current_user),
-    deps: ApiDeps = Depends(get_deps),
-) -> CreateChatResponse:
-    """
-    Create a new chat for a game scoped to the authenticated user.
-    Only called when the user actually sends their first message.
-    """
-    manifest = await deps.game_service.get_manifest(game_id)
-    if manifest is None:
-        raise HTTPException(status_code=404, detail=f"Game '{game_id}' not found")
-
-    chat_id = await deps.data_layer.create_chat(game_id, user.uid)
-    return CreateChatResponse(chat_id=str(chat_id))
-
-
 class MessagePartOut(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: str
@@ -241,7 +250,7 @@ async def get_chat_messages(
     deps: ApiDeps = Depends(get_deps),
 ) -> list[ChatMessageOut]:
     """Return all messages for a chat in chronological order."""
-    chat_uuid = UUID(chat_id)
+    chat_uuid = _parse_chat_uuid(chat_id)
     chat = await deps.data_layer.get_chat(chat_uuid)
     if chat is None or chat["user_id"] != user.uid:
         raise HTTPException(status_code=404, detail="Chat not found")
@@ -296,6 +305,9 @@ class StreamChatRequest(BaseModel):
     message: str
     game_id: str
     retry_message_id: str | None = None
+    # Client-supplied id for the user message. Lets a retried first stream (cold
+    # start) dedupe instead of double-saving the message. Optional for back-compat.
+    message_id: str | None = None
 
 
 @router.post("/api/chats/{chat_id}/stream")
@@ -314,9 +326,15 @@ async def stream_chat(
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Game '{request.game_id}' not found")
 
-    chat_uuid = UUID(chat_id)
-    chat = await deps.data_layer.get_chat(chat_uuid)
-    if chat is None or chat["user_id"] != user.uid:
+    chat_uuid = _parse_chat_uuid(chat_id)
+    # Create-on-first-message: the client mints the chat id and navigates optimistically,
+    # so the chat may not exist yet. ensure_chat creates it atomically if absent and never
+    # overwrites an existing row, so a collision/tamper can't hijack another user's chat —
+    # we still verify ownership + game below before writing anything.
+    chat = await deps.data_layer.ensure_chat(
+        chat_id=chat_uuid, game_id=request.game_id, user_id=user.uid
+    )
+    if chat["user_id"] != user.uid or chat["game_id"] != request.game_id:
         raise HTTPException(status_code=404, detail="Chat not found")
 
     chatloop_service = deps.chatloop_service
@@ -333,9 +351,11 @@ async def stream_chat(
             raise HTTPException(status_code=400, detail="Can only retry assistant messages")
         await data_layer.deactivate_messages_from(chat_uuid, msg_uuid)
     else:
-        # Normal path: persist the new user message.
+        # Normal path: persist the new user message. Use the client-supplied id when
+        # present so a retried first stream dedupes (save_message is idempotent on it).
+        user_message_id = _coerce_message_uuid(request.message_id) if request.message_id else uuid4()
         await data_layer.save_message(
-            message_id=uuid4(),
+            message_id=user_message_id,
             chat_id=chat_uuid,
             role="user",
             parts=[{"type": "text", "text": request.message}],
