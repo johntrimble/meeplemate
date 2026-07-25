@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import {
   CATAN_GAME,
+  EMPTY_GAMES_PAGE,
   GAMES_PAGE,
   MUNCHKIN_GAME,
   RECENT_GAMES_PAGE,
@@ -91,6 +92,40 @@ test('REST: the loading indicator switches to the cold-start hint, then recovers
   await expect(page.getByText('Waking up the server...')).not.toBeVisible()
   await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
   expect(calls).toBeGreaterThanOrEqual(2)
+})
+
+// ---------------------------------------------------------------------------
+// Static CDN snapshot (`/games.json`) - instant first paint, backend still cold
+// ---------------------------------------------------------------------------
+
+test('static seed: game list paints from /games.json while /api/games is cold', async ({ page }) => {
+  // Fresh context => empty IndexedDB (no persisted cache), so the only way the
+  // grid can appear is the static-snapshot seed.
+  await page.route('**/api/recent-games', (route) => route.fulfill({ json: EMPTY_GAMES_PAGE }))
+
+  // The static snapshot the deploy publishes to the CDN, served same-origin.
+  await page.route('**/games.json', (route) => route.fulfill({ json: GAMES_PAGE }))
+
+  // The live endpoint stays "cold" the whole time: never resolves successfully,
+  // so any rendered game must have come from the seed, not this request.
+  let apiCalls = 0
+  await page.route('**/api/games?*', (route) => {
+    apiCalls++
+    route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
+  })
+
+  await page.goto('/select-game')
+
+  // Catan only comes from the all-games grid (not "Recently Used", which is
+  // empty here), so its presence proves the seed rendered the catalog.
+  await expect(page.getByText(CATAN_GAME.name).first()).toBeVisible()
+  // Never shows the cold-start loading state and never errors - it's instant.
+  await expect(page.getByText('Loading games…')).not.toBeVisible()
+  await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
+
+  // The seed does NOT suppress revalidation: the live request still fires (and
+  // in production that's what warms the backend for the first question).
+  expect(apiCalls).toBeGreaterThanOrEqual(1)
 })
 
 test('REST: a JSON 500 application error is NOT retried', async ({ page }) => {

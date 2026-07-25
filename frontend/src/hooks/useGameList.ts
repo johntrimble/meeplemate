@@ -17,7 +17,11 @@ export function useGameList(): UseGameListResult {
   const query = useInfiniteQuery({
     queryKey: ['games'],
     queryFn: ({ pageParam, signal }) => {
-      const params = new URLSearchParams({ first: '20' })
+      // Fetch the whole catalog in one page (100 = the endpoint's max). This
+      // matches the deploy-time `games.json` snapshot exactly, so the seeded
+      // first paint and this background revalidation are byte-identical (no
+      // page-size mismatch, no list resize on revalidate).
+      const params = new URLSearchParams({ first: '100' })
       if (pageParam) params.set('cursor', pageParam)
       return authFetch(`/api/games?${params}`, { signal })
         .then((r) => {

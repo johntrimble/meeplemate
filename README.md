@@ -12,16 +12,8 @@ This notebook was part of a presentation I gave exploring the use of self-consis
 
 ## Running API and custom frontend
 
-Backend:
-
 ```bash
-uvicorn meeplemate.server.api:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-dir meeplemate
-```
-
-Frontend:
-
-```bash
-cd frontend && npm run dev
+./script/server
 ```
 
 ## Running the code

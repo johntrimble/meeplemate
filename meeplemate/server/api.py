@@ -113,7 +113,14 @@ async def get_games(
     user: AuthUser = Depends(get_current_user),
     deps: ApiDeps = Depends(get_deps),
 ) -> GamesPage:
-    """List of all supported games with pagination."""
+    """List of all supported games with pagination.
+
+    Auth is required so anonymous traffic can't reach the catalog DB query. The
+    deploy pipeline that snapshots this endpoint into the static CDN `games.json`
+    authenticates with a short-lived Firebase ID token minted from the service
+    account (see the frontend deploy workflow) — do NOT drop this dependency to
+    make that curl easier.
+    """
     games, has_next, start_cursor, end_cursor = await deps.game_service.list_games(
         after=cursor, limit=first
     )
@@ -130,7 +137,7 @@ async def get_game(
     user: AuthUser = Depends(get_current_user),
     deps: ApiDeps = Depends(get_deps),
 ) -> GameInfo:
-    """Get a single game by ID."""
+    """Get a single game by ID. Authed — same rationale as `get_games`."""
     manifest = await deps.game_service.get_manifest(game_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail="Game not found")

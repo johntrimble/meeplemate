@@ -5,6 +5,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { CacheGate } from '@/auth/CacheGate'
 import { queryClient, persister } from '@/lib/queryClient'
 import { CACHE_SCHEMA_VERSION, RETENTION_MS, makeShouldDehydrateQuery } from '@/lib/cachePersist'
+import { seedGamesFromStatic } from '@/lib/seedGames'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import SelectGamePage from './pages/SelectGamePage'
@@ -22,6 +23,12 @@ function App() {
         maxAge: RETENTION_MS,
         buster: CACHE_SCHEMA_VERSION,
         dehydrateOptions: { shouldDehydrateQuery: makeShouldDehydrateQuery(queryClient) },
+      }}
+      // Once the persisted cache has restored, seed the game catalog from the
+      // static CDN snapshot if it's still cold (new user). Runs after restore so
+      // it never clobbers a returning user's persisted list. See seedGames.ts.
+      onSuccess={() => {
+        void seedGamesFromStatic(queryClient)
       }}
     >
     <Routes>
