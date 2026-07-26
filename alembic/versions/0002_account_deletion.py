@@ -46,11 +46,18 @@ def upgrade() -> None:
     # unique, just not poolable across a future uid change.
     # lower(trim(...)) must match UserRecord.quota_key exactly, or a backfilled
     # row would sit under a key the application never looks up again.
+    # The `trim(u.email) <> ''` guard is the important half: a whitespace-only
+    # email trims to '', which would both collapse every such user onto one
+    # budget and disagree with UserRecord.quota_key, which falls back to the uid
+    # when the trimmed email is empty. Those rows would then sit under a key the
+    # application never reads, silently losing the user's accumulated usage.
     op.execute("""
         UPDATE token_usage t
         SET quota_key = lower(trim(u.email))
         FROM app_user u
-        WHERE u.user_id = t.quota_key AND u.email IS NOT NULL;
+        WHERE u.user_id = t.quota_key
+          AND u.email IS NOT NULL
+          AND trim(u.email) <> '';
     """)
     op.drop_index("ix_token_usage_user_recorded", table_name="token_usage")
     op.create_index("ix_token_usage_quota_recorded", "token_usage", ["quota_key", "recorded_at"])
@@ -82,7 +89,8 @@ def downgrade() -> None:
         UPDATE token_usage t
         SET quota_key = u.user_id
         FROM app_user u
-        WHERE lower(trim(u.email)) = t.quota_key;
+        WHERE lower(trim(u.email)) = t.quota_key
+          AND trim(u.email) <> '';
     """)
     op.drop_index("ix_token_usage_quota_recorded", table_name="token_usage")
     op.alter_column("token_usage", "quota_key", new_column_name="user_id")
