@@ -35,10 +35,20 @@ def test_case_and_whitespace_are_normalised(email):
     assert _user(email).quota_key == "player@example.com"
 
 
-def test_falls_back_to_uid_when_there_is_no_email():
-    """Custom-token identities (the deploy bot) carry no email; they simply
-    pool with nobody rather than colliding on an empty key."""
-    assert _user(None, uid="deploy-bot").quota_key == "deploy-bot"
+@pytest.mark.parametrize("email", [None, "", "   "])
+def test_falls_back_to_uid_when_there_is_no_usable_email(email):
+    """Custom-token identities (the deploy bot) carry no email; they pool with
+    nobody rather than colliding on an empty key.
+
+    Whitespace-only counts as no email. It is truthy, so normalising after the
+    emptiness check would key every such identity to "" and silently merge
+    their budgets.
+    """
+    assert _user(email, uid="deploy-bot").quota_key == "deploy-bot"
+
+
+def test_blank_emails_do_not_collide_with_each_other():
+    assert _user("   ", uid="uid-a").quota_key != _user("   ", uid="uid-b").quota_key
 
 
 # --- Deliberate non-normalisation ------------------------------------------

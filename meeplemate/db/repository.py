@@ -345,11 +345,22 @@ class PostgresDataLayer(BaseDataLayer):
                         await session.refresh(row)
                 return _to_user_record(row)
 
-            new_row = AppUser(user_id=uid, email=email, name=name)
-            session.add(new_row)
+            # First time we've seen this uid. Insert-if-absent rather than a
+            # plain INSERT: the frontend fires several account-scoped requests
+            # in parallel right after sign-in, so two of them can both find no
+            # row and race here, and a bare insert would lose one to a primary
+            # key violation — a 500 on the user's very first request. Same
+            # pattern as ensure_chat.
+            await session.execute(
+                pg_insert(AppUser)
+                .values(user_id=uid, email=email, name=name)
+                .on_conflict_do_nothing(index_elements=[AppUser.user_id])
+            )
             await session.commit()
-            await session.refresh(new_row)
-            return _to_user_record(new_row)
+            row = (
+                await session.execute(select(AppUser).where(AppUser.user_id == uid))
+            ).scalar_one()
+            return _to_user_record(row)
 
     async def soft_delete_user(self, uid: str) -> bool:
         async with self._session_factory() as session:

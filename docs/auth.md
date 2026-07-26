@@ -156,16 +156,11 @@ VITE_AUTH_BYPASS=true
 VITE_AUTH_BYPASS_USER={"uid":"local-dev","email":"dev@local","name":"Dev User"}
 ```
 
-With both set: the Firebase SDK is never initialized, no login redirect occurs, and `getIdToken()` returns the string `"bypass-token"` (which the backend ignores). You can change the `uid` to test user-scoping behaviour with different fake users — and changing the `uid` while keeping the `email` simulates a user who deleted their account and signed up again: new account, no history, same token budget.
+With both set: the Firebase SDK is never initialized, no login redirect occurs, and `getIdToken()` returns the string `"bypass-token"` (which the backend ignores). Firebase user deletion is a no-op in this mode.
+
+Changing the `uid` gives you a different fake user. Changing the `uid` while keeping the same `email` reproduces the delete-and-sign-up-again case: a new account with no history, but the same token budget.
 
 ### Emulator persistence
 
 The auth emulator runs with `--import`/`--export-on-exit` against a named volume, so users survive `docker compose down`. Without it the emulator was purely in-memory: every restart wiped the users, the next sign-in minted a **new uid for the same person**, and since the uid is the account key that silently created a second account and stranded the old chats. One dev address had accumulated 18 accounts before this was noticed. If you ever need a clean slate, `docker volume rm meeplemate_firebase_emulator_data`.
 
-`MM_AUTH_BYPASS_USER` also accepts the two claims the resurrection gate reads, so both branches can be exercised locally without a Firebase project:
-
-```
-MM_AUTH_BYPASS_USER={"uid":"local-dev","email":"dev@local","name":"Dev User","email_verified":true,"sign_in_provider":"google.com"}
-```
-
-Changing only the `uid` while keeping the same `email` and `sign_in_provider` simulates a user returning after deletion; changing `sign_in_provider` to `"password"` simulates the takeover attempt the gate is there to refuse. Firebase user deletion itself is a no-op in bypass mode.

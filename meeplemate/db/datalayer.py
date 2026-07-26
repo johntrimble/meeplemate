@@ -218,7 +218,11 @@ class UserRecord:
         sign-up would change that, and is the point to revisit this — alongside
         requiring a verified email before pooling at all (see ``TokenUsage``).
         """
-        return self.email.strip().lower() if self.email else self.uid
+        # Normalise *before* testing for emptiness: a whitespace-only email
+        # (a malformed claim, or a typo in MM_AUTH_BYPASS_USER) would otherwise
+        # pass the truthiness check and key every such identity to "".
+        normalised = (self.email or "").strip().lower()
+        return normalised or self.uid
 
 
 @dataclass
