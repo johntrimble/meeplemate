@@ -42,7 +42,11 @@ export function DeleteAccountDialog({
   const [isDeleting, setIsDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const email = user?.email ?? ''
+  // Trim at the source, so the guard, the prompt below and the comparison all
+  // use the same string. Trimming only inside the comparison would leave a
+  // padded email failing to match anything the user can type - and a
+  // whitespace-only one normalising to '', which an empty input would match.
+  const email = (user?.email ?? '').trim()
   const canDelete =
     email.length > 0 && confirmation.trim().toLowerCase() === email.toLowerCase()
 
