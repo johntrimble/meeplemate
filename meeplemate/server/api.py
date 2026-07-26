@@ -11,7 +11,7 @@ if "transformers" not in sys.modules:
     sys.modules["transformers"] = None  # type: ignore[assignment]
 
 import json
-import logging
+import time
 from uuid import UUID, uuid4, uuid5
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict
@@ -21,7 +21,14 @@ from typing import Literal
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+import structlog
+
+# Configured here, between the import blocks, so that records emitted while
+# `meeplemate.*` is still being imported are captured. Re-applied in create_app once
+# Config has resolved values from .env / YAML that os.environ alone wouldn't see.
+from meeplemate.logging_config import configure_logging
+
+configure_logging()
 
 from meeplemate.chatloop import ChatLoopServiceInput, cast
 from meeplemate.component_system import subsystem
@@ -29,8 +36,11 @@ from meeplemate.config import Config, System, create_app_system
 from meeplemate.db.datalayer import Pagination, TextMessagePart, UserRecord
 from meeplemate.server.auth import AuthUser, delete_firebase_user, get_current_user
 from meeplemate.server.deps import ApiDeps, get_db_user, get_db_user_allow_deleted
+from meeplemate.server.logging_middleware import RequestContextMiddleware
 from meeplemate.server.rate_limit import RateLimitState, TokenCountingCallback, check_rate_limit
 from meeplemate.tracing import NoopTraceSink, PersistingTracer
+
+log = structlog.get_logger(__name__)
 
 
 def get_deps(request: Request) -> ApiDeps:
@@ -82,6 +92,12 @@ def create_app(api_deps: ApiDeps | None = None) -> FastAPI:
         settings = Config()
         settings.use_lightweight_tokenizer = True
         settings.use_approximate_tokenizer = True
+        # Re-apply now that .env / YAML sources have been read.
+        configure_logging(
+            level=settings.log.level,
+            fmt=settings.log.format,
+            gcp_project_id=settings.log.gcp_project_id,
+        )
 
     cors_origins = (
         api_deps.cors_config.allowed_origins
@@ -99,9 +115,14 @@ def create_app(api_deps: ApiDeps | None = None) -> FastAPI:
             system = subsystem(app_system, names=["api_deps"])
             async with system.astart() as started_system:
                 app.state.deps = started_system["api_deps"]
+                log.info("app.startup_complete")
                 yield
+                log.info("app.shutdown")
 
     new_app = FastAPI(lifespan=lifespan)
+    # Added after CORSMiddleware so it ends up outermost: Starlette applies
+    # middleware in reverse registration order, and we want preflight and
+    # CORS-rejected requests logged too.
     new_app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -109,6 +130,7 @@ def create_app(api_deps: ApiDeps | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    new_app.add_middleware(RequestContextMiddleware)
     new_app.include_router(router)
     return new_app
 
@@ -361,6 +383,14 @@ async def stream_chat(
     Stream an assistant response using the Vercel AI UI message stream protocol.
     https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
     """
+    # Bound for the rest of the request so every downstream chatloop / qa_graph /
+    # search line is attributable to this chat.
+    structlog.contextvars.bind_contextvars(
+        chat_id=chat_id,
+        game_id=request.game_id,
+        is_retry=request.retry_message_id is not None,
+    )
+
     manifest = await deps.game_service.get_manifest(request.game_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Game '{request.game_id}' not found")
@@ -430,6 +460,13 @@ async def stream_chat(
         msg_id = uuid4()
         text_id = str(uuid4())
 
+        # This generator body runs *after* stream_chat has returned its response, so
+        # an exception raised in here can no longer become an HTTP error — it just
+        # truncates the SSE stream. Logging it is the only way it is ever visible.
+        structlog.contextvars.bind_contextvars(message_id=str(msg_id))
+        started = time.perf_counter()
+        log.info("chat.stream_started", message_count=len(langchain_messages))
+
         yield f'data: {json.dumps({"type": "start", "messageId": str(msg_id)})}\n\n'
 
         step_is_open: bool = False
@@ -470,44 +507,58 @@ async def stream_chat(
             )
 
         from langchain_core.runnables import RunnableConfig
-        async for _, _, event in chatloop_service.astream(
-            service_input,
-            subgraphs=True,
-            stream_mode=["custom"],
-            config=RunnableConfig(callbacks=callbacks),
-        ):
-            match event:
-                case {"type": "mm_step", "description": description}:
-                    for e in open_step(description):
-                        yield e
-                case {"type": "mm_refined_user_query", "refined_query": refined_query}:
-                    description = f"Refined user query: {refined_query}"
-                    reasoning_uuid = str(uuid4())
-                    yield f'data: {json.dumps({"type": "reasoning-start", "id": reasoning_uuid})}\n\n'
-                    yield f'data: {json.dumps({"type": "reasoning-delta", "id": reasoning_uuid, "delta": description})}\n\n'
-                    yield f'data: {json.dumps({"type": "reasoning-end", "id": reasoning_uuid})}\n\n'
-                case {"type": "mm_user_query_answered", "answer": answer}:
-                    reasoning_uuid = str(uuid4())
-                    final_answer = answer
-                    yield f'data: {json.dumps({"type": "text-start", "id": reasoning_uuid})}\n\n'
-                    yield f'data: {json.dumps({"type": "text-delta", "id": reasoning_uuid, "delta": answer})}\n\n'
-                    yield f'data: {json.dumps({"type": "text-end", "id": reasoning_uuid})}\n\n'
-                    for e in maybe_close_step():
-                        yield e
+        try:
+            async for _, _, event in chatloop_service.astream(
+                service_input,
+                subgraphs=True,
+                stream_mode=["custom"],
+                config=RunnableConfig(callbacks=callbacks),
+            ):
+                match event:
+                    case {"type": "mm_step", "description": description}:
+                        for e in open_step(description):
+                            yield e
+                    case {"type": "mm_refined_user_query", "refined_query": refined_query}:
+                        description = f"Refined user query: {refined_query}"
+                        reasoning_uuid = str(uuid4())
+                        yield f'data: {json.dumps({"type": "reasoning-start", "id": reasoning_uuid})}\n\n'
+                        yield f'data: {json.dumps({"type": "reasoning-delta", "id": reasoning_uuid, "delta": description})}\n\n'
+                        yield f'data: {json.dumps({"type": "reasoning-end", "id": reasoning_uuid})}\n\n'
+                    case {"type": "mm_user_query_answered", "answer": answer}:
+                        reasoning_uuid = str(uuid4())
+                        final_answer = answer
+                        yield f'data: {json.dumps({"type": "text-start", "id": reasoning_uuid})}\n\n'
+                        yield f'data: {json.dumps({"type": "text-delta", "id": reasoning_uuid, "delta": answer})}\n\n'
+                        yield f'data: {json.dumps({"type": "text-end", "id": reasoning_uuid})}\n\n'
+                        for e in maybe_close_step():
+                            yield e
 
-        await data_layer.save_message(
-            message_id=msg_id,
-            chat_id=chat_uuid,
-            role="assistant",
-            parts=[{"type": "text", "id": text_id, "text": final_answer}],
-        )
+            await data_layer.save_message(
+                message_id=msg_id,
+                chat_id=chat_uuid,
+                role="assistant",
+                parts=[{"type": "text", "id": text_id, "text": final_answer}],
+            )
+        except Exception:
+            log.exception(
+                "chat.stream_failed",
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                answer_chars=len(final_answer),
+            )
+            raise
 
         try:
             estimated = deps.rate_limiter.config.estimated_tokens_per_request
             await data_layer.record_token_usage(db_user.quota_key, token_callback.tokens - estimated)
         except Exception:
-            import logging
-            logging.getLogger(__name__).warning("Failed to record token usage", exc_info=True)
+            log.warning("chat.record_token_usage_failed", exc_info=True)
+
+        log.info(
+            "chat.stream_finished",
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            answer_chars=len(final_answer),
+            tokens=token_callback.tokens,
+        )
 
         yield f'data: {json.dumps({"type": "finish"})}\n\n'
         yield 'data: [DONE]\n\n'

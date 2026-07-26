@@ -14,8 +14,14 @@ from meeplemate.ingest.gamepackage import Manifest
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 
+import time
+
+from structlog import get_logger
+
 from meeplemate.qa_graph import GameAgentOutputState, QAService, QAServiceInput
 from meeplemate.stream_events import RefinedUserQueryEvent, StepEvent
+
+logger = get_logger(__name__)
 
 
 system_prompt_template = """\
@@ -94,6 +100,12 @@ def build_chatloop_graph(checkpoint_saver: Optional[BaseCheckpointSaver], chat_m
         removed_message_ids = old_message_ids - new_message_ids
         removed_messages = [RemoveMessage(id=msg_id) for msg_id in removed_message_ids if msg_id]
         output["messages"] = removed_messages
+        logger.info(
+            "chatloop.messages_compressed",
+            before=len(state["messages"]),
+            after=len(new_messages),
+            removed=len(removed_messages),
+        )
 
         # Get rid of old refined queries for removed messages
         refined_queries = state["refined_queries"]
@@ -120,7 +132,14 @@ def build_chatloop_graph(checkpoint_saver: Optional[BaseCheckpointSaver], chat_m
             "messages": previous_messages,
             "query": current_message.content,
         }
+        started = time.perf_counter()
         result: RefinedQuery = cast(RefinedQuery, await chain.ainvoke(input=input))
+        logger.info(
+            "chatloop.query_refined",
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            history_length=len(previous_messages),
+            refined_query=result["refined_query"],
+        )
         writer(RefinedUserQueryEvent(type="mm_refined_user_query", description=result["refined_query"]))
         return {
             "refined_queries": {current_message.id: result["refined_query"]}
@@ -144,8 +163,14 @@ def build_chatloop_graph(checkpoint_saver: Optional[BaseCheckpointSaver], chat_m
         # The streaming happens at a lower level (in the QA service's astream method)
         # When the outer chatloop service calls astream with stream_mode="messages",
         # it will capture the message chunks from the inner QA graph
+        started = time.perf_counter()
         result: GameAgentOutputState = await qa_service.ainvoke(input=input)
         response_text = result["response"]
+        logger.info(
+            "chatloop.query_answered",
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            response_chars=len(response_text or ""),
+        )
         response = AIMessage(content=response_text)
 
         return {

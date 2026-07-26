@@ -74,4 +74,9 @@ ENV PATH="/opt/venv/bin:$PATH" \
 WORKDIR /app
 EXPOSE 8000
 
-CMD ["uvicorn", "meeplemate.server.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+# --no-access-log: Cloud Run already emits a request log for every request, and the
+# app emits its own `http.request` record carrying request_id / user_id / chat_id.
+# uvicorn's access line would be a third copy with strictly less information.
+# No --log-config: logging is configured in-process (meeplemate.logging_config) so
+# local dev, tests and prod all share one code path.
+CMD ["uvicorn", "meeplemate.server.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

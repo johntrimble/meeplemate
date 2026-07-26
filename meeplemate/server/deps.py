@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import structlog
 from fastapi import Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -61,7 +62,11 @@ async def get_db_user_allow_deleted(
     account is flagged so a client can retry a partial failure.
     """
     data_layer: BaseDataLayer = request.app.state.deps.data_layer
-    return await data_layer.upsert_user(auth_user.uid, auth_user.email, auth_user.name)
+    db_user = await data_layer.upsert_user(auth_user.uid, auth_user.email, auth_user.name)
+    # Bind the uid, not the email: this lands on every subsequent log line in the
+    # request, and the email is PII (it is also the quota key).
+    structlog.contextvars.bind_contextvars(user_id=db_user.uid)
+    return db_user
 
 
 async def get_db_user(

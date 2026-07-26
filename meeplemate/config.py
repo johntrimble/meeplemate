@@ -343,6 +343,37 @@ class TraceConfig(BaseModel):
     )
 
 
+class LogConfig(BaseModel):
+    """Logging configuration for the API server.
+
+    The API also configures logging at import time from these same environment
+    variables (see ``meeplemate.logging_config``), because records emitted while
+    ``meeplemate.*`` is still importing predate any ``Config`` instance. This model
+    exists so the settings are part of the documented config surface and so the
+    values can be re-applied once ``Config`` has resolved them from the ``.env``
+    file or a YAML config file, neither of which ``os.environ`` alone would see.
+    """
+    level: str = Field(
+        default="INFO",
+        description="Root log level: DEBUG, INFO, WARNING, ERROR, CRITICAL. (MM_LOG__LEVEL)",
+    )
+    format: Literal["json", "console", "auto"] = Field(
+        default="auto",
+        description="Log rendering: 'json' for Cloud Run/Cloud Logging, 'console' for "
+                    "human-readable colored dev output, or 'auto' to pick json when the "
+                    "K_SERVICE env var is set (i.e. running on Cloud Run). (MM_LOG__FORMAT)",
+    )
+    gcp_project_id: Optional[str] = Field(
+        default=None,
+        description="GCP project id used to build the logging.googleapis.com/trace field "
+                    "as 'projects/<id>/traces/<trace_id>', which is what makes container "
+                    "logs group under the Cloud Run request log. When unset, falls back to "
+                    "GOOGLE_CLOUD_PROJECT/GCP_PROJECT and then the GCE metadata server; if "
+                    "none of those resolve, the trace fields are simply omitted. "
+                    "(MM_LOG__GCP_PROJECT_ID)",
+    )
+
+
 class Config(BaseSettings):
     """Main application configuration with environment variable support.
 
@@ -372,6 +403,7 @@ class Config(BaseSettings):
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
     trace: TraceConfig = Field(default_factory=TraceConfig)
+    log: LogConfig = Field(default_factory=LogConfig)
     auth_bypass: bool = Field(default=False, description="Skip token validation and use a hardcoded user (MM_AUTH_BYPASS)")
     auth_bypass_user: Optional[str] = Field(
         default=None,
