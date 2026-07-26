@@ -7,12 +7,25 @@ from meeplemate.db.base import Base
 
 
 class AppUser(Base):
-    """Firebase-authenticated user record with optional metadata overrides."""
+    """Application user record, authenticated by Firebase.
+
+    ``id`` is the key everything else references: an internal UUID that never
+    changes. ``firebase_uid`` is the *external* identity and is deliberately
+    mutable — deleting a Firebase user and signing in again mints a brand-new
+    uid, so restoring an account means re-pointing this column rather than
+    rewriting every row the user owns.
+    """
     __tablename__ = "app_user"
 
-    user_id = sa.Column(sa.Text, primary_key=True)  # Firebase UID
+    id = sa.Column(UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
+    firebase_uid = sa.Column(sa.Text, nullable=True, unique=True)
     email = sa.Column(sa.Text, nullable=True)
     name = sa.Column(sa.Text, nullable=True)
+    # Which provider the token was obtained through ("google.com", "password",
+    # "custom", ...). Recorded on every upsert; gates account resurrection.
+    sign_in_provider = sa.Column(sa.Text, nullable=True)
+    # NULL = live. Set on soft delete; cleared when an account is restored.
+    deleted_at = sa.Column(sa.DateTime(timezone=True), nullable=True)
     # Stores per-user rate limit overrides under key "rate_limits":
     # {"rate_limits": {"8H": 100000, "7D": 400000, "30D": 1000000}}
     metadata_ = sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb"))
@@ -23,7 +36,11 @@ class TokenUsage(Base):
     __tablename__ = "token_usage"
 
     id = sa.Column(UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
-    user_id = sa.Column(sa.Text, nullable=False)
+    user_id = sa.Column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("app_user.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     tokens_used = sa.Column(sa.Integer, nullable=False)
     recorded_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -38,7 +55,12 @@ class Chat(Base):
 
     chat_id = sa.Column(UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
     game_id = sa.Column(sa.Text, nullable=False, index=True)
-    user_id = sa.Column(sa.Text, nullable=False, index=True)
+    user_id = sa.Column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("app_user.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     created_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=func.now())
 
 

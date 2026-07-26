@@ -26,9 +26,9 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message
 from meeplemate.chatloop import ChatLoopServiceInput, cast
 from meeplemate.component_system import subsystem
 from meeplemate.config import Config, System, create_app_system
-from meeplemate.db.datalayer import Pagination, TextMessagePart
-from meeplemate.server.auth import AuthUser, get_current_user
-from meeplemate.server.deps import ApiDeps
+from meeplemate.db.datalayer import Pagination, TextMessagePart, UserRecord
+from meeplemate.server.auth import AuthUser, delete_firebase_user, get_current_user
+from meeplemate.server.deps import ApiDeps, get_db_user, get_db_user_allow_deleted
 from meeplemate.server.rate_limit import RateLimitState, TokenCountingCallback, check_rate_limit
 from meeplemate.tracing import NoopTraceSink, PersistingTracer
 
@@ -151,6 +151,12 @@ async def get_games(
     authenticates with a short-lived Firebase ID token minted from the service
     account (see the frontend deploy workflow) — do NOT drop this dependency to
     make that curl easier.
+
+    Equally, do NOT "upgrade" this to `get_db_user`. That token is minted for a
+    synthetic `deploy-bot` uid via signInWithCustomToken: it carries no email and
+    has no `app_user` row, so resolving an account here would mint a junk row on
+    every deploy. This endpoint is not user-scoped — the catalog is the same for
+    everyone and `user` is deliberately unused — so a valid token is all it needs.
     """
     games, has_next, start_cursor, end_cursor = await deps.game_service.list_games(
         after=cursor, limit=first
@@ -180,12 +186,12 @@ async def get_game(
 async def get_recent_games(
     first: int = Query(default=5, ge=1, le=20),
     cursor: str | None = Query(default=None),
-    user: AuthUser = Depends(get_current_user),
+    db_user: UserRecord = Depends(get_db_user),
     deps: ApiDeps = Depends(get_deps),
 ) -> GamesPage:
     """Games the current user has most recently chatted in, newest-first."""
     recent = await deps.data_layer.list_recent_game_ids(
-        user_id=user.uid,
+        user_id=db_user.id,
         pagination=Pagination(first=first, cursor=cursor),
     )
     games = await deps.game_service.get_games_by_ids(recent.data)
@@ -215,12 +221,12 @@ async def list_game_chats(
     game_id: str,
     first: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
-    user: AuthUser = Depends(get_current_user),
+    db_user: UserRecord = Depends(get_db_user),
     deps: ApiDeps = Depends(get_deps),
 ) -> ChatsPage:
     """Return chats for a game belonging to the authenticated user, newest first."""
     from meeplemate.db.datalayer import Pagination
-    result = await deps.data_layer.list_chats(game_id, user.uid, Pagination(first=first, cursor=cursor))
+    result = await deps.data_layer.list_chats(game_id, db_user.id, Pagination(first=first, cursor=cursor))
     return ChatsPage(
         pageInfo=PageInfo(
             hasNextPage=result.pageInfo.hasNextPage,
@@ -246,13 +252,13 @@ class ChatMessageOut(BaseModel):
 @router.get("/api/chats/{chat_id}/messages")
 async def get_chat_messages(
     chat_id: str,
-    user: AuthUser = Depends(get_current_user),
+    db_user: UserRecord = Depends(get_db_user),
     deps: ApiDeps = Depends(get_deps),
 ) -> list[ChatMessageOut]:
     """Return all messages for a chat in chronological order."""
     chat_uuid = _parse_chat_uuid(chat_id)
     chat = await deps.data_layer.get_chat(chat_uuid)
-    if chat is None or chat["user_id"] != user.uid:
+    if chat is None or chat["user_id"] != str(db_user.id):
         raise HTTPException(status_code=404, detail="Chat not found")
     messages = await deps.data_layer.get_messages(chat_uuid)
     return [ChatMessageOut.model_validate(m) for m in messages]
@@ -270,13 +276,13 @@ class FeedbackRequest(BaseModel):
 async def set_message_feedback(
     message_id: str,
     body: FeedbackRequest,
-    user: AuthUser = Depends(get_current_user),
+    db_user: UserRecord = Depends(get_db_user),
     deps: ApiDeps = Depends(get_deps),
 ) -> Response:
     """Upsert thumbs-up (1) or thumbs-down (0) feedback for a message."""
     msg_uuid = UUID(message_id)
     owner = await deps.data_layer.get_message_owner(msg_uuid)
-    if owner != user.uid:
+    if owner != db_user.id:
         raise HTTPException(status_code=404, detail="Message not found")
     await deps.data_layer.upsert_feedback(msg_uuid, body.value)
     return Response(status_code=204)
@@ -285,15 +291,46 @@ async def set_message_feedback(
 @router.delete("/api/messages/{message_id}/feedback", status_code=204)
 async def delete_message_feedback(
     message_id: str,
-    user: AuthUser = Depends(get_current_user),
+    db_user: UserRecord = Depends(get_db_user),
     deps: ApiDeps = Depends(get_deps),
 ) -> Response:
     """Remove feedback for a message."""
     msg_uuid = UUID(message_id)
     owner = await deps.data_layer.get_message_owner(msg_uuid)
-    if owner != user.uid:
+    if owner != db_user.id:
         raise HTTPException(status_code=404, detail="Message not found")
     await deps.data_layer.delete_feedback(msg_uuid)
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Account
+# ---------------------------------------------------------------------------
+
+@router.delete("/api/account", status_code=204)
+async def delete_account(
+    db_user: UserRecord = Depends(get_db_user_allow_deleted),
+    deps: ApiDeps = Depends(get_deps),
+) -> Response:
+    """Delete the authenticated user's account.
+
+    A soft delete: the row is flagged and the user's data kept, so signing in
+    again with the same Google account restores everything while the account is
+    still within `RESURRECTION_WINDOW` (see `meeplemate.db.account_recovery`).
+    Past that it is no longer restorable, and `mm-admin purge-deleted-accounts`
+    removes it for good.
+
+    The database is flagged *before* Firebase is touched, so a failure partway
+    leaves the account locked out rather than half-live. That also makes retries
+    safe — hence `get_db_user_allow_deleted`, since the ordinary dependency
+    rejects an already-flagged account and would block the client's second
+    attempt. Deleting an already-deleted account is a no-op 204.
+    """
+    await deps.data_layer.soft_delete_user(db_user.id)
+
+    if db_user.uid:
+        await delete_firebase_user(db_user.uid)
+
     return Response(status_code=204)
 
 
@@ -314,7 +351,7 @@ class StreamChatRequest(BaseModel):
 async def stream_chat(
     chat_id: str,
     request: StreamChatRequest,
-    user: AuthUser = Depends(get_current_user),
+    db_user: UserRecord = Depends(get_db_user),
     rate_state: RateLimitState = Depends(check_rate_limit),
     deps: ApiDeps = Depends(get_deps),
 ):
@@ -332,9 +369,9 @@ async def stream_chat(
     # overwrites an existing row, so a collision/tamper can't hijack another user's chat —
     # we still verify ownership + game below before writing anything.
     chat = await deps.data_layer.ensure_chat(
-        chat_id=chat_uuid, game_id=request.game_id, user_id=user.uid
+        chat_id=chat_uuid, game_id=request.game_id, user_id=db_user.id
     )
-    if chat["user_id"] != user.uid or chat["game_id"] != request.game_id:
+    if chat["user_id"] != str(db_user.id) or chat["game_id"] != request.game_id:
         raise HTTPException(status_code=404, detail="Chat not found")
 
     chatloop_service = deps.chatloop_service
@@ -344,7 +381,7 @@ async def stream_chat(
         # Regenerate path: validate the target message, then deactivate it and everything after.
         msg_uuid = UUID(request.retry_message_id)
         owner = await data_layer.get_message_owner(msg_uuid)
-        if owner is None or owner != user.uid:
+        if owner is None or owner != db_user.id:
             raise HTTPException(status_code=404, detail="Message not found")
         msg_info = await data_layer.get_message(msg_uuid)
         if msg_info is None or msg_info["role"] != "assistant":
@@ -465,7 +502,7 @@ async def stream_chat(
 
         try:
             estimated = deps.rate_limiter.config.estimated_tokens_per_request
-            await data_layer.record_token_usage(user.uid, token_callback.tokens - estimated)
+            await data_layer.record_token_usage(db_user.id, token_callback.tokens - estimated)
         except Exception:
             import logging
             logging.getLogger(__name__).warning("Failed to record token usage", exc_info=True)

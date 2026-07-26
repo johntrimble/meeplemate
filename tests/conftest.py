@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -36,17 +37,36 @@ def rate_limit_config() -> RateLimitConfig:
     )
 
 
+# The internal account id. Distinct from the Firebase uid: they are different
+# identifiers with different lifetimes, and tests that conflate them would miss
+# the class of bug this split exists to prevent.
+TEST_USER_ID = UUID("11111111-1111-1111-1111-111111111111")
+TEST_FIREBASE_UID = "test-uid"
+
+
+def _test_user_record(**overrides) -> UserRecord:
+    defaults = dict(
+        id=TEST_USER_ID,
+        uid=TEST_FIREBASE_UID,
+        email="test@example.com",
+        name="Test User",
+        sign_in_provider="google.com",
+        deleted_at=None,
+        metadata={},
+    )
+    return UserRecord(**{**defaults, **overrides})
+
+
 @pytest.fixture
 def mock_user() -> UserRecord:
-    return UserRecord(uid="test-uid", email="test@example.com", name="Test User", metadata={})
+    return _test_user_record()
 
 
 @pytest.fixture
 def mock_data_layer() -> AsyncMock:
     layer = AsyncMock()
-    layer.upsert_user.return_value = UserRecord(
-        uid="test-uid", email="test@example.com", name="Test User", metadata={}
-    )
+    layer.upsert_user.return_value = _test_user_record()
+    layer.soft_delete_user.return_value = True
     layer.get_window_stats.return_value = WindowStats(total_tokens=0, oldest_recorded_at=None)
     layer.get_app_window_stats.return_value = WindowStats(total_tokens=0, oldest_recorded_at=None)
     layer.check_and_reserve_user.return_value = [WindowStats(total_tokens=0, oldest_recorded_at=None)] * 3
@@ -83,7 +103,7 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
     """TestClient with a fresh app instance and auth/rate-limit dependencies overridden."""
     from meeplemate.server.api import create_app
     from meeplemate.server.auth import get_current_user
-    from meeplemate.server.rate_limit import get_db_user
+    from meeplemate.server.deps import get_db_user, get_db_user_allow_deleted
 
     rate_limiter = RateLimiter(config=rate_limit_config, data_layer=mock_data_layer)
 
@@ -94,10 +114,11 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
         "name": "Test Game",
         "rulebooks": [],
     }
+    # Chats are owned by the internal account id, not the Firebase uid.
     mock_data_layer.get_chat.return_value = {
         "chat_id": "00000000-0000-0000-0000-000000000001",
         "game_id": "test-game",
-        "user_id": "test-uid",
+        "user_id": str(TEST_USER_ID),
         "created_at": "2026-01-01T00:00:00",
     }
     # The stream endpoint now create-on-first-message via ensure_chat (returns the
@@ -105,12 +126,12 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
     mock_data_layer.ensure_chat.return_value = {
         "chat_id": "00000000-0000-0000-0000-000000000001",
         "game_id": "test-game",
-        "user_id": "test-uid",
+        "user_id": str(TEST_USER_ID),
         "created_at": "2026-01-01T00:00:00",
     }
     mock_data_layer.get_messages.return_value = []
     mock_data_layer.save_message.return_value = None
-    mock_data_layer.get_message_owner.return_value = "test-uid"
+    mock_data_layer.get_message_owner.return_value = TEST_USER_ID
     mock_data_layer.get_message.return_value = {
         "message_id": "00000000-0000-0000-0000-000000000002",
         "chat_id": "00000000-0000-0000-0000-000000000001",
@@ -130,11 +151,14 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
 
     app = create_app(api_deps=mock_deps)
     app.dependency_overrides[get_current_user] = lambda: AuthUser(
-        uid="test-uid", email="test@example.com", name="Test User"
+        uid=TEST_FIREBASE_UID,
+        email="test@example.com",
+        name="Test User",
+        email_verified=True,
+        sign_in_provider="google.com",
     )
-    app.dependency_overrides[get_db_user] = lambda: UserRecord(
-        uid="test-uid", email="test@example.com", name="Test User", metadata={}
-    )
+    app.dependency_overrides[get_db_user] = lambda: _test_user_record()
+    app.dependency_overrides[get_db_user_allow_deleted] = lambda: _test_user_record()
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client

@@ -18,7 +18,7 @@ from langchain_core.outputs import LLMResult
 from pydantic import BaseModel, Field, model_validator
 
 from meeplemate.db.datalayer import BaseDataLayer, UserRecord, WindowStats
-from meeplemate.server.auth import AuthUser, get_current_user
+from meeplemate.server.deps import get_db_user
 
 logger = logging.getLogger(__name__)
 
@@ -397,7 +397,7 @@ class RateLimiter:
         per_window_params = [(name, since) for name, _, since in window_params]
 
         user_stats_list = await self._data_layer.check_and_reserve_user(
-            user_id=user.uid,
+            user_id=user.id,
             window_params=per_window_params,
             estimated=estimated,
             user_limits=user_limits,
@@ -448,15 +448,6 @@ class RateLimiter:
 # ---------------------------------------------------------------------------
 # FastAPI dependencies
 # ---------------------------------------------------------------------------
-
-async def get_db_user(
-    request: Request,
-    auth_user: AuthUser = Depends(get_current_user),
-) -> UserRecord:
-    """Upsert the Firebase user into the local DB and return the UserRecord."""
-    data_layer: BaseDataLayer = request.app.state.deps.data_layer
-    return await data_layer.upsert_user(auth_user.uid, auth_user.email, auth_user.name)
-
 
 async def check_rate_limit(
     request: Request,

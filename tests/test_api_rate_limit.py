@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from conftest import TEST_USER_ID
 from fastapi import HTTPException
 
 from meeplemate.db.datalayer import UserRecord, WindowStats
@@ -135,7 +137,7 @@ def test_token_usage_recorded_after_stream(api_client, mock_data_layer, rate_lim
 
     mock_data_layer.record_token_usage.assert_called_once()
     call_args = mock_data_layer.record_token_usage.call_args
-    assert call_args.args[0] == "test-uid"  # user_id
+    assert call_args.args[0] == TEST_USER_ID  # internal account id, not the Firebase uid
     # No real LLM called → token_callback.tokens == estimated → delta == 0
     assert call_args.args[1] == 0
 

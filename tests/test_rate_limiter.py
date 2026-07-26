@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+from uuid import UUID
 from fastapi import HTTPException
 
 from meeplemate.db.datalayer import UserRecord, WindowStats
@@ -36,7 +37,13 @@ def _layer_with_usage(user_tokens: int, app_tokens: int = 0) -> AsyncMock:
 
 
 def _user(metadata: dict | None = None) -> UserRecord:
-    return UserRecord(uid="u1", email=None, name=None, metadata=metadata or {})
+    return UserRecord(
+        id=UUID("22222222-2222-2222-2222-222222222222"),
+        uid="u1",
+        email=None,
+        name=None,
+        metadata=metadata or {},
+    )
 
 
 @pytest.fixture
