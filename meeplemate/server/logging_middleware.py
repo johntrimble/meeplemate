@@ -42,7 +42,15 @@ def parse_cloud_trace_context(value: str) -> tuple[Optional[str], Optional[str],
         remainder, _, options = remainder.partition(";")
         for option in options.split(";"):
             if option.startswith("o="):
-                sampled = option[2:].strip() == "1"
+                # Cloud Trace defines only o=0 and o=1. Anything else is junk, and
+                # junk must stay None rather than be reported as an explicit
+                # "not sampled" — the middleware omits the field entirely for None,
+                # which is honest, whereas False asserts something we never parsed.
+                flag = option[2:].strip()
+                if flag == "1":
+                    sampled = True
+                elif flag == "0":
+                    sampled = False
 
     trace_id, _, span_id = remainder.partition("/")
     trace_id = trace_id.strip() or None

@@ -229,6 +229,12 @@ def test_resolve_format_auto_follows_cloud_run(monkeypatch):
         ("", (None, None, None)),
         ("/456", (None, "456", None)),
         (";o=1", (None, None, True)),
+        # Cloud Trace defines only o=0 / o=1; anything else is unparseable and must
+        # stay None rather than be reported as an explicit "not sampled".
+        ("abc123/456;o=x", ("abc123", "456", None)),
+        ("abc123/456;o=", ("abc123", "456", None)),
+        ("abc123/456;o=2", ("abc123", "456", None)),
+        ("abc123/456;o=true", ("abc123", "456", None)),
     ],
 )
 def test_parse_cloud_trace_context(header, expected):
@@ -239,6 +245,14 @@ def test_parse_cloud_trace_context_never_raises():
     """A malformed header must degrade to None, never break the request."""
     for junk in ("///", ";;;", "o=1", "a/b/c;o=x", "   "):
         assert isinstance(parse_cloud_trace_context(junk), tuple)
+
+
+def test_unparseable_sampled_flag_omits_the_field_entirely():
+    """None must mean the trace_sampled key is absent, not present-and-false."""
+    _, _, sampled = parse_cloud_trace_context("abc123/456;o=x")
+    assert sampled is None
+    # ...whereas an explicit o=0 is a real signal and must be preserved.
+    assert parse_cloud_trace_context("abc123/456;o=0")[2] is False
 
 
 # ---------------------------------------------------------------------------
