@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import structlog
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
 REQUEST_ID_HEADER = b"x-request-id"
 CLOUD_TRACE_HEADER = b"x-cloud-trace-context"
@@ -132,7 +132,7 @@ class RequestContextMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         except Exception:
-            log.exception(
+            logger.exception(
                 "http.request_failed",
                 duration_ms=round((time.perf_counter() - started) * 1000, 2),
             )
@@ -151,7 +151,7 @@ class RequestContextMiddleware:
         else:
             level = "info"
 
-        getattr(log, level)(
+        getattr(logger, level)(
             "http.request",
             duration_ms=round(duration_s * 1000, 2),
             httpRequest={

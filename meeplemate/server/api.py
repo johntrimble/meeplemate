@@ -40,7 +40,7 @@ from meeplemate.server.logging_middleware import RequestContextMiddleware
 from meeplemate.server.rate_limit import RateLimitState, TokenCountingCallback, check_rate_limit
 from meeplemate.tracing import NoopTraceSink, PersistingTracer
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def get_deps(request: Request) -> ApiDeps:
@@ -115,9 +115,9 @@ def create_app(api_deps: ApiDeps | None = None) -> FastAPI:
             system = subsystem(app_system, names=["api_deps"])
             async with system.astart() as started_system:
                 app.state.deps = started_system["api_deps"]
-                log.info("app.startup_complete")
+                logger.info("app.startup_complete")
                 yield
-                log.info("app.shutdown")
+                logger.info("app.shutdown")
 
     new_app = FastAPI(lifespan=lifespan)
     # Added after CORSMiddleware so it ends up outermost: Starlette applies
@@ -465,7 +465,7 @@ async def stream_chat(
         # truncates the SSE stream. Logging it is the only way it is ever visible.
         structlog.contextvars.bind_contextvars(message_id=str(msg_id))
         started = time.perf_counter()
-        log.info("chat.stream_started", message_count=len(langchain_messages))
+        logger.info("chat.stream_started", message_count=len(langchain_messages))
 
         yield f'data: {json.dumps({"type": "start", "messageId": str(msg_id)})}\n\n'
 
@@ -540,7 +540,7 @@ async def stream_chat(
                 parts=[{"type": "text", "id": text_id, "text": final_answer}],
             )
         except Exception:
-            log.exception(
+            logger.exception(
                 "chat.stream_failed",
                 duration_ms=round((time.perf_counter() - started) * 1000, 2),
                 answer_chars=len(final_answer),
@@ -551,9 +551,9 @@ async def stream_chat(
             estimated = deps.rate_limiter.config.estimated_tokens_per_request
             await data_layer.record_token_usage(db_user.quota_key, token_callback.tokens - estimated)
         except Exception:
-            log.warning("chat.record_token_usage_failed", exc_info=True)
+            logger.warning("chat.record_token_usage_failed", exc_info=True)
 
-        log.info(
+        logger.info(
             "chat.stream_finished",
             duration_ms=round((time.perf_counter() - started) * 1000, 2),
             answer_chars=len(final_answer),
