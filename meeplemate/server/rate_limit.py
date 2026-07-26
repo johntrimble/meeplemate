@@ -7,11 +7,11 @@ response headers.
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
+import structlog
 from fastapi import Depends, HTTPException, Request, status
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, model_validator
 from meeplemate.db.datalayer import BaseDataLayer, UserRecord, WindowStats
 from meeplemate.server.deps import get_db_user
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Rolling-window definitions: (name, duration_in_seconds)
@@ -376,6 +376,17 @@ class RateLimiter:
                     )
                     for n, s, _ in window_params
                 ])
+                # App-wide exhaustion affects every user, so it is a service-health
+                # signal rather than a per-user one — worth alerting on separately.
+                logger.warning(
+                    "rate_limit.exceeded",
+                    scope="app",
+                    window=name,
+                    limit=app_limit,
+                    used=app_stats.total_tokens,
+                    estimated=estimated,
+                    resets_at=reset_at.isoformat(),
+                )
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail={
@@ -425,6 +436,15 @@ class RateLimiter:
                 reset_at = (
                     oldest + timedelta(seconds=duration_secs) if oldest
                     else now + timedelta(seconds=duration_secs)
+                )
+                logger.warning(
+                    "rate_limit.exceeded",
+                    scope="user",
+                    window=name,
+                    limit=user_limit,
+                    used=user_stats.total_tokens,
+                    estimated=estimated,
+                    resets_at=reset_at.isoformat(),
                 )
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,

@@ -25,7 +25,7 @@ import firebase_admin.auth
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # User dataclass returned by get_current_user
@@ -97,7 +97,7 @@ async def get_current_user(
 
     # --- Normal mode: validate Firebase ID token ---
     if credentials is None or not credentials.credentials:
-        log.warning("auth.missing_token")
+        logger.warning("auth.missing_token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing authentication token",
@@ -114,21 +114,21 @@ async def get_current_user(
 
         decoded = firebase_admin.auth.verify_id_token(token, app=app)
     except firebase_admin.auth.InvalidIdTokenError as exc:
-        log.warning("auth.invalid_token", error=str(exc))
+        logger.warning("auth.invalid_token", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {exc}",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     except firebase_admin.auth.ExpiredIdTokenError as exc:
-        log.warning("auth.token_expired", error=str(exc))
+        logger.warning("auth.token_expired", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token expired",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     except Exception as exc:
-        log.exception("auth.token_validation_failed", error=str(exc))
+        logger.exception("auth.token_validation_failed", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token validation failed",
@@ -156,7 +156,7 @@ async def delete_firebase_user(uid: str) -> None:
     No-op in bypass mode, which has no Firebase project to talk to.
     """
     if _bypass_enabled():
-        log.info("auth.delete_user_skipped_bypass", uid=uid)
+        logger.info("auth.delete_user_skipped_bypass", uid=uid)
         return
 
     try:
@@ -168,7 +168,7 @@ async def delete_firebase_user(uid: str) -> None:
         try:
             firebase_admin.auth.delete_user(uid, app=app)
         except firebase_admin.auth.UserNotFoundError:
-            log.info("auth.delete_user_already_gone", uid=uid)
+            logger.info("auth.delete_user_already_gone", uid=uid)
 
     # The Admin SDK is blocking; keep it off the event loop.
     await asyncio.to_thread(_delete)

@@ -25,7 +25,7 @@ from meeplemate.db.datalayer import (
 )
 from meeplemate.db.models import AppUser, Chat, ChatMessage, ChatMessagePart, TokenUsage
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def _quota_lock_key(quota_key: str) -> int:

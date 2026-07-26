@@ -41,7 +41,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from pydantic import ConfigDict, PrivateAttr
 from structlog import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 T = TypeVar("T")
 
@@ -140,7 +140,7 @@ async def _afailover(
             )
             continue
         breaker.record_success(i)
-        logger.info(
+        logger.debug(
             "chat_model_selected",
             what=what,
             model=_label(target, i),
@@ -178,7 +178,7 @@ def _sfailover(
             )
             continue
         breaker.record_success(i)
-        logger.info(
+        logger.debug(
             "chat_model_selected",
             what=what,
             model=_label(target, i),

@@ -569,7 +569,7 @@ def build_chunk_search_service_2(
             # RRF scores (higher = better) are already sorted descending by the
             # fusion function, but sort explicitly to be safe.
             docs_and_scores.sort(key=lambda x: x[1], reverse=True)
-            logger.info("Vectorstore returned", query=q, result_count=len(docs_and_scores))
+            logger.debug("Vectorstore returned", query=q, result_count=len(docs_and_scores))
 
             # Step 2: Use the adaptive k algorithm to find the cutoff point in
             # the retrieved results
@@ -577,7 +577,7 @@ def build_chunk_search_service_2(
             docs = [doc for doc, _ in docs_and_scores]
             adaptive_k = find_cutoff_adaptive_k(scores)
             selected_docs = docs[:adaptive_k]
-            logger.info("Adaptive k selection", query=q, raw_count=len(docs), adaptive_k=adaptive_k, selected_count=len(selected_docs))
+            logger.debug("Adaptive k selection", query=q, raw_count=len(docs), adaptive_k=adaptive_k, selected_count=len(selected_docs))
 
             # Step 3: Add the selected chunks to the overall results
             retrieved_results.extend(selected_docs)
@@ -602,7 +602,7 @@ def build_chunk_search_service_2(
         # Log warning for missing docs
         for doc_id, doc in zip(unique_parent_doc_ids, parent_docs):
             if doc is None:
-                logger.warning(f"Parent document with ID not found in docstore.", doc_id=doc_id)
+                logger.warning("Parent document not found in docstore", doc_id=doc_id)
         parent_docs = [doc for doc in parent_docs if doc is not None]
 
         # Step 5: Enforce the token budget

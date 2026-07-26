@@ -26,7 +26,7 @@ from meeplemate.stream_events import StepEvent, AnalyzedUserQueryEvent, Subquest
 from structlog import get_logger
 
 from meeplemate.util import load_template
-logger = get_logger()
+logger = get_logger(__name__)
 
 REFINEMENT_PARTITION_NUMBER = 4
 
@@ -281,8 +281,13 @@ def get_all_chunks_from_message_history(messages: list[AnyMessage]) -> list[Chun
                     chunk: Chunk = result["chunk"]
                     chunks.append(chunk)
             except Exception:
-                logger.exception(f"Error extracting chunks from tool message")
-                logger.info("Offending message content", content=message.text)
+                logger.exception(
+                    "Error extracting chunks from tool message",
+                    tool_call_id=message.tool_call_id,
+                    content_chars=len(message.text or ""),
+                )
+                # The raw tool message is a whole serialized chunk-search payload.
+                logger.debug("Offending message content", content=message.text)
 
     return chunks
 
@@ -324,8 +329,8 @@ def dedupe_chunks_in_message_history(messages):
                     message.content = json.dumps(deduped_results)
                     assert message.id is not None
                     edited_ids.append(message.id)
-            except Exception as e:
-                logger.error(f"Error deduping tool message content: {e}")
+            except Exception:
+                logger.exception("Error deduping tool message content")
 
     return [m for m in messages if getattr(m, "id", None) in edited_ids]
 
@@ -973,7 +978,7 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk], *, strip_invalid
     fixed_text = materialize(parsed, wrap_verified=False)
 
     if original_text != fixed_text:
-        logger.info("Fixed quote citations in text", text=original_text, fixed_text=fixed_text)
+        logger.debug("Fixed quote citations in text", text=original_text, fixed_text=fixed_text)
 
     unfixable_quotes = [lq.quote for lq in located if not lq.is_verified]
     valid_quotes = [lq.quote for lq in located if lq.is_verified]
@@ -989,6 +994,13 @@ def fix_quote_citations_in_text(text: str, chunks: list[Chunk], *, strip_invalid
         logger.warning(
             "Some quotes could not be verified and fixed",
             invalid_quotes=[q["text"] for q in unfixable_quotes],
+            chunk_count=len(chunks),
+            text_chars=len(text),
+        )
+        # The chunk set and full answer are what you actually need to diagnose this,
+        # but they are far too large for INFO/WARNING in production.
+        logger.debug(
+            "Unverified quote context",
             chunks=chunks,
             text=text,
         )
@@ -1489,7 +1501,8 @@ def build_coordinating_agent_graph(
             writer(SubquestionAnsweredEvent(type="mm_subquestion_answered", question=input["query"], answer=response["response"], valid=response["valid"]))
 
             if not response["valid"]:
-                logger.error("Subquestion answer was not valid", question=input["query"], answer=response["response"])
+                logger.error("Subquestion answer was not valid", question=input["query"], answer_chars=len(response["response"] or ""))
+                logger.debug("Invalid subquestion answer", question=input["query"], answer=response["response"])
                 continue
 
             subquestions_answers.append(
@@ -2026,7 +2039,8 @@ def build_question_answer_graph(
         fix_result = fix_quote_citations_in_text(result.text, documents, strip_invalid_blockquotes=True)
         extracted = extract_reasoning_and_answer(fix_result.fixed_text)
         referenced = fix_result.referenced_chunks
-        logger.info("Answer question result", answer=extracted["answer"], document_count=len(documents), valid_quotes=len(fix_result.valid_quotes), invalid_quotes=len(fix_result.unfixable_quotes), referenced_chunks=len(referenced))
+        logger.info("Answer question result", answer_chars=len(extracted["answer"] or ""), document_count=len(documents), valid_quotes=len(fix_result.valid_quotes), invalid_quotes=len(fix_result.unfixable_quotes), referenced_chunks=len(referenced))
+        logger.debug("Answer question text", answer=extracted["answer"])
         return {
             "answer": extracted["answer"],
             "reasoning": extracted["reasoning"],
@@ -2126,7 +2140,10 @@ def build_question_answer_graph(
         validation_attempts = state.get("validation_attempts", 0)
         if invalid_quotes:
             documents = get_evidence(state)
-            logger.info("Response contains invalid quotes", invalid_quotes=invalid_quotes, validation_attempts=validation_attempts, query=state["query"], documents=documents, response=state["response"])
+            logger.info("Response contains invalid quotes", invalid_quote_count=len(invalid_quotes), validation_attempts=validation_attempts, query=state["query"], document_count=len(documents))
+            # This node re-runs up to 5 times per request, so the evidence set and the
+            # full response are DEBUG-only — at INFO they dominate the log volume.
+            logger.debug("Invalid quote context", invalid_quotes=invalid_quotes, documents=documents, response=state["response"])
         if invalid_quotes and validation_attempts < 5:
             return "format_answer"
         return "provide_response"
