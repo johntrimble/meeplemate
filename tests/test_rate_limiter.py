@@ -40,21 +40,21 @@ def _user(metadata: dict | None = None) -> UserRecord:
 
 
 @pytest.fixture
-def config() -> RateLimitConfig:
-    return RateLimitConfig(
-        user_8h=10_000,
-        user_7d=50_000,
-        user_30d=100_000,
-        app_8h=1_000_000,
-        app_7d=5_000_000,
-        app_30d=10_000_000,
-        estimated_tokens_per_request=1_000,
-    )
+def config(rate_limit_config: RateLimitConfig) -> RateLimitConfig:
+    """Shared with the API tests — see the fixture in conftest.py."""
+    return rate_limit_config
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+def test_config_fixture_derives_expected_quotas(config: RateLimitConfig) -> None:
+    """Pin the derived values the rest of these tests reason about."""
+    assert (config.user_8h, config.user_7d, config.user_30d) == (10_000, 50_000, 100_000)
+    assert (config.app_8h, config.app_7d, config.app_30d) == (1_000_000, 5_000_000, 10_000_000)
+    assert config.estimated_tokens_per_request == 1_000
+
 
 @pytest.mark.asyncio
 async def test_allows_request_under_limit(config: RateLimitConfig) -> None:

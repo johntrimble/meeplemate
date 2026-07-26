@@ -19,14 +19,20 @@ from meeplemate.server.rate_limit import RateLimitConfig, RateLimiter, RateLimit
 
 @pytest.fixture
 def rate_limit_config() -> RateLimitConfig:
+    """Quotas and the pre-flight estimate are derived; these inputs yield user
+    limits of 10k / 50k / 100k, app limits of 1M / 5M / 10M, and a 1,000-token
+    estimate."""
     return RateLimitConfig(
-        user_8h=10_000,
-        user_7d=50_000,
-        user_30d=100_000,
-        app_8h=1_000_000,
-        app_7d=5_000_000,
-        app_30d=10_000_000,
-        estimated_tokens_per_request=1_000,
+        user_budget_30d_usd=0.01,               # 100_000 tokens at $0.10/M
+        cost_per_m_input_usd=0.10,
+        cost_per_m_output_usd=0.30,
+        user_share_8h=0.10,
+        user_share_7d=0.50,
+        observed_input_tokens_per_request=1_000,
+        observed_output_tokens_per_request=0,
+        app_budget_30d_usd=1.00,                # 10_000_000 tokens at $0.10/M
+        app_share_8h=0.10,
+        app_share_7d=0.50,
     )
 
 
