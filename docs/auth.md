@@ -4,28 +4,28 @@ MeepleMate uses **Firebase Auth** (Google Sign-In) on the frontend and **Firebas
 
 ---
 
-## Identity model
+## Identity and rate-limit keys
 
-Firebase is the *authenticator*, not the *key*. Two different identifiers, with different lifetimes:
+Two keys, deliberately different, because they answer different questions.
 
 ```
 app_user
-  id                UUID   PK, immutable          <- what chat.user_id and token_usage.user_id reference
-  firebase_uid      TEXT   UNIQUE, mutable        <- the external identity, re-pointed when an account is restored
-  email             TEXT
-  name              TEXT
-  sign_in_provider  TEXT                          <- "google.com" | "password" | "custom" | ...
-  deleted_at        TIMESTAMPTZ                   <- NULL = live
-  metadata          JSONB                         <- per-user rate limit overrides
+  user_id     TEXT PK       <- the Firebase uid: identifies the ACCOUNT
+  email, name
+  deleted_at  TIMESTAMPTZ   <- NULL = live
+
+token_usage
+  quota_key   TEXT          <- lower(email): identifies the PERSON
+  tokens_used, recorded_at
 ```
 
-The split exists because **a Firebase uid does not durably identify a person**. Deleting a Firebase user is irreversible, so the next sign-in mints a brand-new uid; the dev emulator has no persistence, so it does the same on every container restart. If the uid were the primary key, restoring an account would mean rewriting every row that user owns; with an internal id it's a single-row `UPDATE` that re-points `firebase_uid`.
+**Accounts** are keyed on the Firebase uid. Deleting a Firebase user is irreversible and the next sign-in mints a brand-new uid, so signing up again gives you a *different account* with no history. That's intentional: losing your history is the price of deleting your account, and it keeps the request path free of any way to claim data by email address.
 
-This is not hypothetical. Before the internal id existed, `upsert_user` looked accounts up *only* by `firebase_uid`, so a changed uid silently forked one person into a second account — splitting their chat history and, because `token_usage` went with it, **handing them a fresh rate-limit budget**. One dev address had accumulated 18 accounts this way. `should_claim` now adopts a live account whose uid changed (§ Security considerations), a partial unique index on `(lower(email), sign_in_provider)` for live rows backstops it, and migration `0002` merged the accounts already split.
+**Budgets** are keyed on the email, because a rate limit belongs to a person and a person outlives any single uid. Keying `token_usage` on the uid would let anyone clear their 30-day budget by deleting their account and signing up again.
 
-The practical consequence for handlers: `AuthUser.uid` identifies the *credential* and is only good for logging and for talking to Firebase. `UserRecord.id` identifies the *account* and is the only thing that may be used to look up owned data. Resolving one to the other is a database read — see the endpoint table below for which endpoints do it.
+Pooling *usage* across an address is safe in a way that pooling *data* would not be: inheriting someone's consumption can only ever cost you tokens, so there's nothing to gain by claiming an address you don't own. Enabling email/password sign-up alongside Google would change that — an unverified registration could then drain a real user's budget — and would be the point to require a verified email before pooling.
 
-Three schemas are common for "external auth provider + own database": provider uid as the PK (simplest, until the uid has to change); a surrogate PK with the provider uid as a mutable column (what we do, and the documented pattern for Firebase + Postgres); and a separate identity table, one user row to N provider identities, as NextAuth and Auth0 do. The third is the natural next step if a second sign-in provider is ever added — `firebase_uid` + `sign_in_provider` on the user row is a degenerate one-identity-per-user form of it.
+`quota_key` falls back to the uid for tokens carrying no email (the deploy bot), which simply means those identities pool with nobody.
 
 ---
 
@@ -80,10 +80,6 @@ sequenceDiagram
 
 ## Account deletion
 
-Deleting an account is a **soft delete**. Signing in again with the same Google account restores everything while the account is still inside `RESURRECTION_WINDOW` (`meeplemate/db/account_recovery.py`, currently 90 days); past that it is no longer restorable and `mm-admin purge-deleted-accounts` removes it and its data for good.
-
-The window is deliberately **longer than the longest rate-limit window** (`30D`). Token usage follows the account, so a returning user past the window starts a fresh ledger — if the grace period were shorter than the budget period, deleting and signing back in would clear a quota that was still being enforced. Don't lower it below 30 days.
-
 ```mermaid
 sequenceDiagram
     autonumber
@@ -93,65 +89,38 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant FB as Firebase Auth
 
-    Note over User,FB: Deleting
     User->>App: Account menu → Delete account
     App->>User: Confirm dialog (must type their email)
     App->>API: DELETE /api/account
     API->>DB: UPDATE app_user SET deleted_at = now()
-    API->>FB: delete_user(firebase_uid)
+    API->>FB: delete_user(uid)
     Note right of API: DB first, so a Firebase failure leaves the<br/>account locked out rather than half-live.<br/>Repeat calls are an idempotent 204.
     API->>App: 204
     App->>App: logout() → clears React Query + IndexedDB cache
     App->>User: Redirected home, signed out
-
-    Note over User,FB: Restoring (within the window)
-    User->>FB: Sign in with Google
-    FB->>App: New uid (the old record was destroyed)
-    App->>API: Any user-scoped request
-    API->>DB: SELECT by firebase_uid → no row
-    API->>DB: SELECT claimable row by email + provider
-    API->>API: should_claim() gate
-    alt Gate passes
-        API->>DB: UPDATE app_user SET firebase_uid = <new>, deleted_at = NULL
-        Note right of DB: One row. Chats and token usage already<br/>hang off the unchanged internal id.
-    else Gate fails
-        API->>DB: INSERT a fresh account
-    end
 ```
 
-What survives the window: chats, messages, token usage, and per-user rate limit overrides. What a returning user sees after it lapses: a clean, empty account.
+It's a **soft** delete: the row is flagged rather than removed, which is what makes access stop immediately (see the stale-token row in the table below). The account and its chats are removed for good by `mm-admin purge-deleted-accounts`, run by hand.
+
+Signing up again afterwards produces a new account with a new uid and no history. Their **token budget still follows them**, because `token_usage` is keyed on email — that's the whole reason for the split above.
 
 ---
 
 ## Security considerations
 
-Two situations bring a known person back under an unknown uid, and `should_claim` in `meeplemate/db/account_recovery.py` governs both — as a pure function, so the rules can be read and tested in one place:
-
-- **Adoption** — the account is live but its uid changed (emulator restart; shouldn't happen in production, where a Google identity keeps its uid). Re-points `firebase_uid` instead of forking the person into a second account.
-- **Resurrection** — the account was soft-deleted and they're back inside `RESURRECTION_WINDOW`.
-
-Both are keyed on **email**, which is the sensitive part: a token bearing someone else's email must not be able to claim their account.
-
 | Concern | How it's addressed |
 |---|---|
-| **Account takeover via email match** | `sign_in_provider` must match the value recorded on the row, so a `password` account can never claim a `google.com` one. `email_verified` is a secondary check, satisfied by a trusted IdP. Firebase's default [one-account-per-email](https://support.google.com/firebase/answer/9134820) blocks creating the second account in the first place. |
-| **Adoption displaces a live account's current uid** | It gets exactly the same gate as resurrection, and grants nothing an ordinary sign-in wouldn't: reaching it means proving control of the same verified address at the same provider, and anyone who can do that would simply be handed the account's existing uid by the provider. Rows with no recorded provider are unclaimable until one ordinary sign-in records it. |
-| **Silent quota reset via a changed uid** | Was real: a new uid meant a new account and a zeroed budget. Adoption keeps the person on one internal id, and the live-identity unique index stops a fork forming. |
-| **Stale ID tokens after deletion** | Firebase ID tokens stay valid up to an hour and aren't revocation-checked per request. `firebase_uid` is deliberately **retained** on the deleted row, so the lookup finds it and returns 401. Because every user-scoped endpoint resolves the account, this applies to reads too, not just writes. |
-| **Self-undelete by a stale token** | A row found *by uid* with `deleted_at` set is returned as-is and never falls through to the email path — otherwise the deleting user's own in-flight request could silently undo their deletion. Only a genuinely new uid can reach the resurrection gate. |
-| **Quota reset by delete-and-recreate** | `token_usage` hangs off the immutable internal id, so consumption survives deletion and follows a restore. The grace period is kept longer than the longest rate-limit window, so an expired account can't be used to clear a budget that is still in force either. |
-| **Indefinite retention of "deleted" data** | Restorability is decided *in the gate*, not by the purge job, so what a returning user experiences never depends on when an operator last ran the CLI — the job only reclaims storage. Note this bounds *access*, not storage: until the purge runs, an expired account's rows are still on disk, which is why the delete dialog promises no retention period. |
-| **Accidental deletion** | Sessions persist in `localStorage` indefinitely, so the confirm dialog requires typing the account email, and the grace period makes a mistake recoverable rather than instant and permanent. |
-
-**Residual risk, stated plainly:** someone who controls the victim's actual Google account can restore it — but that is a total compromise regardless of this feature.
-
-`email_verified` is deliberately *not* the primary control. Firebase has a long-standing bug ([firebase-js-sdk#7702](https://github.com/firebase/firebase-js-sdk/issues/7702)) where the flag reads false even for Google sign-ins; requiring it outright would lock legitimate users out of restoring their own accounts, so a trusted IdP satisfies it instead.
+| **Stale ID tokens after deletion** — Firebase ID tokens stay valid up to an hour and aren't revocation-checked per request | The row is soft-deleted rather than removed, so the lookup still finds it and returns 401. Every account-scoped endpoint resolves the account, so this covers reads as well as writes; access ends at once rather than at token expiry. |
+| **Quota reset by delete-and-recreate** | `token_usage` is keyed on the email and has no FK to `app_user`, so consumption outlives the account. Purging an account deliberately leaves it in place. |
+| **Purging one account clearing another's budget** | Same reason — usage rows are keyed by address, and two accounts can share one. The purge never touches `token_usage`; rows past the retention window are older than every rate-limit window anyway, so they no longer affect anyone. |
+| **Accidental deletion** — sessions persist in `localStorage` indefinitely, so an unlocked browser is a real risk | The confirm dialog requires typing the account email, and says plainly that deletion can't be undone. |
+| **Claiming another user's data by email** | Not possible: nothing in the request path resolves an account by email. This is the main reason the account key stayed the uid. |
 
 ---
 
 ## API endpoints and auth requirement
 
-Two levels. **Gated** endpoints only need a valid project token. **Account-scoped** endpoints additionally resolve `firebase_uid → app_user.id`, and therefore reject deleted accounts immediately rather than waiting for the token to expire.
+Two levels. **Gated** endpoints only need a valid project token. **Account-scoped** endpoints additionally look the account up, and therefore reject deleted accounts immediately rather than waiting for the token to expire.
 
 | Endpoint | Level | Notes |
 |----------|-------|-------|
@@ -165,7 +134,7 @@ Two levels. **Gated** endpoints only need a valid project token. **Account-scope
 
 Every endpoint validates the Bearer token via `get_current_user` before any handler logic runs; account-scoped ones then depend on `get_db_user` (in `meeplemate/server/deps.py`).
 
-**The deploy-bot exception.** The frontend deploy snapshots `/api/games` into the CDN's `games.json` using a token minted from the service account for a synthetic `deploy-bot` uid (`script/mint-id-token.mjs` in the infra repo). That token carries **no email**, has `sign_in_provider: "custom"`, and has no `app_user` row. Making the catalog endpoints account-scoped would mint a junk user row on every deploy — so they must stay gated. `tests/test_api_games.py` asserts this.
+**The deploy-bot exception.** The frontend deploy snapshots `/api/games` into the CDN's `games.json` using a token minted from the service account for a synthetic `deploy-bot` uid (`script/mint-id-token.mjs` in the infra repo). That token carries **no email** and has no `app_user` row. Making the catalog endpoints account-scoped would mint a junk user row on every deploy — so they must stay gated. `tests/test_api_games.py` asserts this.
 
 ---
 
@@ -187,7 +156,11 @@ VITE_AUTH_BYPASS=true
 VITE_AUTH_BYPASS_USER={"uid":"local-dev","email":"dev@local","name":"Dev User"}
 ```
 
-With both set: the Firebase SDK is never initialized, no login redirect occurs, and `getIdToken()` returns the string `"bypass-token"` (which the backend ignores). You can change the `uid` to test user-scoping behaviour with different fake users.
+With both set: the Firebase SDK is never initialized, no login redirect occurs, and `getIdToken()` returns the string `"bypass-token"` (which the backend ignores). You can change the `uid` to test user-scoping behaviour with different fake users — and changing the `uid` while keeping the `email` simulates a user who deleted their account and signed up again: new account, no history, same token budget.
+
+### Emulator persistence
+
+The auth emulator runs with `--import`/`--export-on-exit` against a named volume, so users survive `docker compose down`. Without it the emulator was purely in-memory: every restart wiped the users, the next sign-in minted a **new uid for the same person**, and since the uid is the account key that silently created a second account and stranded the old chats. One dev address had accumulated 18 accounts before this was noticed. If you ever need a clean slate, `docker volume rm meeplemate_firebase_emulator_data`.
 
 `MM_AUTH_BYPASS_USER` also accepts the two claims the resurrection gate reads, so both branches can be exercised locally without a Firebase project:
 

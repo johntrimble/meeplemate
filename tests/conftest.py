@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,20 +36,19 @@ def rate_limit_config() -> RateLimitConfig:
     )
 
 
-# The internal account id. Distinct from the Firebase uid: they are different
-# identifiers with different lifetimes, and tests that conflate them would miss
-# the class of bug this split exists to prevent.
-TEST_USER_ID = UUID("11111111-1111-1111-1111-111111111111")
 TEST_FIREBASE_UID = "test-uid"
+TEST_EMAIL = "test@example.com"
+# Rate limiting keys on the email, not the uid, so a user can't clear their
+# budget by deleting and re-registering. Kept distinct in tests so a mix-up
+# shows up as a failure rather than passing by coincidence.
+TEST_QUOTA_KEY = TEST_EMAIL
 
 
 def _test_user_record(**overrides) -> UserRecord:
     defaults = dict(
-        id=TEST_USER_ID,
         uid=TEST_FIREBASE_UID,
-        email="test@example.com",
+        email=TEST_EMAIL,
         name="Test User",
-        sign_in_provider="google.com",
         deleted_at=None,
         metadata={},
     )
@@ -114,11 +112,10 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
         "name": "Test Game",
         "rulebooks": [],
     }
-    # Chats are owned by the internal account id, not the Firebase uid.
     mock_data_layer.get_chat.return_value = {
         "chat_id": "00000000-0000-0000-0000-000000000001",
         "game_id": "test-game",
-        "user_id": str(TEST_USER_ID),
+        "user_id": TEST_FIREBASE_UID,
         "created_at": "2026-01-01T00:00:00",
     }
     # The stream endpoint now create-on-first-message via ensure_chat (returns the
@@ -126,12 +123,12 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
     mock_data_layer.ensure_chat.return_value = {
         "chat_id": "00000000-0000-0000-0000-000000000001",
         "game_id": "test-game",
-        "user_id": str(TEST_USER_ID),
+        "user_id": TEST_FIREBASE_UID,
         "created_at": "2026-01-01T00:00:00",
     }
     mock_data_layer.get_messages.return_value = []
     mock_data_layer.save_message.return_value = None
-    mock_data_layer.get_message_owner.return_value = TEST_USER_ID
+    mock_data_layer.get_message_owner.return_value = TEST_FIREBASE_UID
     mock_data_layer.get_message.return_value = {
         "message_id": "00000000-0000-0000-0000-000000000002",
         "chat_id": "00000000-0000-0000-0000-000000000001",
@@ -151,11 +148,7 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
 
     app = create_app(api_deps=mock_deps)
     app.dependency_overrides[get_current_user] = lambda: AuthUser(
-        uid=TEST_FIREBASE_UID,
-        email="test@example.com",
-        name="Test User",
-        email_verified=True,
-        sign_in_provider="google.com",
+        uid=TEST_FIREBASE_UID, email=TEST_EMAIL, name="Test User"
     )
     app.dependency_overrides[get_db_user] = lambda: _test_user_record()
     app.dependency_overrides[get_db_user_allow_deleted] = lambda: _test_user_record()

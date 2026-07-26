@@ -57,16 +57,10 @@ def _deploy_bot() -> AuthUser:
     """The principal the deploy pipeline actually presents.
 
     `mint-id-token.mjs` signs a custom token for a synthetic uid and exchanges it
-    via signInWithCustomToken, so the claims carry no email and the provider is
-    "custom" — see reference_repositories/meeplemate-infra.
+    via signInWithCustomToken, so the claims carry no email at all — see
+    reference_repositories/meeplemate-infra.
     """
-    return AuthUser(
-        uid="deploy-bot",
-        email=None,
-        name=None,
-        email_verified=False,
-        sign_in_provider="custom",
-    )
+    return AuthUser(uid="deploy-bot", email=None, name=None)
 
 
 def test_get_games_returns_catalog_when_authed(games_app, mock_data_layer):

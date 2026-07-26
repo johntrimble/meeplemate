@@ -397,7 +397,7 @@ class RateLimiter:
         per_window_params = [(name, since) for name, _, since in window_params]
 
         user_stats_list = await self._data_layer.check_and_reserve_user(
-            user_id=user.id,
+            quota_key=user.quota_key,
             window_params=per_window_params,
             estimated=estimated,
             user_limits=user_limits,

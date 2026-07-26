@@ -17,14 +17,15 @@ import { Spinner } from '@/components/ui/spinner'
 /**
  * Confirmation dialog for deleting the signed-in account.
  *
- * The backend soft-deletes, so signing back in with the same Google account
- * restores everything for a while. The copy says that without naming a
- * duration: the window is a backend constant and the actual erasure is a manual
- * operator job, so a number here would be a promise the UI can't keep.
+ * Deletion is not reversible from the user's side: the account is keyed on the
+ * Firebase uid, and signing up again mints a new one, so they get a clean
+ * account rather than their old one back. The copy has to say so plainly - this
+ * is the one screen where under-stating the consequence would be a real
+ * disservice.
  *
- * The typed-email confirmation is here because sessions persist indefinitely in
- * localStorage - without it, anyone at an unlocked browser is two clicks from
- * wiping someone's history.
+ * The typed-email confirmation is here for the same reason, plus the fact that
+ * sessions persist indefinitely in localStorage - without it, anyone at an
+ * unlocked browser is two clicks from wiping someone's history.
  */
 export function DeleteAccountDialog({
   open,
@@ -81,11 +82,12 @@ export function DeleteAccountDialog({
           <DialogDescription asChild>
             <div className="space-y-2 text-left">
               <p>
-                You'll be signed out and your account will be removed.
+                You'll be signed out and your account will be removed, along with your
+                chat history.
               </p>
-              <p>
-                If you change your mind, signing in again with the same Google account
-                soon afterwards will restore your chat history.
+              <p className="font-medium text-foreground">
+                This can't be undone. Signing up again later starts you over with an
+                empty account.
               </p>
             </div>
           </DialogDescription>

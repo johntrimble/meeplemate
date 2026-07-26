@@ -31,7 +31,9 @@ async def test_allow_deleted_resolves_a_live_account():
     record = await get_db_user_allow_deleted(_request_with(layer), auth_user)
 
     assert record.deleted_at is None
-    layer.upsert_user.assert_awaited_once_with(auth_user)
+    layer.upsert_user.assert_awaited_once_with(
+        auth_user.uid, auth_user.email, auth_user.name
+    )
 
 
 @pytest.mark.asyncio

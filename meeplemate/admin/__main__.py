@@ -3,10 +3,9 @@
     mm-admin purge-deleted-accounts --older-than 90d
 
 Deliberately manual rather than scheduled: this project has no cron/scheduler
-infrastructure, and whether an account is still restorable is decided by the
-gate in `meeplemate.db.account_recovery`, not by this job. So a purge that runs
-late only reclaims storage late — it never restores an account that should have
-expired, and never expires one early.
+infrastructure. Running it late has no user-visible effect — a soft-deleted
+account is already locked out the moment it is flagged, so this only reclaims
+storage.
 """
 import asyncio
 import re
@@ -16,8 +15,13 @@ import click
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from meeplemate.config import PGSettings
-from meeplemate.db.account_recovery import RESURRECTION_WINDOW
 from meeplemate.db.repository import PostgresDataLayer
+
+# How long a soft-deleted account is kept before it can be purged. Purely a
+# retention policy — nothing in the request path reads it — but keep it at or
+# above the longest rate-limit window (30D) so an operator purging aggressively
+# can't destroy chats belonging to an account whose budget is still in force.
+DEFAULT_RETENTION = timedelta(days=90)
 
 _DURATION = re.compile(r"^(\d+)([dhm])$")
 _UNITS = {"d": "days", "h": "hours", "m": "minutes"}
@@ -41,7 +45,7 @@ def cli():
 @cli.command("purge-deleted-accounts")
 @click.option(
     "--older-than",
-    default=f"{RESURRECTION_WINDOW.days}d",
+    default=f"{DEFAULT_RETENTION.days}d",
     show_default=True,
     help="Purge accounts soft-deleted longer ago than this (e.g. 90d, 12h).",
 )
@@ -51,24 +55,13 @@ def cli():
     help="Actually delete. Without this the command only reports what it would do.",
 )
 def purge_deleted_accounts(older_than: str, yes: bool):
-    """Permanently remove accounts whose grace period has expired.
+    """Permanently remove accounts soft-deleted longer ago than the retention window.
 
-    Deletes the user row and everything hanging off it: chats, messages, message
-    parts and token usage.
+    Deletes the user row, their chats, messages and message parts. Token usage
+    is left in place: it is keyed by email rather than by account, so removing it
+    could clear a live account's budget for the same address.
     """
     window = _parse_duration(older_than)
-    if window < RESURRECTION_WINDOW:
-        click.echo(
-            click.style(
-                f"Refusing to purge: --older-than {older_than} is shorter than the "
-                f"{RESURRECTION_WINDOW.days}-day window in which users are promised "
-                "they can still restore their account.",
-                fg="red",
-            ),
-            err=True,
-        )
-        raise SystemExit(1)
-
     cutoff = datetime.now(UTC) - window
     asyncio.run(_purge(cutoff, dry_run=not yes))
 
@@ -87,9 +80,9 @@ async def _purge(cutoff: datetime, *, dry_run: bool) -> None:
         click.echo(f"{verb} {len(summaries)} account(s):")
         for s in summaries:
             click.echo(
-                f"  {s.id}  {s.email or '(no email)':40}  "
+                f"  {s.uid:30}  {s.email or '(no email)':32}  "
                 f"deleted {s.deleted_at:%Y-%m-%d}  "
-                f"{s.chats} chats, {s.messages} messages, {s.token_usage_rows} usage rows"
+                f"{s.chats} chats, {s.messages} messages"
             )
         if dry_run:
             click.echo("\nDry run — nothing was deleted. Re-run with --yes to commit.")

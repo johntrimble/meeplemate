@@ -9,7 +9,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 from uuid import UUID
 
-from conftest import TEST_USER_ID
+from conftest import TEST_FIREBASE_UID
 
 from fastapi.testclient import TestClient
 
@@ -24,7 +24,7 @@ async def _empty_astream(*args, **kwargs):
     yield  # make it a generator
 
 
-def _owned_chat(user_id: str = str(TEST_USER_ID), game_id: str = "test-game") -> dict:
+def _owned_chat(user_id: str = TEST_FIREBASE_UID, game_id: str = "test-game") -> dict:
     return {
         "chat_id": CHAT_ID,
         "game_id": game_id,
@@ -46,7 +46,7 @@ def test_stream_creates_chat_and_saves_user_message(api_client: TestClient, mock
 
     assert resp.status_code == 200
     mock_data_layer.ensure_chat.assert_called_once_with(
-        chat_id=UUID(CHAT_ID), game_id="test-game", user_id=TEST_USER_ID
+        chat_id=UUID(CHAT_ID), game_id="test-game", user_id=TEST_FIREBASE_UID
     )
     # The new user message is persisted (plus the assistant message afterwards).
     user_saves = [c for c in mock_data_layer.save_message.call_args_list if c.kwargs.get("role") == "user"]
@@ -74,9 +74,7 @@ def test_stream_forwards_client_message_id(api_client: TestClient, mock_data_lay
 
 def test_stream_rejects_chat_owned_by_another_user(api_client: TestClient, mock_data_layer: AsyncMock):
     api_client.app.state.deps.chatloop_service.astream = _empty_astream
-    mock_data_layer.ensure_chat.return_value = _owned_chat(
-        user_id="99999999-9999-9999-9999-999999999999"
-    )
+    mock_data_layer.ensure_chat.return_value = _owned_chat(user_id="other-uid")
 
     resp = api_client.post(STREAM_URL, json=BODY)
 

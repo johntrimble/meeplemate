@@ -37,13 +37,6 @@ class AuthUser:
     uid: str
     email: Optional[str]
     name: Optional[str]
-    # Whether the provider vouched for the email. Firebase sets this for
-    # trusted IdPs; an email/password registration starts out false.
-    email_verified: bool = False
-    # firebase.sign_in_provider from the token: "google.com", "password",
-    # "custom", ... Used to gate account resurrection — see the data layer's
-    # should_claim().
-    sign_in_provider: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -100,14 +93,7 @@ async def get_current_user(
     if _bypass_enabled():
         raw = os.environ.get("MM_AUTH_BYPASS_USER", '{"uid":"bypass","email":null,"name":"Bypass User"}')
         data = json.loads(raw)
-        return AuthUser(
-            uid=data["uid"],
-            email=data.get("email"),
-            name=data.get("name"),
-            # Optional, so the resurrection paths can be exercised locally.
-            email_verified=bool(data.get("email_verified", False)),
-            sign_in_provider=data.get("sign_in_provider"),
-        )
+        return AuthUser(uid=data["uid"], email=data.get("email"), name=data.get("name"))
 
     # --- Normal mode: validate Firebase ID token ---
     if credentials is None or not credentials.credentials:
@@ -153,8 +139,6 @@ async def get_current_user(
         uid=decoded["uid"],
         email=decoded.get("email"),
         name=decoded.get("name"),
-        email_verified=bool(decoded.get("email_verified", False)),
-        sign_in_provider=(decoded.get("firebase") or {}).get("sign_in_provider"),
     )
 
 

@@ -41,11 +41,11 @@ class ApiDeps:
 # Current-user dependencies
 # ---------------------------------------------------------------------------
 #
-# The Firebase uid identifies the *credential*; `UserRecord.id` identifies the
-# *account* and is what owns chats and token usage. Any handler that touches
-# user-owned data resolves the account here rather than trusting the uid — which
-# is also what makes deletion take effect immediately, since Firebase ID tokens
-# stay valid for up to an hour after the underlying user is destroyed.
+# The uid in the token is enough to identify the account, so these dependencies
+# exist for one reason: to check whether it has been deleted. Firebase ID tokens
+# stay valid for up to an hour after the underlying user is destroyed and are not
+# revocation-checked per request, so without this read a just-deleted user could
+# keep using their own data until the token expired.
 #
 # Handlers that merely need a valid token (the game catalog) must keep depending
 # on `get_current_user` alone — see the note on `get_games` in api.py.
@@ -61,7 +61,7 @@ async def get_db_user_allow_deleted(
     account is flagged so a client can retry a partial failure.
     """
     data_layer: BaseDataLayer = request.app.state.deps.data_layer
-    return await data_layer.upsert_user(auth_user)
+    return await data_layer.upsert_user(auth_user.uid, auth_user.email, auth_user.name)
 
 
 async def get_db_user(

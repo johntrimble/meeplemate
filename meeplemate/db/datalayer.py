@@ -188,32 +188,47 @@ class MessageDict(TypedDict):
 
 @dataclass
 class UserRecord:
-    """A persisted application user (authenticated by Firebase).
-
-    ``id`` is the internal key that ``chat`` and ``token_usage`` reference and
-    is what every user-scoped data-layer call takes. ``uid`` is the *external*
-    Firebase identity, which changes if the account is deleted and restored —
-    it is useful for logging and for talking to Firebase, but must never be
-    used to look up owned data.
-    """
-    id: UUID
-    uid: Optional[str]
+    """A persisted application user (backed by Firebase Auth)."""
+    uid: str
     email: Optional[str]
     name: Optional[str]
-    sign_in_provider: Optional[str] = None
     deleted_at: Optional[datetime] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def quota_key(self) -> str:
+        """Key under which this user's token consumption is recorded.
+
+        The email, not the uid: a budget belongs to a person, and deleting an
+        account mints a new uid, so a uid-keyed ledger would reset the budget.
+        Falls back to the uid for tokens carrying no email (the deploy bot),
+        which simply means those identities pool with nobody.
+
+        Normalisation is deliberately limited to trimming and case. It is
+        tempting to also canonicalise Gmail-style — strip dots, drop a ``+tag``
+        — but that is only correct for ``@gmail.com``: on Workspace custom
+        domains dots are significant, so ``a.b@corp.com`` and ``ab@corp.com``
+        can be two different people, and pooling their budgets would let one
+        throttle the other. Getting that wrong is worse than the thing it
+        prevents.
+
+        It also isn't needed while sign-in is Google-only: the user never types
+        an address, they pick an account and Google returns its canonical form,
+        so there is nowhere to inject a ``+tag``. Enabling email/password
+        sign-up would change that, and is the point to revisit this — alongside
+        requiring a verified email before pooling at all (see ``TokenUsage``).
+        """
+        return self.email.strip().lower() if self.email else self.uid
 
 
 @dataclass
 class PurgeSummary:
     """What a purge did (or would do, on a dry run) for one account."""
-    id: UUID
+    uid: str
     email: Optional[str]
     deleted_at: Optional[datetime]
     chats: int
     messages: int
-    token_usage_rows: int
 
 
 @dataclass
@@ -239,12 +254,12 @@ class BaseDataLayer(ABC):
 
     @abstractmethod
     async def list_chats(
-        self, game_id: str, user_id: UUID, pagination: Pagination
+        self, game_id: str, user_id: str, pagination: Pagination
     ) -> PaginatedResponse[ChatSummary]:
         """All chats for a game belonging to user_id, newest first, each with a derived title."""
 
     @abstractmethod
-    async def ensure_chat(self, *, chat_id: UUID, game_id: str, user_id: UUID) -> ChatDict:
+    async def ensure_chat(self, *, chat_id: UUID, game_id: str, user_id: str) -> ChatDict:
         """Idempotently create the chat for a client-supplied ``chat_id`` if absent, then
         return the current row.
 
@@ -259,7 +274,7 @@ class BaseDataLayer(ABC):
 
     @abstractmethod
     async def list_recent_game_ids(
-        self, user_id: UUID, pagination: Pagination
+        self, user_id: str, pagination: Pagination
     ) -> PaginatedResponse[str]:
         """Distinct game_ids with the most recent chat activity for user_id, newest first.
 
@@ -299,8 +314,8 @@ class BaseDataLayer(ABC):
     # --- Feedback ---
 
     @abstractmethod
-    async def get_message_owner(self, message_id: UUID) -> UUID | None:
-        """Return the internal user id owning this message's chat, or None if not found."""
+    async def get_message_owner(self, message_id: UUID) -> str | None:
+        """Return the user_id of the chat that owns this message, or None if not found."""
 
     @abstractmethod
     async def upsert_feedback(self, message_id: UUID, value: int) -> None:
@@ -313,26 +328,16 @@ class BaseDataLayer(ABC):
     # --- Users ---
 
     @abstractmethod
-    async def upsert_user(self, auth_user: "AuthUser") -> UserRecord:
-        """Resolve the authenticated user to their application record.
+    async def upsert_user(self, uid: str, email: Optional[str], name: Optional[str]) -> UserRecord:
+        """Upsert a user row (keyed by Firebase UID), syncing email/name.
 
-        Three outcomes, in order:
-
-        1. A live row already carries this ``firebase_uid`` — return it, syncing
-           email/name/provider only if they actually changed. This is the hot
-           path for every user-scoped request, so it must not write blindly.
-        2. A row carries this ``firebase_uid`` but is soft-deleted — return it
-           as-is. Callers reject the request; a genuinely returning user always
-           arrives under a *new* uid, so this only ever catches a stale token
-           belonging to the account that was just deleted.
-        3. No row carries this uid — either restore a soft-deleted account whose
-           email matches (see ``should_claim`` for the gate) by re-pointing
-           its ``firebase_uid``, or create a fresh one. A failed gate silently
-           creates a fresh account rather than erroring.
+        Returns the full record, *including* soft-deleted ones — callers decide
+        what to do with those. Reads before writing: this runs on every
+        user-scoped request, so an unchanged user must not cost a write.
         """
 
     @abstractmethod
-    async def soft_delete_user(self, user_id: UUID) -> bool:
+    async def soft_delete_user(self, uid: str) -> bool:
         """Flag the account deleted. Returns False if absent or already flagged.
 
         Idempotent, so a client retrying after a partial failure is safe.
@@ -344,16 +349,21 @@ class BaseDataLayer(ABC):
     ) -> list["PurgeSummary"]:
         """Hard-delete accounts soft-deleted before ``older_than``, and their data.
 
-        Returns what was purged, or on a dry run what would be. Chats and token
-        usage cascade from ``app_user``; messages are removed explicitly because
+        Returns what was purged, or on a dry run what would be. Chats cascade
+        from ``app_user``; messages are removed explicitly because
         ``chat_message`` has no FK to ``chat``.
+
+        Deliberately leaves ``token_usage`` alone: those rows are keyed by email,
+        not by account, so deleting them could clear a *live* account's budget
+        for the same address — and after the retention window they are older than
+        every rate-limit window anyway, so they no longer affect anyone.
         """
 
     # --- Token usage ---
 
     @abstractmethod
-    async def get_window_stats(self, user_id: UUID, since: datetime) -> WindowStats:
-        """Sum of tokens and oldest record timestamp for user_id in the rolling window [since, now]."""
+    async def get_window_stats(self, quota_key: str, since: datetime) -> WindowStats:
+        """Sum of tokens and oldest record timestamp for quota_key in the rolling window [since, now]."""
 
     @abstractmethod
     async def get_app_window_stats(self, since: datetime) -> WindowStats:
@@ -362,12 +372,12 @@ class BaseDataLayer(ABC):
     @abstractmethod
     async def check_and_reserve_user(
         self,
-        user_id: UUID,
+        quota_key: str,
         window_params: list[tuple[str, datetime]],  # (window_name, since)
         estimated: int,
         user_limits: dict[str, int],
     ) -> list[WindowStats]:
-        """Within a per-user pg_advisory_xact_lock: fetch per-user window stats and check limits.
+        """Within a per-quota-key pg_advisory_xact_lock: fetch window stats and check limits.
 
         If any limit would be exceeded (used + estimated > limit): commit (release lock) and
         return the stats WITHOUT inserting a reservation.
@@ -379,8 +389,8 @@ class BaseDataLayer(ABC):
         """
 
     @abstractmethod
-    async def record_token_usage(self, user_id: UUID, tokens: int) -> None:
-        """Persist a token usage record for user_id."""
+    async def record_token_usage(self, quota_key: str, tokens: int) -> None:
+        """Persist a token usage record for quota_key."""
 
     # --- Lifecycle ---
 

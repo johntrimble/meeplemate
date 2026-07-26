@@ -2,7 +2,7 @@
 from unittest.mock import AsyncMock
 
 import pytest
-from conftest import TEST_FIREBASE_UID, TEST_USER_ID
+from conftest import TEST_FIREBASE_UID
 
 
 @pytest.fixture
@@ -19,10 +19,7 @@ def test_delete_account_flags_row_and_removes_firebase_user(
     response = api_client.delete("/api/account")
 
     assert response.status_code == 204
-    # Soft delete targets the internal account id...
-    mock_data_layer.soft_delete_user.assert_awaited_once_with(TEST_USER_ID)
-    # ...while Firebase is addressed by the external uid. Conflating the two
-    # would either fail to delete the credential or corrupt the wrong row.
+    mock_data_layer.soft_delete_user.assert_awaited_once_with(TEST_FIREBASE_UID)
     fake_firebase_delete.assert_awaited_once_with(TEST_FIREBASE_UID)
 
 
@@ -36,7 +33,7 @@ def test_delete_account_flags_row_before_calling_firebase(
     response = api_client.delete("/api/account")
 
     assert response.status_code == 500
-    mock_data_layer.soft_delete_user.assert_awaited_once_with(TEST_USER_ID)
+    mock_data_layer.soft_delete_user.assert_awaited_once_with(TEST_FIREBASE_UID)
 
 
 def test_delete_account_is_idempotent(api_client, mock_data_layer, fake_firebase_delete):

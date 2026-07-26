@@ -7,24 +7,21 @@ from meeplemate.db.base import Base
 
 
 class AppUser(Base):
-    """Application user record, authenticated by Firebase.
+    """Firebase-authenticated user record with optional metadata overrides.
 
-    ``id`` is the key everything else references: an internal UUID that never
-    changes. ``firebase_uid`` is the *external* identity and is deliberately
-    mutable — deleting a Firebase user and signing in again mints a brand-new
-    uid, so restoring an account means re-pointing this column rather than
-    rewriting every row the user owns.
+    Keyed on the Firebase UID. That identifier is per-*credential*, not
+    per-person: deleting the Firebase user and signing in again mints a new one,
+    and the account here is a different account. That is deliberate — the price
+    of deleting your account is losing your history. Rate limiting deliberately
+    does *not* follow this key; see ``TokenUsage``.
     """
     __tablename__ = "app_user"
 
-    id = sa.Column(UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
-    firebase_uid = sa.Column(sa.Text, nullable=True, unique=True)
+    user_id = sa.Column(sa.Text, primary_key=True)  # Firebase UID
     email = sa.Column(sa.Text, nullable=True)
     name = sa.Column(sa.Text, nullable=True)
-    # Which provider the token was obtained through ("google.com", "password",
-    # "custom", ...). Recorded on every upsert; gates account resurrection.
-    sign_in_provider = sa.Column(sa.Text, nullable=True)
-    # NULL = live. Set on soft delete; cleared when an account is restored.
+    # NULL = live. Set on soft delete; the row and its chats survive until
+    # `mm-admin purge-deleted-accounts` removes them.
     deleted_at = sa.Column(sa.DateTime(timezone=True), nullable=True)
     # Stores per-user rate limit overrides under key "rate_limits":
     # {"rate_limits": {"8H": 100000, "7D": 400000, "30D": 1000000}}
@@ -32,20 +29,33 @@ class AppUser(Base):
 
 
 class TokenUsage(Base):
-    """Token usage records for rolling-window rate limiting."""
+    """Token usage records for rolling-window rate limiting.
+
+    Keyed on ``quota_key`` — the lowercased email address, falling back to the
+    uid when a token carries no email — rather than on the user. A budget
+    belongs to a *person*, and a person outlives any single Firebase uid, so
+    keying this on the uid would let anyone clear their 30-day budget by
+    deleting their account and signing up again.
+
+    Pooling usage across an address is safe in a way that pooling *data* is not:
+    inheriting someone's consumption can only ever cost you tokens, so there is
+    nothing to gain by claiming an address you don't own. Enabling
+    email/password sign-up alongside Google would change that — an unverified
+    registration could then drain a real user's budget — and would be the point
+    to require a verified email before pooling.
+
+    Intentionally has no foreign key: rows outlive the accounts that produced
+    them, which is what closes the loophole above.
+    """
     __tablename__ = "token_usage"
 
     id = sa.Column(UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
-    user_id = sa.Column(
-        UUID(as_uuid=True),
-        sa.ForeignKey("app_user.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    quota_key = sa.Column(sa.Text, nullable=False)
     tokens_used = sa.Column(sa.Integer, nullable=False)
     recorded_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
-        sa.Index("ix_token_usage_user_recorded", "user_id", "recorded_at"),
+        sa.Index("ix_token_usage_quota_recorded", "quota_key", "recorded_at"),
         sa.Index("ix_token_usage_recorded", "recorded_at"),
     )
 
@@ -55,9 +65,10 @@ class Chat(Base):
 
     chat_id = sa.Column(UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
     game_id = sa.Column(sa.Text, nullable=False, index=True)
+    # FK so purging an account takes its chats with it.
     user_id = sa.Column(
-        UUID(as_uuid=True),
-        sa.ForeignKey("app_user.id", ondelete="CASCADE"),
+        sa.Text,
+        sa.ForeignKey("app_user.user_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

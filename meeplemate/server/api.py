@@ -191,7 +191,7 @@ async def get_recent_games(
 ) -> GamesPage:
     """Games the current user has most recently chatted in, newest-first."""
     recent = await deps.data_layer.list_recent_game_ids(
-        user_id=db_user.id,
+        user_id=db_user.uid,
         pagination=Pagination(first=first, cursor=cursor),
     )
     games = await deps.game_service.get_games_by_ids(recent.data)
@@ -226,7 +226,7 @@ async def list_game_chats(
 ) -> ChatsPage:
     """Return chats for a game belonging to the authenticated user, newest first."""
     from meeplemate.db.datalayer import Pagination
-    result = await deps.data_layer.list_chats(game_id, db_user.id, Pagination(first=first, cursor=cursor))
+    result = await deps.data_layer.list_chats(game_id, db_user.uid, Pagination(first=first, cursor=cursor))
     return ChatsPage(
         pageInfo=PageInfo(
             hasNextPage=result.pageInfo.hasNextPage,
@@ -258,7 +258,7 @@ async def get_chat_messages(
     """Return all messages for a chat in chronological order."""
     chat_uuid = _parse_chat_uuid(chat_id)
     chat = await deps.data_layer.get_chat(chat_uuid)
-    if chat is None or chat["user_id"] != str(db_user.id):
+    if chat is None or chat["user_id"] != db_user.uid:
         raise HTTPException(status_code=404, detail="Chat not found")
     messages = await deps.data_layer.get_messages(chat_uuid)
     return [ChatMessageOut.model_validate(m) for m in messages]
@@ -282,7 +282,7 @@ async def set_message_feedback(
     """Upsert thumbs-up (1) or thumbs-down (0) feedback for a message."""
     msg_uuid = UUID(message_id)
     owner = await deps.data_layer.get_message_owner(msg_uuid)
-    if owner != db_user.id:
+    if owner != db_user.uid:
         raise HTTPException(status_code=404, detail="Message not found")
     await deps.data_layer.upsert_feedback(msg_uuid, body.value)
     return Response(status_code=204)
@@ -297,7 +297,7 @@ async def delete_message_feedback(
     """Remove feedback for a message."""
     msg_uuid = UUID(message_id)
     owner = await deps.data_layer.get_message_owner(msg_uuid)
-    if owner != db_user.id:
+    if owner != db_user.uid:
         raise HTTPException(status_code=404, detail="Message not found")
     await deps.data_layer.delete_feedback(msg_uuid)
     return Response(status_code=204)
@@ -314,11 +314,14 @@ async def delete_account(
 ) -> Response:
     """Delete the authenticated user's account.
 
-    A soft delete: the row is flagged and the user's data kept, so signing in
-    again with the same Google account restores everything while the account is
-    still within `RESURRECTION_WINDOW` (see `meeplemate.db.account_recovery`).
-    Past that it is no longer restorable, and `mm-admin purge-deleted-accounts`
-    removes it for good.
+    A soft delete: the row is flagged so the user's existing ID token stops
+    working at once, and `mm-admin purge-deleted-accounts` removes the account
+    and its chats once the retention window has passed.
+
+    Signing up again later creates a *new* account with no history — the uid is
+    the account key and Firebase mints a fresh one. Their token budget does
+    follow them, because `token_usage` is keyed on email precisely so that
+    deleting an account can't be used to clear a rate limit.
 
     The database is flagged *before* Firebase is touched, so a failure partway
     leaves the account locked out rather than half-live. That also makes retries
@@ -326,10 +329,9 @@ async def delete_account(
     rejects an already-flagged account and would block the client's second
     attempt. Deleting an already-deleted account is a no-op 204.
     """
-    await deps.data_layer.soft_delete_user(db_user.id)
+    await deps.data_layer.soft_delete_user(db_user.uid)
 
-    if db_user.uid:
-        await delete_firebase_user(db_user.uid)
+    await delete_firebase_user(db_user.uid)
 
     return Response(status_code=204)
 
@@ -369,9 +371,9 @@ async def stream_chat(
     # overwrites an existing row, so a collision/tamper can't hijack another user's chat —
     # we still verify ownership + game below before writing anything.
     chat = await deps.data_layer.ensure_chat(
-        chat_id=chat_uuid, game_id=request.game_id, user_id=db_user.id
+        chat_id=chat_uuid, game_id=request.game_id, user_id=db_user.uid
     )
-    if chat["user_id"] != str(db_user.id) or chat["game_id"] != request.game_id:
+    if chat["user_id"] != db_user.uid or chat["game_id"] != request.game_id:
         raise HTTPException(status_code=404, detail="Chat not found")
 
     chatloop_service = deps.chatloop_service
@@ -381,7 +383,7 @@ async def stream_chat(
         # Regenerate path: validate the target message, then deactivate it and everything after.
         msg_uuid = UUID(request.retry_message_id)
         owner = await data_layer.get_message_owner(msg_uuid)
-        if owner is None or owner != db_user.id:
+        if owner is None or owner != db_user.uid:
             raise HTTPException(status_code=404, detail="Message not found")
         msg_info = await data_layer.get_message(msg_uuid)
         if msg_info is None or msg_info["role"] != "assistant":
@@ -502,7 +504,7 @@ async def stream_chat(
 
         try:
             estimated = deps.rate_limiter.config.estimated_tokens_per_request
-            await data_layer.record_token_usage(db_user.id, token_callback.tokens - estimated)
+            await data_layer.record_token_usage(db_user.quota_key, token_callback.tokens - estimated)
         except Exception:
             import logging
             logging.getLogger(__name__).warning("Failed to record token usage", exc_info=True)
