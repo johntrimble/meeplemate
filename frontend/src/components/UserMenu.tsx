@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { LogOutIcon } from 'lucide-react'
+import { LogOutIcon, Trash2Icon } from 'lucide-react'
 import { useAuth } from '@/auth/useAuth'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { DeleteAccountDialog } from '@/components/DeleteAccountDialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,12 +17,13 @@ import { cn } from '@/lib/utils'
 
 /**
  * Account avatar with a dropdown menu. Shows the signed-in user's Google
- * profile photo (falling back to their initials) and offers a Log out action
- * that signs the user out and returns them to the home screen.
+ * profile photo (falling back to their initials) and offers Log out plus
+ * Delete account.
  */
 export function UserMenu({ className }: { className?: string }) {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
+  const [deleteOpen, setDeleteOpen] = useState(false)
 
   const handleLogout = () => {
     logout()
@@ -30,6 +33,7 @@ export function UserMenu({ className }: { className?: string }) {
   const label = user?.name?.trim() || user?.email?.trim() || 'Account'
 
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label="Account menu"
@@ -45,11 +49,19 @@ export function UserMenu({ className }: { className?: string }) {
       <DropdownMenuContent align="end" className="min-w-48">
         <DropdownMenuLabel className="truncate font-normal">{label}</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem variant="destructive" onSelect={handleLogout}>
+        <DropdownMenuItem onSelect={handleLogout}>
           <LogOutIcon />
           Log out
         </DropdownMenuItem>
+        <DropdownMenuItem variant="destructive" onSelect={() => setDeleteOpen(true)}>
+          <Trash2Icon />
+          Delete account
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+    {/* Sibling of the menu, not a child: Radix unmounts DropdownMenuContent on
+        select, which would tear the dialog down with it. */}
+    <DeleteAccountDialog open={deleteOpen} onOpenChange={setDeleteOpen} />
+    </>
   )
 }

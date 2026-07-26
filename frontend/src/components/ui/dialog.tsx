@@ -31,12 +31,17 @@ function DialogClose({
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
 }
 
-function DialogOverlay({
-  className,
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+// forwardRef, unlike its siblings here: Radix's Presence wrapper attaches a ref
+// to the overlay to drive exit animations. This file is shadcn's React 19 output,
+// where plain function components accept refs; on React 18 that logs "Function
+// components cannot be given refs" every time a dialog opens.
+const DialogOverlay = React.forwardRef<
+  React.ComponentRef<typeof DialogPrimitive.Overlay>,
+  React.ComponentProps<typeof DialogPrimitive.Overlay>
+>(({ className, ...props }, ref) => {
   return (
     <DialogPrimitive.Overlay
+      ref={ref}
       data-slot="dialog-overlay"
       className={cn(
         "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/50",
@@ -45,7 +50,8 @@ function DialogOverlay({
       {...props}
     />
   )
-}
+})
+DialogOverlay.displayName = "DialogOverlay"
 
 function DialogContent({
   className,

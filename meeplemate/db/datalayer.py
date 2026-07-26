@@ -1,8 +1,21 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Generic, Literal, NotRequired, Optional, TypedDict, TypeVar, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Literal,
+    NotRequired,
+    Optional,
+    TypedDict,
+    TypeVar,
+    Union,
+)
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from meeplemate.server.auth import AuthUser
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +192,47 @@ class UserRecord:
     uid: str
     email: Optional[str]
     name: Optional[str]
+    deleted_at: Optional[datetime] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def quota_key(self) -> str:
+        """Key under which this user's token consumption is recorded.
+
+        The email, not the uid: a budget belongs to a person, and deleting an
+        account mints a new uid, so a uid-keyed ledger would reset the budget.
+        Falls back to the uid for tokens carrying no email (the deploy bot),
+        which simply means those identities pool with nobody.
+
+        Normalisation is deliberately limited to trimming and case. It is
+        tempting to also canonicalise Gmail-style — strip dots, drop a ``+tag``
+        — but that is only correct for ``@gmail.com``: on Workspace custom
+        domains dots are significant, so ``a.b@corp.com`` and ``ab@corp.com``
+        can be two different people, and pooling their budgets would let one
+        throttle the other. Getting that wrong is worse than the thing it
+        prevents.
+
+        It also isn't needed while sign-in is Google-only: the user never types
+        an address, they pick an account and Google returns its canonical form,
+        so there is nowhere to inject a ``+tag``. Enabling email/password
+        sign-up would change that, and is the point to revisit this — alongside
+        requiring a verified email before pooling at all (see ``TokenUsage``).
+        """
+        # Normalise *before* testing for emptiness: a whitespace-only email
+        # (a malformed claim, or a typo in MM_AUTH_BYPASS_USER) would otherwise
+        # pass the truthiness check and key every such identity to "".
+        normalised = (self.email or "").strip().lower()
+        return normalised or self.uid
+
+
+@dataclass
+class PurgeSummary:
+    """What a purge did (or would do, on a dry run) for one account."""
+    uid: str
+    email: Optional[str]
+    deleted_at: Optional[datetime]
+    chats: int
+    messages: int
 
 
 @dataclass
@@ -280,13 +333,41 @@ class BaseDataLayer(ABC):
 
     @abstractmethod
     async def upsert_user(self, uid: str, email: Optional[str], name: Optional[str]) -> UserRecord:
-        """Upsert a user row (keyed by Firebase UID), syncing email/name. Returns the full record."""
+        """Upsert a user row (keyed by Firebase UID), syncing email/name.
+
+        Returns the full record, *including* soft-deleted ones — callers decide
+        what to do with those. Reads before writing: this runs on every
+        user-scoped request, so an unchanged user must not cost a write.
+        """
+
+    @abstractmethod
+    async def soft_delete_user(self, uid: str) -> bool:
+        """Flag the account deleted. Returns False if absent or already flagged.
+
+        Idempotent, so a client retrying after a partial failure is safe.
+        """
+
+    @abstractmethod
+    async def purge_deleted_users(
+        self, older_than: datetime, *, dry_run: bool = True
+    ) -> list["PurgeSummary"]:
+        """Hard-delete accounts soft-deleted before ``older_than``, and their data.
+
+        Returns what was purged, or on a dry run what would be. Chats cascade
+        from ``app_user``; messages are removed explicitly because
+        ``chat_message`` has no FK to ``chat``.
+
+        Deliberately leaves ``token_usage`` alone: those rows are keyed by email,
+        not by account, so deleting them could clear a *live* account's budget
+        for the same address — and after the retention window they are older than
+        every rate-limit window anyway, so they no longer affect anyone.
+        """
 
     # --- Token usage ---
 
     @abstractmethod
-    async def get_window_stats(self, user_id: str, since: datetime) -> WindowStats:
-        """Sum of tokens and oldest record timestamp for user_id in the rolling window [since, now]."""
+    async def get_window_stats(self, quota_key: str, since: datetime) -> WindowStats:
+        """Sum of tokens and oldest record timestamp for quota_key in the rolling window [since, now]."""
 
     @abstractmethod
     async def get_app_window_stats(self, since: datetime) -> WindowStats:
@@ -295,12 +376,12 @@ class BaseDataLayer(ABC):
     @abstractmethod
     async def check_and_reserve_user(
         self,
-        user_id: str,
+        quota_key: str,
         window_params: list[tuple[str, datetime]],  # (window_name, since)
         estimated: int,
         user_limits: dict[str, int],
     ) -> list[WindowStats]:
-        """Within a per-user pg_advisory_xact_lock: fetch per-user window stats and check limits.
+        """Within a per-quota-key pg_advisory_xact_lock: fetch window stats and check limits.
 
         If any limit would be exceeded (used + estimated > limit): commit (release lock) and
         return the stats WITHOUT inserting a reservation.
@@ -312,8 +393,8 @@ class BaseDataLayer(ABC):
         """
 
     @abstractmethod
-    async def record_token_usage(self, user_id: str, tokens: int) -> None:
-        """Persist a token usage record for user_id."""
+    async def record_token_usage(self, quota_key: str, tokens: int) -> None:
+        """Persist a token usage record for quota_key."""
 
     # --- Lifecycle ---
 

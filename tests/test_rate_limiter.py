@@ -91,7 +91,7 @@ async def test_blocks_on_most_restrictive_window(config: RateLimitConfig) -> Non
     """The shortest violated window is reported, not a longer one."""
     now = datetime.now(UTC)
 
-    async def _reserve(user_id, window_params, estimated, user_limits):
+    async def _reserve(quota_key, window_params, estimated, user_limits):
         # 8H window: fine (0 tokens)
         # 7D window: violated (49500 used + 1000 est > 50000)
         # 30D window: fine
@@ -165,7 +165,7 @@ async def test_resets_at_calculated_correctly(config: RateLimitConfig) -> None:
     """resets_at = oldest record timestamp + window duration."""
     oldest = datetime(2026, 3, 9, 10, 0, 0, tzinfo=UTC)
 
-    async def _reserve(user_id, window_params, estimated, user_limits):
+    async def _reserve(quota_key, window_params, estimated, user_limits):
         return [WindowStats(total_tokens=9_500, oldest_recorded_at=oldest)] * 3
 
     layer = AsyncMock()

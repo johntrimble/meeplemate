@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Optional, cast
 from uuid import UUID
 
+import structlog
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -18,16 +19,29 @@ from meeplemate.db.datalayer import (
     PageInfo,
     Pagination,
     PaginatedResponse,
+    PurgeSummary,
     UserRecord,
     WindowStats,
 )
 from meeplemate.db.models import AppUser, Chat, ChatMessage, ChatMessagePart, TokenUsage
 
+log = structlog.get_logger(__name__)
 
-def _user_lock_key(user_id: str) -> int:
+
+def _quota_lock_key(quota_key: str) -> int:
     """Deterministic 63-bit positive integer for pg_advisory_xact_lock."""
-    digest = hashlib.blake2b(user_id.encode(), digest_size=8).digest()
+    digest = hashlib.blake2b(quota_key.encode(), digest_size=8).digest()
     return int.from_bytes(digest, "big") & 0x7FFFFFFFFFFFFFFF
+
+
+def _to_user_record(row: AppUser) -> UserRecord:
+    return UserRecord(
+        uid=str(row.user_id),
+        email=row.email,
+        name=row.name,
+        deleted_at=row.deleted_at,
+        metadata=dict(row.metadata_ or {}),
+    )
 
 
 def _encode_cursor(dt: Any) -> str:
@@ -306,35 +320,136 @@ class PostgresDataLayer(BaseDataLayer):
 
     async def upsert_user(self, uid: str, email: Optional[str], name: Optional[str]) -> UserRecord:
         async with self._session_factory() as session:
-            stmt = (
+            row = (
+                await session.execute(select(AppUser).where(AppUser.user_id == uid))
+            ).scalar_one_or_none()
+
+            if row is not None:
+                # Read-before-write: this runs on every user-scoped request, so
+                # an unchanged user must not cost a write. Soft-deleted rows are
+                # returned untouched — the caller rejects them, and syncing
+                # profile fields onto a deleted account would be pointless.
+                if row.deleted_at is None:
+                    changed = {}
+                    if row.email != email:
+                        changed["email"] = email
+                    if row.name != name:
+                        changed["name"] = name
+                    if changed:
+                        await session.execute(
+                            AppUser.__table__.update()
+                            .where(AppUser.user_id == uid)
+                            .values(**changed)
+                        )
+                        await session.commit()
+                        await session.refresh(row)
+                return _to_user_record(row)
+
+            # First time we've seen this uid. Insert-if-absent rather than a
+            # plain INSERT: the frontend fires several account-scoped requests
+            # in parallel right after sign-in, so two of them can both find no
+            # row and race here, and a bare insert would lose one to a primary
+            # key violation — a 500 on the user's very first request. Same
+            # pattern as ensure_chat.
+            await session.execute(
                 pg_insert(AppUser)
                 .values(user_id=uid, email=email, name=name)
-                .on_conflict_do_update(
-                    index_elements=["user_id"],
-                    set_={"email": email, "name": name},
-                )
-                .returning(AppUser)
+                .on_conflict_do_nothing(index_elements=[AppUser.user_id])
             )
-            result = await session.execute(stmt)
-            row = result.scalar_one()
             await session.commit()
-            return UserRecord(
-                uid=str(row.user_id),
-                email=row.email,
-                name=row.name,
-                metadata=dict(row.metadata_ or {}),
+            row = (
+                await session.execute(select(AppUser).where(AppUser.user_id == uid))
+            ).scalar_one()
+            return _to_user_record(row)
+
+    async def soft_delete_user(self, uid: str) -> bool:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                AppUser.__table__.update()
+                .where(AppUser.user_id == uid, AppUser.deleted_at.is_(None))
+                .values(deleted_at=func.now())
             )
+            await session.commit()
+            return result.rowcount > 0
+
+    async def purge_deleted_users(
+        self, older_than: datetime, *, dry_run: bool = True
+    ) -> list[PurgeSummary]:
+        async with self._session_factory() as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(AppUser)
+                        .where(
+                            AppUser.deleted_at.isnot(None),
+                            AppUser.deleted_at < older_than,
+                        )
+                        .order_by(AppUser.deleted_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            summaries: list[PurgeSummary] = []
+            for row in rows:
+                chat_ids = list(
+                    (
+                        await session.execute(
+                            select(Chat.chat_id).where(Chat.user_id == row.user_id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                messages = 0
+                if chat_ids:
+                    messages = int(
+                        (
+                            await session.execute(
+                                select(func.count())
+                                .select_from(ChatMessage)
+                                .where(ChatMessage.chat_id.in_(chat_ids))
+                            )
+                        ).scalar_one()
+                    )
+                summaries.append(
+                    PurgeSummary(
+                        uid=str(row.user_id),
+                        email=row.email,
+                        deleted_at=row.deleted_at,
+                        chats=len(chat_ids),
+                        messages=messages,
+                    )
+                )
+
+                if not dry_run:
+                    # chat_message has no FK to chat so it doesn't cascade;
+                    # parts do cascade from chat_message, and chat cascades from
+                    # app_user. token_usage is left alone on purpose — see the
+                    # interface docstring.
+                    if chat_ids:
+                        await session.execute(
+                            delete(ChatMessage).where(ChatMessage.chat_id.in_(chat_ids))
+                        )
+                    await session.execute(
+                        delete(AppUser).where(AppUser.user_id == row.user_id)
+                    )
+
+            if not dry_run:
+                await session.commit()
+            return summaries
 
     # --- Token usage ---
 
-    async def get_window_stats(self, user_id: str, since: datetime) -> WindowStats:
+    async def get_window_stats(self, quota_key: str, since: datetime) -> WindowStats:
         async with self._session_factory() as session:
             result = await session.execute(
                 select(
                     func.coalesce(func.sum(TokenUsage.tokens_used), 0),
                     func.min(TokenUsage.recorded_at),
                 ).where(
-                    TokenUsage.user_id == user_id,
+                    TokenUsage.quota_key == quota_key,
                     TokenUsage.recorded_at >= since,
                 )
             )
@@ -354,12 +469,12 @@ class PostgresDataLayer(BaseDataLayer):
 
     async def check_and_reserve_user(
         self,
-        user_id: str,
+        quota_key: str,
         window_params: list[tuple[str, datetime]],
         estimated: int,
         user_limits: dict[str, int],
     ) -> list[WindowStats]:
-        lock_key = _user_lock_key(user_id)
+        lock_key = _quota_lock_key(quota_key)
         async with self._session_factory() as session:
             await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
 
@@ -371,7 +486,7 @@ class PostgresDataLayer(BaseDataLayer):
                         func.coalesce(func.sum(TokenUsage.tokens_used), 0),
                         func.min(TokenUsage.recorded_at),
                     ).where(
-                        TokenUsage.user_id == user_id,
+                        TokenUsage.quota_key == quota_key,
                         TokenUsage.recorded_at >= since,
                     )
                 )
@@ -382,14 +497,14 @@ class PostgresDataLayer(BaseDataLayer):
                     violated = True
 
             if not violated:
-                session.add(TokenUsage(user_id=user_id, tokens_used=estimated))
+                session.add(TokenUsage(quota_key=quota_key, tokens_used=estimated))
 
             await session.commit()
             return stats
 
-    async def record_token_usage(self, user_id: str, tokens: int) -> None:
+    async def record_token_usage(self, quota_key: str, tokens: int) -> None:
         async with self._session_factory() as session:
-            session.add(TokenUsage(user_id=user_id, tokens_used=tokens))
+            session.add(TokenUsage(quota_key=quota_key, tokens_used=tokens))
             await session.commit()
 
     # --- Lifecycle ---

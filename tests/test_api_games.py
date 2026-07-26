@@ -13,10 +13,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from meeplemate.db.datalayer import UserRecord
 from meeplemate.server.auth import AuthUser, get_current_user
 from meeplemate.server.deps import ApiDeps, CorsConfig
-from meeplemate.server.rate_limit import RateLimitConfig, RateLimiter, get_db_user
+from meeplemate.server.rate_limit import RateLimitConfig, RateLimiter
 
 CATAN = {"game_id": "catan", "name": "Catan", "emoji": "🏝️", "background_color": "#92400e"}
 
@@ -54,17 +53,41 @@ def test_get_game_requires_auth(games_app):
         assert client.get("/api/games/catan").status_code == 401
 
 
-def test_get_games_returns_catalog_when_authed(games_app):
-    """With a valid principal (as the deploy's minted token provides) it returns the catalog."""
-    games_app.dependency_overrides[get_current_user] = lambda: AuthUser(
-        uid="deploy-bot", email=None, name="Deploy Bot"
-    )
-    games_app.dependency_overrides[get_db_user] = lambda: UserRecord(
-        uid="deploy-bot", email=None, name="Deploy Bot", metadata={}
-    )
+def _deploy_bot() -> AuthUser:
+    """The principal the deploy pipeline actually presents.
+
+    `mint-id-token.mjs` signs a custom token for a synthetic uid and exchanges it
+    via signInWithCustomToken, so the claims carry no email at all — see
+    reference_repositories/meeplemate-infra.
+    """
+    return AuthUser(uid="deploy-bot", email=None, name=None)
+
+
+def test_get_games_returns_catalog_when_authed(games_app, mock_data_layer):
+    """The catalog is reachable with only a valid token — no account required.
+
+    Deliberately does NOT override any db-user dependency: `/api/games` is not
+    user-scoped, and the deploy bot has no `app_user` row. Resolving an account
+    here would mint a junk row on every deploy, so if someone "upgrades" this
+    endpoint to get_db_user, this test is what fails.
+    """
+    games_app.dependency_overrides[get_current_user] = _deploy_bot
+
     with TestClient(games_app) as client:
         resp = client.get("/api/games?first=100")
         assert resp.status_code == 200
         body = resp.json()
         assert [g["id"] for g in body["data"]] == ["catan"]
         assert body["pageInfo"]["hasNextPage"] is False
+
+    mock_data_layer.upsert_user.assert_not_awaited()
+
+
+def test_get_game_returns_manifest_for_accountless_token(games_app, mock_data_layer):
+    """Same invariant for the single-game endpoint the deploy may also hit."""
+    games_app.dependency_overrides[get_current_user] = _deploy_bot
+
+    with TestClient(games_app) as client:
+        assert client.get("/api/games/catan").status_code == 200
+
+    mock_data_layer.upsert_user.assert_not_awaited()

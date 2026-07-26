@@ -9,6 +9,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 from uuid import UUID
 
+from conftest import TEST_FIREBASE_UID
+
 from fastapi.testclient import TestClient
 
 CHAT_ID = "00000000-0000-0000-0000-000000000001"
@@ -22,7 +24,7 @@ async def _empty_astream(*args, **kwargs):
     yield  # make it a generator
 
 
-def _owned_chat(user_id: str = "test-uid", game_id: str = "test-game") -> dict:
+def _owned_chat(user_id: str = TEST_FIREBASE_UID, game_id: str = "test-game") -> dict:
     return {
         "chat_id": CHAT_ID,
         "game_id": game_id,
@@ -44,7 +46,7 @@ def test_stream_creates_chat_and_saves_user_message(api_client: TestClient, mock
 
     assert resp.status_code == 200
     mock_data_layer.ensure_chat.assert_called_once_with(
-        chat_id=UUID(CHAT_ID), game_id="test-game", user_id="test-uid"
+        chat_id=UUID(CHAT_ID), game_id="test-game", user_id=TEST_FIREBASE_UID
     )
     # The new user message is persisted (plus the assistant message afterwards).
     user_saves = [c for c in mock_data_layer.save_message.call_args_list if c.kwargs.get("role") == "user"]

@@ -11,6 +11,7 @@ Bypass mode (MM_AUTH_BYPASS=true):
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -43,6 +44,10 @@ class AuthUser:
 # ---------------------------------------------------------------------------
 
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _bypass_enabled() -> bool:
+    return os.environ.get("MM_AUTH_BYPASS", "").lower() in ("1", "true", "yes")
 
 
 @lru_cache(maxsize=1)
@@ -85,7 +90,7 @@ async def get_current_user(
     Raises HTTP 401 if the token is missing or invalid.
     """
     # --- Bypass mode ---
-    if os.environ.get("MM_AUTH_BYPASS", "").lower() in ("1", "true", "yes"):
+    if _bypass_enabled():
         raw = os.environ.get("MM_AUTH_BYPASS_USER", '{"uid":"bypass","email":null,"name":"Bypass User"}')
         data = json.loads(raw)
         return AuthUser(uid=data["uid"], email=data.get("email"), name=data.get("name"))
@@ -135,3 +140,35 @@ async def get_current_user(
         email=decoded.get("email"),
         name=decoded.get("name"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Account deletion
+# ---------------------------------------------------------------------------
+
+
+async def delete_firebase_user(uid: str) -> None:
+    """Delete the Firebase Auth user, so their credentials stop working.
+
+    Idempotent: a uid that is already gone is treated as success, so the caller
+    can safely retry after a partial failure. Anything else propagates.
+
+    No-op in bypass mode, which has no Firebase project to talk to.
+    """
+    if _bypass_enabled():
+        log.info("auth.delete_user_skipped_bypass", uid=uid)
+        return
+
+    try:
+        app = firebase_admin.get_app()
+    except ValueError:
+        app = _get_firebase_app()
+
+    def _delete() -> None:
+        try:
+            firebase_admin.auth.delete_user(uid, app=app)
+        except firebase_admin.auth.UserNotFoundError:
+            log.info("auth.delete_user_already_gone", uid=uid)
+
+    # The Admin SDK is blocking; keep it off the event loop.
+    await asyncio.to_thread(_delete)

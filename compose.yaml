@@ -311,6 +311,11 @@ services:
     - 9099:9099 # Firebase Auth Emulator
     build:
       context: ./services/firebase-emulator/
+    volumes:
+    # Keeps emulator users across restarts. Without it every restart mints new
+    # uids for the same people, which creates duplicate accounts — see the
+    # Dockerfile.
+    - firebase_emulator_data:/data
 
   postgres:
     image: pgvector/pgvector:pg18
@@ -323,3 +328,4 @@ services:
 volumes:
   claude_data:
   pgdata:
+  firebase_emulator_data:
