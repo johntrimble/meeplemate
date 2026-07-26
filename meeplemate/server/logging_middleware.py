@@ -12,6 +12,7 @@ user, or the chat being streamed — those only exist inside the application.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Optional
 from uuid import uuid4
@@ -22,6 +23,35 @@ logger = structlog.get_logger(__name__)
 
 REQUEST_ID_HEADER = b"x-request-id"
 CLOUD_TRACE_HEADER = b"x-cloud-trace-context"
+
+# Generous for a correlation id — a uuid4 hex is 32, and the longest thing anyone
+# reasonably propagates (a W3C traceparent) is 55.
+MAX_REQUEST_ID_LENGTH = 128
+
+# Deliberately narrow: the printable set actually used by correlation ids in the
+# wild (hex, uuids, ULIDs, prefixed ids like "web-01H..."). Anything outside it is
+# far more likely to be junk than a real id.
+_SAFE_REQUEST_ID = re.compile(r"\A[A-Za-z0-9._:@+-]{1,%d}\Z" % MAX_REQUEST_ID_LENGTH)
+
+
+def sanitize_request_id(value: Optional[str]) -> Optional[str]:
+    """Return ``value`` if it is a safe correlation id, else None.
+
+    A client-supplied id is echoed back in a response header *and* bound onto every
+    log line for the request, so it is unbounded attacker-controlled data sitting in
+    a hot path. An oversized id is the real problem: at 8 KB it turns a ~400-byte log
+    record into an ~8.6 KB one, multiplied by every line the request emits, and Cloud
+    Logging bills by volume and truncates entries past 256 KB.
+
+    Header *injection* is not the concern it looks like — h11 rejects NUL and bare LF
+    on the way in with a 400, splits CRLF into a separate header so it never reaches
+    this value, and validates outbound header values too. But that safety is an
+    undocumented property of a transitive dependency; this makes it explicit and
+    bounded rather than incidental.
+    """
+    if value is None:
+        return None
+    return value if _SAFE_REQUEST_ID.match(value) else None
 
 
 def parse_cloud_trace_context(value: str) -> tuple[Optional[str], Optional[str], Optional[bool]]:
@@ -104,8 +134,12 @@ class RequestContextMiddleware:
         )
         # Honour a client-supplied request id so a trace can be followed across the
         # frontend boundary; otherwise mint one. Always present, which means local
-        # dev and tests get correlation even with no Cloud Run trace header.
-        request_id = _header(scope, REQUEST_ID_HEADER) or uuid4().hex
+        # dev and tests get correlation even with no Cloud Run trace header. An
+        # unsafe value is discarded rather than rejected — a bad correlation id is
+        # not worth failing a request over.
+        request_id = (
+            sanitize_request_id(_header(scope, REQUEST_ID_HEADER)) or uuid4().hex
+        )
 
         context: dict[str, object] = {
             "request_id": request_id,

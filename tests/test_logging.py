@@ -21,8 +21,10 @@ from meeplemate.logging_config import (
     resolve_format,
 )
 from meeplemate.server.logging_middleware import (
+    MAX_REQUEST_ID_LENGTH,
     RequestContextMiddleware,
     parse_cloud_trace_context,
+    sanitize_request_id,
 )
 
 
@@ -278,6 +280,77 @@ def test_response_carries_generated_request_id(api_client):
 def test_supplied_request_id_is_echoed_back(api_client):
     response = api_client.get(CHAT_URL, headers={"X-Request-Id": "client-supplied-id"})
     assert response.headers["x-request-id"] == "client-supplied-id"
+
+
+# ---------------------------------------------------------------------------
+# Request-id sanitisation
+# ---------------------------------------------------------------------------
+#
+# The client-supplied id is echoed into a response header AND bound onto every log
+# line of the request, so an oversized one multiplies log volume by every record
+# the request emits.
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "abc123",
+        "a" * MAX_REQUEST_ID_LENGTH,
+        "01H8XGJWBWBAQ4TT1S2F2S6NQ7",           # ULID
+        "550e8400-e29b-41d4-a716-446655440000",  # uuid with dashes
+        "web-01H8.svc:1+a@b",                    # prefixed / structured ids
+    ],
+)
+def test_sanitize_accepts_real_correlation_ids(value):
+    assert sanitize_request_id(value) == value
+
+
+@pytest.mark.parametrize(
+    "value,why",
+    [
+        ("a" * (MAX_REQUEST_ID_LENGTH + 1), "over the length cap"),
+        ("A" * 8192, "the log-bloat case: 8KB id on every line"),
+        ("", "empty"),
+        ("abc def", "space"),
+        ("abc\x7fdef", "DEL: h11 passes it through both ways"),
+        ("abc\r\ndef", "CRLF"),
+        ("abc\x00def", "NUL"),
+        ("naïve-id", "non-ascii"),
+        ("<script>", "punctuation outside the safe set"),
+    ],
+)
+def test_sanitize_rejects_unsafe_ids(value, why):
+    assert sanitize_request_id(value) is None, why
+
+
+def test_sanitize_passes_through_none():
+    assert sanitize_request_id(None) is None
+
+
+@pytest.mark.asyncio
+async def test_oversized_request_id_is_replaced_not_echoed():
+    """An unsafe id must not reach the response header or the log context."""
+    oversized = "A" * 8192
+    headers = await _drive_middleware(
+        downstream_headers=[],
+        request_headers=[(b"x-request-id", oversized.encode())],
+    )
+
+    ids = [v for k, v in headers if k.lower() == b"x-request-id"]
+    assert len(ids) == 1
+    echoed = ids[0].decode()
+    assert echoed != oversized
+    assert len(echoed) == 32  # a freshly minted uuid4 hex
+
+
+@pytest.mark.asyncio
+async def test_unsafe_request_id_does_not_fail_the_request():
+    """A bad correlation id is not worth failing a request over."""
+    headers = await _drive_middleware(
+        downstream_headers=[(b"content-type", b"text/plain")],
+        request_headers=[(b"x-request-id", b"abc\x7fdef")],
+    )
+    assert (b"content-type", b"text/plain") in headers
 
 
 async def _drive_middleware(downstream_headers: list[tuple[bytes, bytes]],
