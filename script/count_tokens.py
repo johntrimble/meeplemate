@@ -31,7 +31,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUN_GROUPS = PROJECT_ROOT / "data" / "evals" / "generation_runs"
 
-# Prices used by calc_token_limits() in meeplemate/server/rate_limit.py.
+# Keep in step with cost_per_m_input_usd / cost_per_m_output_usd on
+# RateLimitConfig in meeplemate/server/rate_limit.py, so the costs reported here
+# match what the rate limiter charges.
 # Qwen3 30b a3b token costs
 # COST_PER_M_INPUT = 0.10
 # COST_PER_M_OUTPUT = 0.30

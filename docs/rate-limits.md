@@ -245,7 +245,7 @@ RateLimit-Policy: 800000;w=28800, 857143;w=604800, 2857143;w=2592000
 ## Gotchas
 
 - **Derived values cannot be set.** Assigning `user_8h`, `app_30d`, `output_token_multiplier`, or `estimated_tokens_per_request` is silently ignored — pydantic drops unknown keys. Set the budget, prices, and shares instead.
-- **Two validators run at construction.** `share_8h > share_7d` is rejected (the 7D window would never bind), as is a per-user quota exceeding the app-wide quota for the same window (the user limit could never be reached).
+- **Validation at construction.** `share_8h > share_7d` is rejected outright — the 7D window would never bind. A per-user quota *above* the app-wide quota for the same window only logs a warning: the app limit binds first, which is redundant rather than wrong, and is a reasonable way to run with per-user limiting effectively off (set both budgets equally high).
 - **Failed requests still consume quota.** If a stream errors before usage is recorded, the up-front reservation stays charged. Conservative rather than exploitable.
 - **The app-wide check is racy by design.** No lock and no reservation, so a burst of concurrent requests can collectively overshoot the app ceiling by up to N × `estimated_tokens_per_request`.
 - **Usage is stored append-only** in `token_usage` and aggregated on read, so windows are true rolling windows rather than fixed calendar buckets.

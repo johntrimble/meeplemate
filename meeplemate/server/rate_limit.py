@@ -49,9 +49,10 @@ class RateLimitConfig(BaseModel):
     and the provider's token prices, and the three window quotas and the output
     weight all follow.
 
-    The ``*_budget_30d_usd`` caps are the real limiters — each is a spend
-    ceiling, expressed in tokens.  The 8H and 7D quotas exist only to control
-    how fast that ceiling can be reached, so each is written as the share of
+    The ``*_budget_30d_usd`` caps are the real limiters: each is a spend
+    ceiling in USD, which the 30D quota restates in tokens at the input price.
+    The 8H and 7D quotas exist only to control how fast that ceiling can be
+    reached, so each is written as the share of
     the 30D cap that one window may spend.  A share equal to the window's own
     fraction of the month (8H = 1.1%, 7D = 23.3%) is even pacing; more permits
     bursting, and the shares must be ordered ``8H <= 7D <= 100%``.
@@ -199,14 +200,16 @@ class RateLimitConfig(BaseModel):
                     f"{scope}_share_8h ({share_8h:.1%}) exceeds {scope}_share_7d "
                     f"({share_7d:.1%}); the 7D window would never bind"
                 )
-        # A per-user quota above the app-wide one for the same window can never
-        # be reached, so the user limit would be silently inoperative.
+        # A per-user quota above the app-wide one for the same window is
+        # redundant rather than wrong — the app limit simply binds first — and
+        # it is a reasonable way to run with per-user limiting effectively off.
+        # Worth surfacing, not worth refusing to start over.
         for window in ("8H", "7D", "30D"):
             if self.user_limit(window) > self.app_limit(window):
-                raise ValueError(
-                    f"user {window} quota ({self.user_limit(window):,}) exceeds the app-wide "
-                    f"one ({self.app_limit(window):,}); raise app_budget_30d_usd or lower "
-                    f"user_budget_30d_usd"
+                logger.warning(
+                    "Per-user %s quota (%s) exceeds the app-wide one (%s); the app-wide "
+                    "limit will bind first and the per-user limit will never apply.",
+                    window, f"{self.user_limit(window):,}", f"{self.app_limit(window):,}",
                 )
         return self
 
@@ -226,8 +229,10 @@ class TokenCountingCallback(BaseCallbackHandler):
 
     Output (completion) tokens are weighted by ``output_token_multiplier`` to
     reflect their higher cost relative to input tokens, so the running total is
-    in input-token-equivalents: at the multiplier ``derive_user_limits()``
-    picks, it converts to dollars at a fixed rate whatever the mix.
+    in input-token-equivalents.  ``api.py`` passes
+    ``RateLimitConfig.output_token_multiplier``, which is the output/input
+    price ratio, so the total converts to dollars at a fixed rate whatever the
+    input/output mix.
 
     Falls back to ``estimated`` if no real usage data is reported by the model.
     """
