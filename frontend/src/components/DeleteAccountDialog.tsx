@@ -46,14 +46,25 @@ export function DeleteAccountDialog({
   const canDelete =
     email.length > 0 && confirmation.trim().toLowerCase() === email.toLowerCase()
 
-  // Reset on close so reopening never starts out pre-confirmed or showing a
-  // stale error from a previous attempt.
+  // Reset on close so reopening never starts out pre-confirmed, showing a stale
+  // error, or stuck disabled from a previous attempt.
   useEffect(() => {
     if (!open) {
       setConfirmation('')
       setError(null)
+      setIsDeleting(false)
     }
   }, [open])
+
+  // Ignore dismissal while the request is in flight - Escape, overlay click and
+  // the X all route through here. Two reasons: the request can legitimately run
+  // for up to 90s (authFetch retries Cloud Run cold starts), which would leave a
+  // reopened dialog disabled with no way out; and dismissing would imply the
+  // deletion was cancelled when the server may already have flagged the account.
+  const handleOpenChange = (next: boolean) => {
+    if (!next && isDeleting) return
+    onOpenChange(next)
+  }
 
   const handleDelete = async () => {
     if (!canDelete || isDeleting) return
@@ -75,8 +86,9 @@ export function DeleteAccountDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      {/* Hide the X while deleting rather than leaving one that does nothing. */}
+      <DialogContent className="sm:max-w-md" showCloseButton={!isDeleting}>
         <DialogHeader>
           <DialogTitle>Delete account</DialogTitle>
           <DialogDescription asChild>
