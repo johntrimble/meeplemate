@@ -20,7 +20,10 @@ from meeplemate.logging_config import (
     configure_logging,
     resolve_format,
 )
-from meeplemate.server.logging_middleware import parse_cloud_trace_context
+from meeplemate.server.logging_middleware import (
+    RequestContextMiddleware,
+    parse_cloud_trace_context,
+)
 
 
 @pytest.fixture
@@ -103,8 +106,13 @@ def test_trace_context_becomes_cloud_logging_fields(json_logs):
     assert "span_id" not in record
 
 
-def test_trace_id_kept_plain_when_project_id_unknown(monkeypatch):
-    """Without a project id we must not emit a malformed special field."""
+def test_trace_fields_kept_plain_when_project_id_unknown(monkeypatch):
+    """Without a project id, *no* logging.googleapis.com/* trace key may appear.
+
+    The three keys are a unit. A spanId or trace_sampled flag promoted without a
+    `logging.googleapis.com/trace` to anchor it puts a value on the LogEntry that
+    nothing can be joined to.
+    """
     monkeypatch.delenv("K_SERVICE", raising=False)
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     monkeypatch.delenv("GCP_PROJECT", raising=False)
@@ -116,14 +124,19 @@ def test_trace_id_kept_plain_when_project_id_unknown(monkeypatch):
     logging.getLogger().handlers[0].stream = buffer
 
     structlog.contextvars.clear_contextvars()
-    structlog.contextvars.bind_contextvars(trace_id="abc123")
+    # Exactly what the middleware binds from a real X-Cloud-Trace-Context header.
+    structlog.contextvars.bind_contextvars(
+        trace_id="abc123", span_id="span9", trace_sampled=True
+    )
     structlog.get_logger("t").info("evt")
     structlog.contextvars.clear_contextvars()
     _resolve_gcp_project_id.cache_clear()
 
     record = json.loads(buffer.getvalue().strip())
-    assert "logging.googleapis.com/trace" not in record
+    assert not [k for k in record if k.startswith("logging.googleapis.com/")]
     assert record["trace_id"] == "abc123"
+    assert record["span_id"] == "span9"
+    assert record["trace_sampled"] is True
 
 
 def test_every_record_is_exactly_one_line(json_logs):
@@ -251,6 +264,72 @@ def test_response_carries_generated_request_id(api_client):
 def test_supplied_request_id_is_echoed_back(api_client):
     response = api_client.get(CHAT_URL, headers={"X-Request-Id": "client-supplied-id"})
     assert response.headers["x-request-id"] == "client-supplied-id"
+
+
+async def _drive_middleware(downstream_headers: list[tuple[bytes, bytes]],
+                            request_headers: list[tuple[bytes, bytes]]):
+    """Run RequestContextMiddleware over a stub app and return the sent headers."""
+    async def downstream_app(scope, receive, send):
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": list(downstream_headers),
+        })
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/x",
+        "scheme": "http",
+        "http_version": "1.1",
+        "query_string": b"",
+        "headers": request_headers,
+        "client": ("1.2.3.4", 1234),
+    }
+    await RequestContextMiddleware(downstream_app)(scope, receive, send)
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    return start["headers"]
+
+
+@pytest.mark.asyncio
+async def test_existing_request_id_response_header_is_replaced_not_duplicated():
+    """A downstream x-request-id must be replaced, never appended alongside ours.
+
+    ASGI headers are a list, so appending blindly emits the header twice, and
+    intermediaries disagree on whether first or last wins for a singleton header.
+    """
+    headers = await _drive_middleware(
+        # A handler further down the stack setting its own id.
+        downstream_headers=[(b"content-type", b"application/json"),
+                            (b"x-request-id", b"downstream-value")],
+        request_headers=[(b"x-request-id", b"ours")],
+    )
+
+    ids = [v for k, v in headers if k.lower() == b"x-request-id"]
+    assert ids == [b"ours"], f"expected exactly our id, got {ids}"
+    # Unrelated headers must survive the rebuild.
+    assert (b"content-type", b"application/json") in headers
+
+
+@pytest.mark.asyncio
+async def test_other_response_headers_are_untouched():
+    headers = await _drive_middleware(
+        downstream_headers=[(b"x-vercel-ai-ui-message-stream", b"v1"),
+                            (b"ratelimit-limit", b"100")],
+        request_headers=[],
+    )
+    assert (b"x-vercel-ai-ui-message-stream", b"v1") in headers
+    assert (b"ratelimit-limit", b"100") in headers
+    assert len([1 for k, _ in headers if k.lower() == b"x-request-id"]) == 1
 
 
 def test_request_context_is_bound_for_the_whole_request(api_client):

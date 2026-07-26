@@ -121,8 +121,16 @@ class RequestContextMiddleware:
             if message["type"] == "http.response.start":
                 status_code = message["status"]
                 # Echo the request id so a user-reported failure can be looked up
-                # directly in Cloud Logging.
-                headers = list(message.get("headers", []))
+                # directly in Cloud Logging. Drop any existing value first: ASGI
+                # headers are a list, so appending blindly would emit the header
+                # twice, and intermediaries disagree on whether first or last wins
+                # for a singleton header. This middleware is the authority here —
+                # our id is the one that was actually logged.
+                headers = [
+                    (key, value)
+                    for key, value in message.get("headers", [])
+                    if key.lower() != REQUEST_ID_HEADER
+                ]
                 headers.append((REQUEST_ID_HEADER, request_id.encode("latin-1")))
                 message = {**message, "headers": headers}
             elif message["type"] == "http.response.body":

@@ -166,19 +166,25 @@ def _make_trace_processor(project_id: Optional[str]):
         span_id = event_dict.pop("span_id", None)
         sampled = event_dict.pop("trace_sampled", None)
 
+        # All three keys are promoted or none of them are. A spanId or a sampled
+        # flag without a `logging.googleapis.com/trace` to anchor it populates the
+        # LogEntry with a value nothing can be joined to, so when the project id is
+        # unknown they stay plain, searchable fields instead.
         if trace_id and project_id:
             event_dict["logging.googleapis.com/trace"] = (
                 f"projects/{project_id}/traces/{trace_id}"
             )
-        elif trace_id:
-            # No project id to qualify it with; keep it as a plain searchable field
-            # rather than emitting a malformed special field.
-            event_dict["trace_id"] = trace_id
-
-        if span_id:
-            event_dict["logging.googleapis.com/spanId"] = span_id
-        if sampled is not None:
-            event_dict["logging.googleapis.com/trace_sampled"] = bool(sampled)
+            if span_id:
+                event_dict["logging.googleapis.com/spanId"] = span_id
+            if sampled is not None:
+                event_dict["logging.googleapis.com/trace_sampled"] = bool(sampled)
+        else:
+            if trace_id:
+                event_dict["trace_id"] = trace_id
+            if span_id:
+                event_dict["span_id"] = span_id
+            if sampled is not None:
+                event_dict["trace_sampled"] = bool(sampled)
 
         return event_dict
 
