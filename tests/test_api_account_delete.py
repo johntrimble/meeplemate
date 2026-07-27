@@ -1,16 +1,10 @@
 """Tests for DELETE /api/account."""
 from unittest.mock import AsyncMock
 
-import pytest
 from conftest import TEST_FIREBASE_UID
 
-
-@pytest.fixture
-def fake_firebase_delete(monkeypatch) -> AsyncMock:
-    """Stub out the Firebase Admin call, which would otherwise hit the network."""
-    stub = AsyncMock()
-    monkeypatch.setattr("meeplemate.server.api.delete_firebase_user", stub)
-    return stub
+# `fake_firebase_delete` lives in conftest.py — every test that reaches this
+# endpoint needs it, not just the ones in this file.
 
 
 def test_delete_account_flags_row_and_removes_firebase_user(

@@ -151,7 +151,9 @@ def test_ignores_a_client_claiming_a_future_version(api_client, mock_data_layer)
     mock_data_layer.record_legal_acceptance.assert_not_awaited()
 
 
-def test_account_deletion_works_without_acceptance(api_client, mock_data_layer):
+def test_account_deletion_works_without_acceptance(
+    api_client, mock_data_layer, fake_firebase_delete
+):
     """The decline path. `DELETE /api/account` depends on
     `get_db_user_allow_deleted`, which never runs the acceptance check, so a
     user who refuses the terms can still get their account removed."""

@@ -78,6 +78,21 @@ def mock_user() -> UserRecord:
 
 
 @pytest.fixture
+def fake_firebase_delete(monkeypatch) -> AsyncMock:
+    """Stub out the Firebase Admin call behind `DELETE /api/account`.
+
+    Any test touching that endpoint needs this. Without it the handler reaches
+    `_get_firebase_app()`, which constructs a real `Config()` — that reads the
+    environment, so the test passes on a developer machine with `MM_*` set and
+    fails in CI with a pydantic validation error for the missing chat/embedding
+    settings. Shared from here so the next such test doesn't rediscover it.
+    """
+    stub = AsyncMock()
+    monkeypatch.setattr("meeplemate.server.api.delete_firebase_user", stub)
+    return stub
+
+
+@pytest.fixture
 def mock_data_layer() -> AsyncMock:
     layer = AsyncMock()
     layer.upsert_user.return_value = _test_user_record()
