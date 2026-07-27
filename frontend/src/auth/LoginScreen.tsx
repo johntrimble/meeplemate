@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
+import { ExternalLink } from '@/components/ExternalLink'
 import { Input } from '@/components/ui/input'
 import { useAuth } from './useAuth'
 
@@ -52,13 +52,17 @@ export function LoginScreen() {
           against. */}
       <p className="max-w-xs px-6 text-center text-xs text-muted-foreground">
         By signing in you agree to our{' '}
-        <Link to="/terms" className="underline underline-offset-2">
+        {/* New tab, like the account menu and the consent screen. This screen
+            renders inline from CacheGate at whatever gated URL was requested,
+            so navigating away in-tab would discard the very route the user was
+            trying to reach. */}
+        <ExternalLink href="/terms/" className="underline underline-offset-2">
           Terms of Use
-        </Link>{' '}
+        </ExternalLink>{' '}
         and{' '}
-        <Link to="/privacy" className="underline underline-offset-2">
+        <ExternalLink href="/privacy/" className="underline underline-offset-2">
           Privacy Policy
-        </Link>
+        </ExternalLink>
         .
       </p>
     </div>

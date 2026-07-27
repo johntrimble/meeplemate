@@ -2,6 +2,7 @@ import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vite'
+import { legalPages } from './scripts/legal-pages'
 
 /**
  * Dev-only plugin that simulates a Cloud Run cold start so a developer can see
@@ -37,7 +38,7 @@ function simulateColdStart(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), simulateColdStart()],
+  plugins: [react(), tailwindcss(), simulateColdStart(), legalPages()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

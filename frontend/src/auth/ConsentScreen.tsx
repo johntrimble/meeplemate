@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Spinner } from '@/components/ui/spinner'
 import { DeleteAccountDialog } from '@/components/DeleteAccountDialog'
+import { ExternalLink } from '@/components/ExternalLink'
 import { useSlowLoading } from '@/hooks/useSlowLoading'
 import { TERMS_VERSION, PRIVACY_VERSION, writeAcceptance } from '@/lib/legal'
 import type { AcceptanceState } from '@/lib/legal'
@@ -127,23 +128,13 @@ export function ConsentScreen({
               I am at least 13 years old and I agree to the{' '}
               {/* New tab so opening a document doesn't tear down this screen
                   and lose the checkbox state. */}
-              <a
-                href="/terms"
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium underline underline-offset-2"
-              >
+              <ExternalLink href="/terms/" className="font-medium underline underline-offset-2">
                 Terms of Use
-              </a>{' '}
+              </ExternalLink>{' '}
               and{' '}
-              <a
-                href="/privacy"
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium underline underline-offset-2"
-              >
+              <ExternalLink href="/privacy/" className="font-medium underline underline-offset-2">
                 Privacy Policy
-              </a>
+              </ExternalLink>
               .
             </span>
           </label>

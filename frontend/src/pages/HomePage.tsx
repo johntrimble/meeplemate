@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { motion, useReducedMotion } from 'motion/react'
 import { ArrowRightIcon, BadgeCheckIcon, DicesIcon, MessageCircleQuestionIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -242,13 +242,16 @@ export default function HomePage() {
             the path Google's OAuth brand review follows from the homepage. */}
         <footer className="flex flex-col items-center gap-3 border-t border-border pt-8 text-xs text-muted-foreground sm:flex-row sm:justify-between">
           <span>© {new Date().getFullYear()} Boardbarian</span>
+          {/* Plain anchors, not react-router Links: these are pre-rendered
+              static pages outside the SPA, so a client-side navigation would
+              find no route and fall through to the 404. */}
           <nav className="flex items-center gap-4">
-            <Link to="/terms" className="hover:text-foreground">
+            <a href="/terms/" className="hover:text-foreground">
               Terms of Use
-            </Link>
-            <Link to="/privacy" className="hover:text-foreground">
+            </a>
+            <a href="/privacy/" className="hover:text-foreground">
               Privacy Policy
-            </Link>
+            </a>
             <a href="mailto:support@boardbarian.com" className="hover:text-foreground">
               Contact
             </a>

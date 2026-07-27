@@ -29,7 +29,7 @@ function captureAcceptance(page: Page, status = 204) {
 // ---------------------------------------------------------------------------
 
 test('serves the terms without signing in', async ({ page }) => {
-  await page.goto('/terms')
+  await page.goto('/terms/')
   await expect(page.getByRole('heading', { name: 'Terms of Use', level: 1 })).toBeVisible()
   // The effective date is the version the acceptance record stores, so it has
   // to actually be on the page the user reads.
@@ -37,43 +37,131 @@ test('serves the terms without signing in', async ({ page }) => {
 })
 
 test('serves the privacy policy without signing in', async ({ page }) => {
-  await page.goto('/privacy')
+  await page.goto('/privacy/')
   await expect(page.getByRole('heading', { name: 'Privacy Policy', level: 1 })).toBeVisible()
 })
 
-test('both documents actually scroll', async ({ page }) => {
-  // index.css pins html/body/#root to height:100% with overflow:hidden, so the
-  // document never scrolls and each page must own its scroll container. Getting
-  // that wrong renders a perfectly correct-looking page whose content below the
-  // fold is simply unreachable - and an assertion that the heading is visible
-  // passes right through it, which is how this shipped broken the first time.
-  for (const path of ['/privacy', '/terms']) {
-    await page.goto(path)
-    const scroller = page.locator('div.overflow-y-auto').first()
+test('needs no JavaScript at all', async ({ browser }) => {
+  // The point of pre-rendering these. They are the pages Google's OAuth brand
+  // review loads and crawlers index, and routing them through the SPA meant a
+  // 2MB+ bundle had to execute before a privacy policy could paint.
+  const context = await browser.newContext({ javaScriptEnabled: false })
+  const page = await context.newPage()
 
-    const metrics = await scroller.evaluate((el) => ({
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
+  await page.goto('/privacy/')
+  await expect(page.getByRole('heading', { name: 'Privacy Policy', level: 1 })).toBeVisible()
+  await expect(page.getByRole('link', { name: /Read the Terms of Use/i })).toBeVisible()
+  expect(await page.locator('script').count()).toBe(0)
+
+  await context.close()
+})
+
+test('both documents scroll natively', async ({ page }) => {
+  // As plain documents these scroll the window, with no app-shell scroll
+  // container to get wrong - the bug that made these pages unreadable when
+  // they lived inside the SPA cannot recur here.
+  for (const path of ['/privacy/', '/terms/']) {
+    await page.goto(path)
+    const metrics = await page.evaluate(() => ({
+      scrollHeight: document.documentElement.scrollHeight,
+      clientHeight: document.documentElement.clientHeight,
     }))
-    // These documents are thousands of pixels tall; if they aren't overflowing
-    // their container, the container isn't the thing being scrolled.
     expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight)
 
-    await scroller.evaluate((el) => el.scrollTo(0, 1000))
-    expect(await scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0)
+    await page.evaluate(() => window.scrollTo(0, 1000))
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
   }
 })
 
 test('renders the contact address as a working mailto link', async ({ page }) => {
-  // Streamdown's default link renderer emits an inert <button> with no href,
-  // which is fine for streaming model output and wrong here: support@ is the
-  // only route the Privacy Policy gives for exercising access, correction,
-  // deletion and objection requests. LegalPage overrides the `a` component to
-  // fix this; without the override every one of these is a dead end.
-  for (const path of ['/privacy', '/terms']) {
+  // support@ is the only route the Privacy Policy gives for exercising access,
+  // correction, deletion and objection requests. The SPA's markdown renderer
+  // used to emit inert <button>s here, making every one a dead end; `marked`
+  // produces real anchors, so this now holds by construction.
+  for (const path of ['/privacy/', '/terms/']) {
     await page.goto(path)
     const mailtos = page.locator('a[href^="mailto:support@boardbarian.com"]')
     expect(await mailtos.count()).toBeGreaterThan(0)
+  }
+})
+
+test('the account menu opens the documents in a new tab', async ({ page, context }) => {
+  // Not in-tab: ChatInput keeps the unsent question in local state, so
+  // navigating away from a chat would silently discard whatever the user was
+  // typing. A tab also preserves scroll position and costs nothing to close.
+  await acceptLegal(page)
+  await mockGameListRoutes(page)
+  await page.goto('/select-game')
+
+  await page.getByRole('button', { name: 'Account menu' }).click()
+  const popup = context.waitForEvent('page')
+  await page.getByRole('menuitem', { name: 'Terms of Use' }).click()
+
+  const opened = await popup
+  await opened.waitForLoadState()
+  await expect(opened).toHaveURL(/\/terms\/$/)
+  // The original tab never moved.
+  await expect(page).toHaveURL(/\/select-game$/)
+})
+
+test('the consent screen opens the documents in a new tab too', async ({ page, context }) => {
+  // Same reason as the account menu, plus the gate itself must survive: an
+  // in-tab hop would tear down the screen and the ticked checkbox with it.
+  await page.goto('/select-game')
+
+  const popup = context.waitForEvent('page')
+  await page.getByRole('link', { name: 'Privacy Policy' }).click()
+
+  const opened = await popup
+  await opened.waitForLoadState()
+  await expect(opened).toHaveURL(/\/privacy\/$/)
+  await expect(page).toHaveURL(/\/select-game$/)
+})
+
+test('reads as a standalone document, not an app screen', async ({ page }) => {
+  await page.goto('/terms/')
+
+  // No back button: usually read in its own tab, where "back" is meaningless,
+  // and otherwise reached by deep link, where there is nothing to go back to.
+  await expect(page.getByRole('button', { name: /back/i })).toHaveCount(0)
+  // A masthead that links home instead - orientation and a way in, without
+  // pretending the reader arrived from somewhere.
+  await page.getByRole('link', { name: /Boardbarian/ }).first().click()
+  await expect(page).toHaveURL(/localhost:\d+\/$/)
+})
+
+test('each document offers the other one, from the top', async ({ page }) => {
+  // Whoever just read one of these wants the other far more than the
+  // marketing page. The cross-link sits at the very bottom, so landing
+  // mid-document would be the natural failure - a full page load starts at the
+  // top for free, which the SPA version had to reimplement and got wrong.
+  await page.goto('/terms/')
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+
+  await page.getByRole('link', { name: /Read the Privacy Policy/i }).click()
+  await expect(page).toHaveURL(/\/privacy\/$/)
+  expect(await page.evaluate(() => window.scrollY)).toBe(0)
+  await expect(page.getByRole('heading', { name: 'Privacy Policy', level: 1 })).toBeVisible()
+
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+  await page.getByRole('link', { name: /Read the Terms of Use/i }).click()
+  await expect(page).toHaveURL(/\/terms\/$/)
+  expect(await page.evaluate(() => window.scrollY)).toBe(0)
+})
+
+test('new-tab links announce themselves to screen readers', async ({ page }) => {
+  // WCAG G201. The arrow-out-of-a-box glyph is the visual convention, but it
+  // is invisible to a screen reader - without the sr-only text those users
+  // just find their back button dead. Assert the announcement, since that is
+  // the part with no visual fallback.
+  await page.goto('/select-game')
+
+  const links = page.getByRole('link', { name: /opens in a new tab/i })
+  await expect(links).toHaveCount(2)
+  for (const link of await links.all()) {
+    await expect(link).toHaveAttribute('target', '_blank')
+    await expect(link).toHaveAttribute('rel', /noreferrer/)
   }
 })
 
@@ -81,7 +169,7 @@ test('links to both documents from the home page footer', async ({ page }) => {
   // The anonymous path Google's OAuth brand review follows.
   await page.goto('/')
   await page.getByRole('link', { name: 'Privacy Policy' }).click()
-  await expect(page).toHaveURL(/\/privacy$/)
+  await expect(page).toHaveURL(/\/privacy\/$/)
 })
 
 // ---------------------------------------------------------------------------
