@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { motion, useReducedMotion } from 'motion/react'
 import { ArrowRightIcon, BadgeCheckIcon, DicesIcon, MessageCircleQuestionIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -237,6 +237,23 @@ export default function HomePage() {
         <div className="py-10 md:py-14">
           <HowItWorks />
         </div>
+
+        {/* Footer. The signed-out entry point to the legal documents - this is
+            the path Google's OAuth brand review follows from the homepage. */}
+        <footer className="flex flex-col items-center gap-3 border-t border-border pt-8 text-xs text-muted-foreground sm:flex-row sm:justify-between">
+          <span>© {new Date().getFullYear()} Boardbarian</span>
+          <nav className="flex items-center gap-4">
+            <Link to="/terms" className="hover:text-foreground">
+              Terms of Use
+            </Link>
+            <Link to="/privacy" className="hover:text-foreground">
+              Privacy Policy
+            </Link>
+            <a href="mailto:support@boardbarian.com" className="hover:text-foreground">
+              Contact
+            </a>
+          </nav>
+        </footer>
       </div>
     </div>
   )

@@ -1,9 +1,18 @@
 import { test, expect, type Page } from '@playwright/test'
-import { CATAN_GAME, MUNCHKIN_GAME, mockGameListRoutes } from './helpers/routes'
+import {
+  BYPASS_UID,
+  CATAN_GAME,
+  MUNCHKIN_GAME,
+  acceptLegal,
+  mockGameListRoutes,
+} from './helpers/routes'
 
-// The bypass auth user's uid (MockAuthProvider defaults to 'local-dev').
-const BYPASS_UID = 'local-dev'
 const LAST_UID_KEY = 'boardbarian-last-uid'
+
+// Get past the consent gate; these specs are about other behaviour.
+test.beforeEach(async ({ page }) => {
+  await acceptLegal(page)
+})
 
 // Read the persisted cache blob out of idb-keyval's store (raw IndexedDB, since
 // the app doesn't expose idb-keyval globally). The persister stores the value

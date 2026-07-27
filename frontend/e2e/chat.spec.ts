@@ -7,6 +7,7 @@ import {
   mockChatMessagesRoute,
   mockGameChatsRoute,
   mockGameRoute,
+  acceptLegal,
 } from './helpers/routes'
 
 const GAME_ID = MUNCHKIN_GAME.id
@@ -22,6 +23,8 @@ const FINISH_SSE = [
 const SSE_HEADERS = { 'Content-Type': 'text/event-stream', 'x-vercel-ai-ui-message-stream': 'v1' }
 
 test.beforeEach(async ({ page }) => {
+  // Get past the consent gate; these specs are about chat, not consent.
+  await acceptLegal(page)
   await mockGameRoute(page)
   await mockGameChatsRoute(page)
 })

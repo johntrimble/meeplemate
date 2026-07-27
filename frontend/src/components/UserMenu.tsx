@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { LogOutIcon, Trash2Icon } from 'lucide-react'
+import { FileTextIcon, LogOutIcon, ShieldIcon, Trash2Icon } from 'lucide-react'
 import { useAuth } from '@/auth/useAuth'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { DeleteAccountDialog } from '@/components/DeleteAccountDialog'
@@ -48,6 +48,15 @@ export function UserMenu({ className }: { className?: string }) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-48">
         <DropdownMenuLabel className="truncate font-normal">{label}</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => navigate('/terms')}>
+          <FileTextIcon />
+          Terms of Use
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => navigate('/privacy')}>
+          <ShieldIcon />
+          Privacy Policy
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={handleLogout}>
           <LogOutIcon />

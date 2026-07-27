@@ -13,6 +13,7 @@ import ChatPage from './pages/ChatPage'
 import NotFoundPage from './pages/NotFoundPage'
 import NotAuthorizedPage from './pages/NotAuthorizedPage'
 import MaintenancePage from './pages/MaintenancePage'
+import LegalPage from './pages/LegalPage'
 
 function App() {
   return (
@@ -39,6 +40,11 @@ function App() {
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/login" element={<LoginPage />} />
+              {/* Public and outside CacheGate on purpose: gating the terms
+                  behind accepting them makes no sense, and OAuth brand
+                  verification needs the privacy policy anonymously reachable. */}
+              <Route path="/terms" element={<LegalPage doc="terms" />} />
+              <Route path="/privacy" element={<LegalPage doc="privacy" />} />
               <Route path="/select-game" element={<CacheGate><SelectGamePage /></CacheGate>} />
               <Route path="/chat/:gameId" element={<CacheGate><ChatPage /></CacheGate>} />
               <Route path="/chat/:gameId/:chatId" element={<CacheGate><ChatPage /></CacheGate>} />
