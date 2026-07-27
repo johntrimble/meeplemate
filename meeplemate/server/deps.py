@@ -11,6 +11,7 @@ from meeplemate.chatloop import ChatLoopService
 from meeplemate.db.datalayer import BaseDataLayer, UserRecord
 from meeplemate.game_service import GameService
 from meeplemate.server.auth import AuthUser, get_current_user
+from meeplemate.server.legal import ACCEPTANCE_REQUIRED_CODE, has_accepted_current
 from meeplemate.tracing import NoopTraceSink
 
 if TYPE_CHECKING:
@@ -69,14 +70,44 @@ async def get_db_user_allow_deleted(
     return db_user
 
 
-async def get_db_user(
+async def get_db_user_allow_unaccepted(
     db_user: UserRecord = Depends(get_db_user_allow_deleted),
 ) -> UserRecord:
-    """Resolve the account for the current token, rejecting deleted accounts."""
+    """Resolve the account for the current token, rejecting deleted accounts.
+
+    Only for the acceptance endpoint itself, which by definition must be
+    callable by an account that has not accepted the current documents yet.
+    """
     if db_user.deleted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Account deleted",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    return db_user
+
+
+async def get_db_user(
+    db_user: UserRecord = Depends(get_db_user_allow_unaccepted),
+) -> UserRecord:
+    """Resolve the account, rejecting deleted *and* non-accepting accounts.
+
+    The acceptance check lives here rather than in ``get_current_user`` on
+    purpose. The catalog endpoints are token-only so the deploy bot can snapshot
+    them, and that identity has no ``app_user`` row to carry an acceptance — see
+    the deploy-bot note in ``docs/auth.md``.
+
+    Costs nothing extra: the row was already read by the dependency above, which
+    every account-scoped request goes through regardless.
+    """
+    if not has_accepted_current(db_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            # The client branches on `code`, not the status — 403 alone is too
+            # coarse to distinguish "accept the terms" from any other refusal.
+            detail={
+                "message": "Terms acceptance required",
+                "code": ACCEPTANCE_REQUIRED_CODE,
+            },
         )
     return db_user

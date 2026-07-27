@@ -1,16 +1,19 @@
 import base64
 import hashlib
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Optional, cast
 from uuid import UUID
 
+import sqlalchemy as sa
 import structlog
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from meeplemate.db.datalayer import (
+    LEGAL_METADATA_KEY,
     BaseDataLayer,
     ChatDict,
     ChatSummary,
@@ -361,6 +364,51 @@ class PostgresDataLayer(BaseDataLayer):
                 await session.execute(select(AppUser).where(AppUser.user_id == uid))
             ).scalar_one()
             return _to_user_record(row)
+
+    async def record_legal_acceptance(
+        self, uid: str, terms_version: str, privacy_version: str
+    ) -> None:
+        payload = {
+            "terms_version": terms_version,
+            "privacy_version": privacy_version,
+            "accepted_at": datetime.now(UTC).isoformat(),
+        }
+        async with self._session_factory() as session:
+            # A JSONB *merge* (`||`) rather than read-modify-write. The blob is
+            # shared with the per-user rate-limit overrides, so replacing it
+            # wholesale would drop them, and a read-modify-write could lose a
+            # concurrent override to a lost update. Merging one key is atomic.
+            #
+            # The WHERE clause makes the write a no-op once the current versions
+            # are already recorded, which is what preserves the original
+            # `accepted_at` when a user re-accepts on a new device. Postgres
+            # `IS DISTINCT FROM` handles the never-accepted case, where the ->>
+            # projections are NULL rather than a mismatched string.
+            await session.execute(
+                AppUser.__table__.update()
+                .where(
+                    AppUser.user_id == uid,
+                    sa.or_(
+                        AppUser.metadata_[
+                            (LEGAL_METADATA_KEY, "terms_version")
+                        ].astext.is_distinct_from(terms_version),
+                        AppUser.metadata_[
+                            (LEGAL_METADATA_KEY, "privacy_version")
+                        ].astext.is_distinct_from(privacy_version),
+                    ),
+                )
+                # Keyed on the Column object, not the attribute name: the
+                # attribute is `metadata_` but the column is `metadata`, and a
+                # kwarg would be rejected as an unconsumed column name.
+                .values(
+                    {
+                        AppUser.metadata_: AppUser.metadata_.op("||")(
+                            sa.cast({LEGAL_METADATA_KEY: payload}, JSONB)
+                        )
+                    }
+                )
+            )
+            await session.commit()
 
     async def soft_delete_user(self, uid: str) -> bool:
         async with self._session_factory() as session:

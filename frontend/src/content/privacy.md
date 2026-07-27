@@ -2,7 +2,7 @@
 
 **Effective date: July 28, 2026**
 
-Boardbarian is a board-game rules assistant operated by John Trimble. This Privacy Policy explains what information Boardbarian collects, how that information is used and retained, when it is shared with service providers, and the choices available to users.
+Boardbarian is a board-game rules assistant. This Privacy Policy explains what information Boardbarian collects, how that information is used and retained, when it is shared with service providers, and the choices available to users.
 
 Questions about this Privacy Policy may be sent to **[support@boardbarian.com](mailto:support@boardbarian.com)**.
 
@@ -255,7 +255,7 @@ By contacting **[support@boardbarian.com](mailto:support@boardbarian.com)**, you
 * Delete information
 * Object to a particular use of your information
 
-Boardbarian will consider and respond to these requests from any user, regardless of where you live, whether or not a particular privacy law requires it. Boardbarian does not currently provide an automated data-export feature, so an access request is handled manually.
+Boardbarian responds to requests as required by applicable law, and may consider other requests at its discretion. Boardbarian does not provide an automated data-export feature, so requests are handled manually and may take time.
 
 Boardbarian may need to verify your identity before acting on a request. Boardbarian may be unable to locate or associate pseudonymized testing data with your account after the direct account linkage has been removed, and may be unable to act on a request in that case.
 
@@ -269,11 +269,13 @@ You are responsible for protecting access to your account and for avoiding the s
 
 ## 11. Analytics, Advertising, and Data Sales
 
-Boardbarian does not sell or share personal information, as the terms “sell” and “share” are defined under applicable privacy laws. Those definitions are broader than an exchange for money: “sell” can include disclosing personal information for other valuable consideration, and “share” can include disclosing it for cross-context behavioral advertising.
+Boardbarian may use analytics, advertising, measurement, attribution, and similar services that process information about how users interact with the service, and may use personal information for advertising purposes, including targeted or interest-based advertising.
 
-Boardbarian may use analytics, advertising, measurement, or similar services that process information about how users interact with the service. These practices may change as Boardbarian develops.
+This may involve disclosing personal information to advertising, analytics, and measurement partners, including in ways that qualify as a “sale” or a “share” under privacy laws that define those terms broadly. Those definitions can reach disclosures made for other valuable consideration rather than money, and disclosures made for cross-context behavioral advertising.
 
-If Boardbarian begins selling or sharing personal information as those terms are defined, or begins using personal information for targeted advertising, this Privacy Policy will be updated and any notices, consent mechanisms, or opt-out controls required by applicable law will be provided before that change takes effect.
+Boardbarian does not currently sell or share personal information in that sense, and does not currently serve targeted advertising. These practices may change as Boardbarian develops, and this Privacy Policy describes what Boardbarian may do as well as what it does today.
+
+Where applicable law requires notice, consent, or an opt-out before personal information is used, sold, or shared for these purposes, Boardbarian will provide it.
 
 ## 12. International Processing
 

@@ -41,12 +41,15 @@ chat:
 
     # Sampling config
     temperature: 0.7
-    top_p: 1.0 # was 0.8
-    top_k: -1
-    min_p: 0.10
-    presence_penalty: 1.2 # was 1.6
-    frequency_penalty: 0.2
-    repetition_penalty: 1.0
+    top_p: 0.8
+    presence_penalty: 0.8
+    # temperature: 0.7
+    # top_p: 1.0 # was 0.8
+    # top_k: -1
+    # min_p: 0.10
+    # presence_penalty: 1.2 # was 1.6
+    # frequency_penalty: 0.2
+    # repetition_penalty: 1.0
 
 # Embedding Service Configuration
 embedding:

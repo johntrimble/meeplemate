@@ -2,7 +2,7 @@
 
 **Effective date: July 28, 2026**
 
-These Terms of Use (“Terms”) govern your access to and use of Boardbarian, a board-game rules assistant operated by John Trimble (“Boardbarian,” “we,” “us,” or “our”).
+These Terms of Use (“Terms”) govern your access to and use of Boardbarian, a board-game rules assistant (“Boardbarian,” “we,” “us,” or “our”).
 
 By creating an account, checking the box indicating your agreement, or otherwise using Boardbarian, you agree to these Terms. If you do not agree to these Terms, do not use Boardbarian.
 

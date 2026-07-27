@@ -13,7 +13,11 @@ import pytest
 from fastapi import HTTPException
 
 from conftest import _test_user_record
-from meeplemate.server.deps import get_db_user, get_db_user_allow_deleted
+from meeplemate.server.deps import (
+    get_db_user,
+    get_db_user_allow_deleted,
+    get_db_user_allow_unaccepted,
+)
 
 
 def _request_with(data_layer) -> MagicMock:
@@ -56,11 +60,14 @@ async def test_get_db_user_passes_through_a_live_account():
 
 
 @pytest.mark.asyncio
-async def test_get_db_user_rejects_a_deleted_account():
+async def test_rejects_a_deleted_account():
+    """The deleted check sits on `get_db_user_allow_unaccepted`, so it applies
+    to the acceptance endpoint too - a deleted account must not be able to
+    accept its way back in."""
     deleted = _test_user_record(deleted_at=datetime.now(UTC))
 
     with pytest.raises(HTTPException) as exc_info:
-        await get_db_user(deleted)
+        await get_db_user_allow_unaccepted(deleted)
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.detail == "Account deleted"
