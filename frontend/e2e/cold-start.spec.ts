@@ -4,6 +4,7 @@ import {
   EMPTY_GAMES_PAGE,
   GAMES_PAGE,
   MUNCHKIN_GAME,
+  NO_INSTANCE_BODY,
   RECENT_GAMES_PAGE,
   mockChatMessagesRoute,
   mockGameChatsRoute,
@@ -11,9 +12,6 @@ import {
   acceptLegal,
 } from './helpers/routes'
 import { readIdbCache } from './helpers/cache'
-
-// The plain-text body the Cloud Run proxy returns while an instance cold-starts.
-const NO_INSTANCE_BODY = 'The request was aborted because there was no available instance.'
 
 const GAME_ID = MUNCHKIN_GAME.id
 const CHAT_ID = 'cold-start-chat'

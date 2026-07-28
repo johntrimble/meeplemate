@@ -21,8 +21,10 @@
 // status request. The POST is idempotent, so re-accepting costs them one click
 // and leaves the recorded `accepted_at` alone.
 //
-// The server enforces the same rule in `get_db_user` and is the authority; this
-// is the UX half. See docs/legal.md.
+// The server does NOT enforce this. It used to 403 un-accepted accounts, which
+// is why accepting had to await the POST before the app could open — putting a
+// cold start in front of every new user's first screen. The server now only
+// *records* acceptance; this gate is the whole enforcement. See docs/legal.md.
 
 /** Effective date of src/content/terms.md. Must match `TERMS_VERSION` in meeplemate/server/legal.py. */
 export const TERMS_VERSION = '2026-07-28'
@@ -35,6 +37,15 @@ const STORAGE_PREFIX = 'boardbarian-legal-v1'
 export interface StoredAcceptance {
   termsVersion: string
   privacyVersion: string
+  /**
+   * Whether there is anything left to send to the server — NOT "the server has
+   * it". Set false when acceptance is recorded locally, and true once the POST
+   * has settled in a way retrying cannot improve: a success, or a 4xx that will
+   * fail identically forever. Only a request that got no answer at all (offline,
+   * cold start) leaves it false, because that is the one case another attempt
+   * can fix. See `useAcceptanceSync`.
+   */
+  synced: boolean
 }
 
 /** Whether the gate should prompt, and if so whether this is a re-consent. */
@@ -57,7 +68,15 @@ export function readAcceptance(uid: string): StoredAcceptance | null {
     ) {
       return null
     }
-    return { termsVersion: parsed.termsVersion, privacyVersion: parsed.privacyVersion }
+    return {
+      termsVersion: parsed.termsVersion,
+      privacyVersion: parsed.privacyVersion,
+      // Entries written before `synced` existed were only ever stored *after* a
+      // successful POST, so they are synced by construction. Defaulting to false
+      // would make the deploy that ships this re-POST for every existing user at
+      // once, against the same scale-to-zero backend, for nothing.
+      synced: parsed.synced !== false,
+    }
   } catch {
     // Malformed JSON, or storage blocked entirely (Safari private mode, a
     // hardened profile). Treat as "not accepted": prompting again is harmless,
@@ -67,10 +86,15 @@ export function readAcceptance(uid: string): StoredAcceptance | null {
 }
 
 /**
- * Record acceptance locally. Call this only *after* the server has confirmed -
- * writing it optimistically would let the client believe it had accepted while
- * the server disagreed, and the user would hit a 403 on their first question
- * with no way to get back to the prompt.
+ * Record acceptance locally, immediately, without waiting for the server.
+ *
+ * This used to be forbidden: while the server 403'd un-accepted accounts, a
+ * client that believed it had accepted while the server disagreed would hit a
+ * wall on its first question with no way back to the prompt. That 403 is gone,
+ * so the hazard is gone with it — and the cost it was imposing was real, since
+ * awaiting the POST meant every new user met a cold start before seeing the app.
+ *
+ * Written `synced: false`; `useAcceptanceSync` is what eventually clears it.
  */
 export function writeAcceptance(uid: string): void {
   try {
@@ -79,11 +103,37 @@ export function writeAcceptance(uid: string): void {
       JSON.stringify({
         termsVersion: TERMS_VERSION,
         privacyVersion: PRIVACY_VERSION,
+        synced: false,
       } satisfies StoredAcceptance),
     )
   } catch {
-    // Storage full or blocked. The acceptance is already recorded server-side,
-    // so the only cost is being prompted again next load.
+    // Storage full or blocked. Acceptance still reaches the server, so the only
+    // cost is being prompted again next load.
+  }
+}
+
+/**
+ * Mark the stored acceptance as needing no further POST.
+ *
+ * Preserves the stored *versions* rather than re-writing today's constants: what
+ * settled with the server is what was sent, and if the two have since diverged
+ * (a version bump between accepting and syncing) the gate must still see the old
+ * versions and re-prompt.
+ *
+ * A no-op if nothing is stored, so a cleared browser mid-flight can't resurrect
+ * an acceptance.
+ */
+export function markSynced(uid: string): void {
+  const stored = readAcceptance(uid)
+  if (!stored) return
+  try {
+    localStorage.setItem(
+      storageKey(uid),
+      JSON.stringify({ ...stored, synced: true } satisfies StoredAcceptance),
+    )
+  } catch {
+    // Storage blocked. Costs one redundant POST next load; the endpoint is
+    // idempotent, so nothing is harmed.
   }
 }
 

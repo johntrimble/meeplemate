@@ -4,6 +4,7 @@ import { useAuth } from './useAuth'
 import { LoginScreen } from './LoginScreen'
 import { ConsentScreen } from './ConsentScreen'
 import { useLegalAcceptance } from './useLegalAcceptance'
+import { useAcceptanceSync } from './useAcceptanceSync'
 import { reconcileUserCache } from '@/lib/userCache'
 import { seedGamesFromStatic } from '@/lib/seedGames'
 
@@ -28,6 +29,10 @@ export function CacheGate({ children }: { children: ReactNode }) {
 
   const uid = user?.uid ?? null
   const { state: legalState, markAccepted } = useLegalAcceptance(uid)
+  // Fire-and-forget catch-up for an acceptance whose POST never landed. Gates
+  // nothing - a user whose record is still pending is already inside the app,
+  // which is the point.
+  useAcceptanceSync(uid)
 
   useEffect(() => {
     if (isRestoring || isLoading || !uid) return
@@ -58,7 +63,9 @@ export function CacheGate({ children }: { children: ReactNode }) {
   if (!user) return <LoginScreen />
   // Consent before the reconcile check, not after: the decision is synchronous
   // (localStorage vs a bundled constant, no network), so there's no reason to
-  // hold it behind the async IndexedDB reconcile's splash.
+  // hold it behind the async IndexedDB reconcile's splash. Accepting is
+  // synchronous too - the POST that records it is not awaited - so this screen
+  // hands straight over to an already-seeded game list.
   if (legalState !== 'current') {
     return <ConsentScreen state={legalState} onAccepted={markAccepted} />
   }

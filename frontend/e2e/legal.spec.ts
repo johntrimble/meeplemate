@@ -1,11 +1,21 @@
 import { test, expect, type Page } from '@playwright/test'
-import { BYPASS_UID, acceptLegal, mockGameListRoutes } from './helpers/routes'
+import {
+  BYPASS_UID,
+  CATAN_GAME,
+  EMPTY_GAMES_PAGE,
+  GAMES_PAGE,
+  NO_INSTANCE_BODY,
+  acceptLegal,
+  mockGameListRoutes,
+} from './helpers/routes'
 
 // The consent gate and the published documents.
 //
 // The gate's whole design goal is that it decides from local state alone, so
 // most of these assertions are about what *doesn't* happen: no request before
-// the prompt paints, no prompt once acceptance is stored.
+// the prompt paints, no prompt once acceptance is stored, and - since the
+// acceptance POST is fired without being awaited - no waiting on the backend
+// after the click either.
 
 const STORAGE_KEY = `boardbarian-legal-v1:${BYPASS_UID}`
 const CHECKBOX = { name: /I am at least 13 years old/i }
@@ -14,12 +24,58 @@ const CONTINUE = { name: /Agree and continue/i }
 const readStored = (page: Page) =>
   page.evaluate((k) => localStorage.getItem(k), STORAGE_KEY)
 
+const readParsed = async (page: Page) => JSON.parse((await readStored(page)) ?? 'null')
+
+/**
+ * Seed localStorage with an acceptance in a given sync state, before the app boots.
+ *
+ * Writes only when nothing is stored yet. `addInitScript` runs on *every*
+ * navigation, so an unconditional write would re-seed on reload and clobber
+ * whatever the app had done in the meantime - which for a `synced: false` seed
+ * means silently resurrecting the pending state the test is watching the app
+ * clear.
+ */
+function seedAcceptance(
+  page: Page,
+  { synced, terms = '2026-07-28', privacy = '2026-07-28' }: {
+    synced: boolean
+    terms?: string
+    privacy?: string
+  },
+) {
+  return page.addInitScript(
+    ([key, value]) => {
+      if (!localStorage.getItem(key)) localStorage.setItem(key, value)
+    },
+    [
+      STORAGE_KEY,
+      JSON.stringify({ termsVersion: terms, privacyVersion: privacy, synced }),
+    ] as const,
+  )
+}
+
 /** Record every acceptance POST so tests can assert on it. */
 function captureAcceptance(page: Page, status = 204) {
   const calls: string[] = []
   page.route('**/api/account/legal-acceptance', (route) => {
     calls.push(route.request().postData() ?? '')
     return route.fulfill({ status, contentType: 'application/json', body: '{}' })
+  })
+  return calls
+}
+
+/**
+ * Accept the request but never answer it, for the whole test.
+ *
+ * A Playwright route handler that never calls fulfill/continue/abort leaves the
+ * request hanging, which is exactly a scale-to-zero backend that has not booted
+ * yet. Anything that renders while this is outstanding provably did not wait on
+ * it.
+ */
+function hangAcceptance(page: Page) {
+  const calls: string[] = []
+  page.route('**/api/account/legal-acceptance', (route) => {
+    calls.push(route.request().postData() ?? '')
   })
   return calls
 }
@@ -248,11 +304,107 @@ test('records acceptance and lets the user through', async ({ page }) => {
   await page.getByRole('button', CONTINUE).click()
 
   await expect(page.getByText('Munchkin').first()).toBeVisible()
-  expect(calls).toHaveLength(1)
+  await expect.poll(() => calls.length).toBe(1)
   expect(JSON.parse(calls[0])).toEqual({
     terms_version: expect.any(String),
     privacy_version: expect.any(String),
   })
+  // Settled, so nothing is left pending for `useAcceptanceSync` to retry.
+  await expect.poll(async () => (await readParsed(page)).synced).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// Accepting must not wait for the backend
+// ---------------------------------------------------------------------------
+
+test('the game list paints from /games.json while the acceptance POST is still cold', async ({
+  page,
+}) => {
+  // The regression this whole change exists for. A brand-new user arrives with
+  // an empty IndexedDB and a scale-to-zero backend, and the acceptance POST is
+  // the *first* request that backend ever sees - every other call site is inside
+  // CacheGate's children - so it eats the full cold start by construction.
+  // Awaiting it meant 26-90s of spinner sitting on top of a game list that had
+  // already been seeded from the CDN and was ready to paint.
+  //
+  // No `acceptLegal` here: the consent screen has to actually appear.
+  await page.route('**/api/recent-games', (route) => route.fulfill({ json: EMPTY_GAMES_PAGE }))
+  await page.route('**/games.json', (route) => route.fulfill({ json: GAMES_PAGE }))
+
+  // Everything account-scoped stays cold for the entire test.
+  await page.route('**/api/games?*', (route) =>
+    route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
+  )
+  const calls = hangAcceptance(page)
+
+  await page.goto('/select-game')
+  await expect(page.getByRole('heading', { name: /Before you start/i })).toBeVisible()
+
+  await page.getByRole('checkbox', CHECKBOX).click()
+  await page.getByRole('button', CONTINUE).click()
+
+  // Catan appears only in the all-games grid ("Recently Used" is empty here), so
+  // its presence proves the seeded catalog rendered - with the POST unanswered
+  // and /api/games still failing.
+  await expect(page.getByText(CATAN_GAME.name).first()).toBeVisible()
+  await expect(page.getByText('Loading games…')).not.toBeVisible()
+  await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
+
+  // The POST was genuinely issued and is genuinely still outstanding - otherwise
+  // this would pass just as well if we had stopped sending it at all.
+  expect(calls).toHaveLength(1)
+  const stored = await readParsed(page)
+  expect(stored.synced).toBe(false)
+})
+
+test('an acceptance that never reached the server is retried on the next load', async ({
+  page,
+}) => {
+  // The cost of not awaiting the POST is that it can be lost. Since the record
+  // is the only thing the backend is still kept around for, an unsent acceptance
+  // has to be remembered and retried rather than silently dropped.
+  await mockGameListRoutes(page)
+  await seedAcceptance(page, { synced: false })
+  const calls = captureAcceptance(page)
+
+  await page.goto('/select-game')
+
+  // Straight in - a pending record gates nothing.
+  await expect(page.getByText('Munchkin').first()).toBeVisible()
+  await expect(page.getByRole('heading', { name: /Before you start/i })).not.toBeVisible()
+
+  await expect.poll(() => calls.length).toBe(1)
+  await expect.poll(async () => (await readParsed(page)).synced).toBe(true)
+})
+
+test('a synced acceptance is never re-sent', async ({ page }) => {
+  await mockGameListRoutes(page)
+  await seedAcceptance(page, { synced: true })
+  const calls = captureAcceptance(page)
+
+  await page.goto('/select-game')
+  await expect(page.getByText('Munchkin').first()).toBeVisible()
+
+  expect(calls).toHaveLength(0)
+})
+
+test('a rejected acceptance stops retrying instead of looping forever', async ({ page }) => {
+  // A 4xx fails identically on every future load, so retrying it is an infinite
+  // loop rather than eventual consistency. The user is already inside the app
+  // either way - this is only about not hammering the endpoint for the life of
+  // the browser profile.
+  await mockGameListRoutes(page)
+  await seedAcceptance(page, { synced: false })
+  const calls = captureAcceptance(page, 422)
+
+  await page.goto('/select-game')
+  await expect(page.getByText('Munchkin').first()).toBeVisible()
+  await expect.poll(() => calls.length).toBe(1)
+  await expect.poll(async () => (await readParsed(page)).synced).toBe(true)
+
+  await page.reload()
+  await expect(page.getByText('Munchkin').first()).toBeVisible()
+  expect(calls).toHaveLength(1)
 })
 
 test('does not prompt again on reload once accepted', async ({ page }) => {
@@ -270,19 +422,21 @@ test('does not prompt again on reload once accepted', async ({ page }) => {
   await expect(page.getByRole('heading', { name: /Before you start/i })).not.toBeVisible()
 })
 
-test('does not store acceptance when the server rejects it', async ({ page }) => {
+test('a server rejection never strands the user on the consent screen', async ({ page }) => {
+  // This used to assert the opposite: a 409 meant "your bundle is stale, don't
+  // record this", and the user was held on the screen with an error. Both halves
+  // are gone. The server no longer refuses a well-formed version at all - doing
+  // so coupled the record to deploy order - and acceptance is stored locally
+  // before the response exists, so no server answer can block the app.
   await mockGameListRoutes(page)
-  // 409: this bundle is stale, so what the user read is not what they'd be
-  // agreeing to. Recording it locally would leave the client believing it had
-  // accepted while the server disagreed.
-  captureAcceptance(page, 409)
+  captureAcceptance(page, 422)
 
   await page.goto('/select-game')
   await page.getByRole('checkbox', CHECKBOX).click()
   await page.getByRole('button', CONTINUE).click()
 
-  await expect(page.getByRole('alert')).toContainText(/updated/i)
-  expect(await readStored(page)).toBeNull()
+  await expect(page.getByText('Munchkin').first()).toBeVisible()
+  await expect(page.getByRole('alert')).toHaveCount(0)
 })
 
 test('re-prompts when the accepted version is stale', async ({ page }) => {

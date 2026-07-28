@@ -361,9 +361,18 @@ class BaseDataLayer(ABC):
         did was open their chat history — which is exactly the fact this record
         exists to establish.
 
+        Records the versions **as given**. The caller passes what the client
+        posted, which may not be the version currently in force — see
+        ``record_legal_acceptance`` in ``server/api.py`` for why refusing those
+        would couple the record to deploy order.
+
         A no-op when the stored versions already match, so re-accepting from a
         second device preserves the original ``accepted_at`` — the record should
         say when they first agreed, not when they last cleared a browser.
+
+        Also a no-op when the stored acceptance is *newer* than the one given, so
+        a stale client cannot downgrade a record another device already advanced.
+        Versions are zero-padded ISO dates, so they order as strings.
         """
 
     @abstractmethod
