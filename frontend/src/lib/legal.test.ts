@@ -3,6 +3,7 @@ import {
   TERMS_VERSION,
   PRIVACY_VERSION,
   acceptanceState,
+  markSynced,
   readAcceptance,
   writeAcceptance,
 } from './legal'
@@ -113,17 +114,20 @@ describe('readAcceptance', () => {
 })
 
 describe('writeAcceptance', () => {
-  it('stores the versions currently in force', () => {
+  it('stores the versions currently in force, pending a sync', () => {
     writeAcceptance(UID)
     expect(readAcceptance(UID)).toEqual({
       termsVersion: TERMS_VERSION,
       privacyVersion: PRIVACY_VERSION,
+      // Written before the POST is even sent - that is what lets the app open
+      // without waiting on a cold backend.
+      synced: false,
     })
   })
 
   it('swallows a storage failure instead of breaking the accept flow', () => {
-    // By this point the server has already recorded the acceptance, so the only
-    // cost of not persisting locally is being prompted again next load.
+    // The POST still goes out, so the cost of not persisting locally is being
+    // prompted again next load - and the endpoint is idempotent.
     vi.stubGlobal('localStorage', {
       ...storage,
       setItem: () => {
@@ -131,5 +135,48 @@ describe('writeAcceptance', () => {
       },
     })
     expect(() => writeAcceptance(UID)).not.toThrow()
+  })
+})
+
+describe('markSynced', () => {
+  it('clears the retry flag without disturbing the stored versions', () => {
+    // Must not re-stamp today's constants: if a version bump landed between
+    // accepting and syncing, the gate has to still see the old versions and
+    // re-prompt.
+    storage.setItem(
+      `boardbarian-legal-v1:${UID}`,
+      JSON.stringify({
+        termsVersion: '1999-01-01',
+        privacyVersion: '1999-01-01',
+        synced: false,
+      }),
+    )
+
+    markSynced(UID)
+
+    expect(readAcceptance(UID)).toEqual({
+      termsVersion: '1999-01-01',
+      privacyVersion: '1999-01-01',
+      synced: true,
+    })
+  })
+
+  it('does nothing when there is no stored acceptance', () => {
+    markSynced(UID)
+    expect(readAcceptance(UID)).toBeNull()
+  })
+})
+
+describe('legacy entries', () => {
+  it('counts an entry written before `synced` existed as already synced', () => {
+    // Those were only ever stored *after* a successful POST. Defaulting them to
+    // unsynced would make the deploy that shipped `synced` re-POST for every
+    // existing user at once, against the same scale-to-zero backend, for nothing.
+    storage.setItem(
+      `boardbarian-legal-v1:${UID}`,
+      JSON.stringify({ termsVersion: TERMS_VERSION, privacyVersion: PRIVACY_VERSION }),
+    )
+
+    expect(readAcceptance(UID)?.synced).toBe(true)
   })
 })

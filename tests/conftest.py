@@ -136,7 +136,6 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
     from meeplemate.server.deps import (
         get_db_user,
         get_db_user_allow_deleted,
-        get_db_user_allow_unaccepted,
     )
 
     rate_limiter = RateLimiter(config=rate_limit_config, data_layer=mock_data_layer)
@@ -188,7 +187,6 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
     )
     app.dependency_overrides[get_db_user] = lambda: _test_user_record()
     app.dependency_overrides[get_db_user_allow_deleted] = lambda: _test_user_record()
-    app.dependency_overrides[get_db_user_allow_unaccepted] = lambda: _test_user_record()
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client

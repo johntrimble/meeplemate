@@ -132,20 +132,19 @@ Two levels. **Gated** endpoints only need a valid project token. **Account-scope
 | `GET /api/chats/{chat_id}/messages` | Account-scoped | 404 if the chat belongs to another account |
 | `PUT`/`DELETE /api/messages/{id}/feedback` | Account-scoped | 404 if the message belongs to another account |
 | `POST /api/chats/{chat_id}/stream` | Account-scoped | 404 if the chat belongs to another account; also rate-limited |
-| `POST /api/account/legal-acceptance` | Account-scoped† | †Skips the acceptance check via `get_db_user_allow_unaccepted` — the ordinary dependency rejects exactly the users who need to call this |
-| `DELETE /api/account` | Account-scoped* | *Resolves deleted accounts too, so a retry after a partial failure isn't blocked by the flag the first attempt set. Also skips the acceptance check, which is what makes "decline and delete" possible |
+| `POST /api/account/legal-acceptance` | Account-scoped | Records which document versions the user accepted |
+| `DELETE /api/account` | Account-scoped* | *Resolves deleted accounts too, so a retry after a partial failure isn't blocked by the flag the first attempt set |
 
 Every endpoint validates the Bearer token via `get_current_user` before any handler logic runs; account-scoped ones then depend on `get_db_user` (in `meeplemate/server/deps.py`).
 
-`get_db_user` enforces two things, in order — the account isn't deleted, and it has accepted the current Terms and Privacy Policy (403, `code: "legal_acceptance_required"`). Three dependencies expose the intermediate states:
+`get_db_user` enforces exactly one thing: the account isn't deleted. Two dependencies expose the two states:
 
-| Dependency | Rejects deleted | Rejects non-accepting |
-|---|---|---|
-| `get_db_user_allow_deleted` | no | no |
-| `get_db_user_allow_unaccepted` | yes | no |
-| `get_db_user` | yes | yes |
+| Dependency | Rejects deleted |
+|---|---|
+| `get_db_user_allow_deleted` | no |
+| `get_db_user` | yes |
 
-The acceptance check deliberately sits here rather than in `get_current_user` — see the deploy-bot note below, and [legal.md](legal.md) for the rest of the consent design.
+**Terms acceptance is not enforced here, or anywhere on the server.** It used to be — `get_db_user` returned a 403 with `code: "legal_acceptance_required"` until the stored versions matched — and that 403 is what forced the client to await the acceptance POST before opening the app, putting a full Cloud Run cold start in front of every new user's first screen. The server now only *records* acceptance; the frontend gate is the enforcement. See [legal.md](legal.md) for the reasoning and what it trades away.
 
 **The deploy-bot exception.** The frontend deploy snapshots `/api/games` into the CDN's `games.json` using a token minted from the service account for a synthetic `deploy-bot` uid (`script/mint-id-token.mjs` in the infra repo). That token carries **no email** and has no `app_user` row. Making the catalog endpoints account-scoped would mint a junk user row on every deploy — so they must stay gated. `tests/test_api_games.py` asserts this.
 

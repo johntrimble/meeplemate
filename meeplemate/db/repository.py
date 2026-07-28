@@ -373,28 +373,57 @@ class PostgresDataLayer(BaseDataLayer):
             "privacy_version": privacy_version,
             "accepted_at": datetime.now(UTC).isoformat(),
         }
+        stored_terms = AppUser.metadata_[(LEGAL_METADATA_KEY, "terms_version")].astext
+        stored_privacy = AppUser.metadata_[
+            (LEGAL_METADATA_KEY, "privacy_version")
+        ].astext
         async with self._session_factory() as session:
             # A JSONB *merge* (`||`) rather than read-modify-write. The blob is
             # shared with the per-user rate-limit overrides, so replacing it
             # wholesale would drop them, and a read-modify-write could lose a
             # concurrent override to a lost update. Merging one key is atomic.
             #
-            # The WHERE clause makes the write a no-op once the current versions
-            # are already recorded, which is what preserves the original
-            # `accepted_at` when a user re-accepts on a new device. Postgres
-            # `IS DISTINCT FROM` handles the never-accepted case, where the ->>
-            # projections are NULL rather than a mismatched string.
+            # The WHERE clause decides whether this acceptance is worth storing.
+            # Two things it has to get right:
+            #
+            # 1. Re-accepting what is already recorded must be a no-op, so the
+            #    stored `accepted_at` keeps saying when they *first* agreed
+            #    rather than when they last cleared a browser.
+            # 2. An *older* acceptance must never overwrite a newer one. The
+            #    endpoint records whatever version the client posted (so no
+            #    deploy order can lose a record), which means a stale tab can
+            #    post yesterday's version after another device already accepted
+            #    today's. Without this guard that stale write would silently
+            #    downgrade the record.
+            #
+            # So: write only when nothing is stored yet, or when the posted pair
+            # moves *at least one* document forward and moves *neither* back.
+            #
+            # Testing the two versions independently ("either one is newer") is
+            # not enough, because the payload is written as a single blob: a
+            # request carrying a newer Terms and an older Privacy Policy would
+            # pass that test and then overwrite both, silently regressing the
+            # Privacy version it was never entitled to touch.
+            #
+            # Versions are zero-padded ISO dates — enforced by
+            # `LegalAcceptanceRequest` — so lexicographic comparison is
+            # chronological. `IS NULL` covers the never-accepted case, where the
+            # ->> projections are NULL rather than a string.
             await session.execute(
                 AppUser.__table__.update()
                 .where(
                     AppUser.user_id == uid,
                     sa.or_(
-                        AppUser.metadata_[
-                            (LEGAL_METADATA_KEY, "terms_version")
-                        ].astext.is_distinct_from(terms_version),
-                        AppUser.metadata_[
-                            (LEGAL_METADATA_KEY, "privacy_version")
-                        ].astext.is_distinct_from(privacy_version),
+                        stored_terms.is_(None),
+                        stored_privacy.is_(None),
+                        sa.and_(
+                            stored_terms <= terms_version,
+                            stored_privacy <= privacy_version,
+                            sa.or_(
+                                stored_terms < terms_version,
+                                stored_privacy < privacy_version,
+                            ),
+                        ),
                     ),
                 )
                 # Keyed on the Column object, not the attribute name: the

@@ -104,33 +104,71 @@ Both halves of the comparison are already local:
 
 Blocking on empty re-prompts a returning user on a new device. That is the
 accepted trade: no status endpoint, no background request, and an un-accepted
-user is never inside the app. The POST is idempotent, so it costs them one click
+user is never shown the app. The POST is idempotent, so it costs them one click
 and leaves the recorded `accepted_at` alone.
 
-For a genuinely new user the acceptance POST is often the first request to the
-backend, so it doubles as the warm-up — arriving *earlier* than the `/api/games`
-revalidation that used to be first. Cold start gets better, not worse.
+**Accepting does not wait for the server.** Clicking "Agree and continue" writes
+localStorage and opens the app in the same tick; the POST that records it is
+fired unawaited. This matters more than it looks: for a new user that POST is the
+*first* request the backend ever sees — every other call site lives inside
+`CacheGate`'s children, and the home and login screens call nothing — so it eats
+a full Cloud Run cold start by construction. Awaiting it meant 26–90s of spinner
+on top of a game list that `seedGamesFromStatic` had already loaded from the CDN
+and was ready to paint. It still doubles as the warm-up; it just no longer holds
+the door shut while it warms.
+
+An unsent acceptance is not lost. `writeAcceptance` stores `synced: false` and
+`useAcceptanceSync` (called from `CacheGate`) retries on later loads until the
+request settles. `synced` means "nothing left to send", not "the server has it":
+a 4xx sets it too, because a payload the server rejects will be rejected
+identically forever and retrying it is a loop, not eventual consistency.
 
 ### Server side
 
-The server is the authority; the client is the UX half.
+The server records acceptance. It does not enforce it.
+
+That is a deliberate reversal. `get_db_user` used to 403 un-accepted accounts,
+and that 403 is what forced the client to await the POST — a client that believed
+it had accepted while the server disagreed would hit a wall on its first question
+with no way back to the prompt. The gate bought very little: a bypass still needs
+a valid Firebase token, rate limiting is a separate dependency, and the only
+person served by skipping the checkbox is the person it binds. What has real
+value is the record — this app's consent covers storing conversations and sending
+questions to third-party providers, and localStorage is not evidence of anything.
+So the record stays and the gate goes.
+
+The consequence to accept with open eyes: someone who edits localStorage, or
+drives the API directly, uses the app with no acceptance on file.
 
 - Stored in `app_user.metadata` under the `legal` key (`LEGAL_METADATA_KEY` in
   `meeplemate/db/datalayer.py`), sharing the blob with the per-user rate-limit
   overrides. Written by `record_legal_acceptance` as a JSONB **merge**, never a
   whole-blob write, so it cannot clobber those overrides.
-- `get_db_user` returns **403** with `code: "legal_acceptance_required"` until
-  the stored versions match. Costs no extra query — the row is already read by
-  `get_db_user_allow_deleted` on every account-scoped request.
-- The check is in `get_db_user`, **never** `get_current_user`. `/api/games` is
-  token-only so the deploy bot can snapshot it, and that identity has no
-  `app_user` row to carry an acceptance. See the deploy-bot note in
-  [auth.md](auth.md).
-- `POST /api/account/legal-acceptance` uses `get_db_user_allow_unaccepted` — the
-  ordinary dependency rejects exactly the users who need to call it.
-- `DELETE /api/account` uses `get_db_user_allow_deleted`, which skips the
-  acceptance check entirely. **This is the decline path**: a user who refuses the
-  terms can still delete their account.
+- **The endpoint stores what the client posted**, verbatim — not the server's own
+  constants. "User accepted 2026-01-01 at time T" is a true statement even when
+  today's version is 2026-07-28, and it is the only version anyone can honestly
+  claim was put in front of them.
+- **The only rejection is a malformed version string.** `LegalAcceptanceRequest`
+  requires `YYYY-MM-DD` that parses as a real date. Nothing is refused for being
+  stale, or for being a version this process has never heard of. Both of those
+  rules — the old 409, and the version allow-list that looks like the obvious
+  replacement for it — silently couple the record to deploy order: ship the
+  frontend first and every client posts a version the backend does not yet know,
+  so valid acceptances get thrown away. **No deploy order may cost a user their
+  acceptance record.** A version that isn't current is logged, not refused; that
+  is the monitoring signal an allow-list would have given, minus the data loss.
+- A stale client self-heals with no help from the server. It records what it
+  showed, and on its next load the newer bundle's constants no longer match its
+  localStorage, so the gate re-prompts.
+- `record_legal_acceptance` in the repository **will not overwrite a newer stored
+  acceptance with an older one**. Now that clients can post non-current versions,
+  a stale tab could otherwise downgrade a record another device just advanced.
+  Versions are zero-padded ISO dates, so they order as strings.
+- `has_accepted_current` no longer gates anything and has no caller in the
+  request path. It survives as a predicate for reporting and tests.
+- `DELETE /api/account` uses `get_db_user_allow_deleted` so it stays callable
+  after the account is flagged. **This is the decline path**: signing out leaves
+  the account sitting there un-accepted, so deletion is the only real withdrawal.
 
 ## Bumping a version
 
@@ -143,10 +181,12 @@ re-prompts everyone for nothing.
 3. Update the matching constant in `meeplemate/server/legal.py`.
 4. `pytest tests/test_legal_versions.py` — this is what catches step 2 or 3
    being forgotten.
-5. Deploy the **backend first**. If the frontend ships first, its users post a
-   version the old backend rejects with 409 and cannot get in. The other order
-   is harmless: users on the old bundle keep passing until they pick up the new
-   one.
+5. Deploy in **either order**. This used to read "backend first, or the frontend's
+   users post a version the old backend rejects with 409 and cannot get in";
+   neither half is true any more, since there is no 409 and no gate. A frontend
+   deployed ahead of the backend just logs `legal_acceptance_version_divergence`
+   until the backend catches up, and every acceptance in between is recorded
+   correctly.
 
 ## Not covered
 

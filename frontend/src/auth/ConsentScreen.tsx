@@ -1,13 +1,12 @@
 import { useState } from 'react'
 import { useAuth } from './useAuth'
 import { useAuthFetch } from './authFetch'
+import { postAcceptance } from './useAcceptanceSync'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Spinner } from '@/components/ui/spinner'
 import { DeleteAccountDialog } from '@/components/DeleteAccountDialog'
 import { ExternalLink } from '@/components/ExternalLink'
-import { useSlowLoading } from '@/hooks/useSlowLoading'
-import { TERMS_VERSION, PRIVACY_VERSION, writeAcceptance } from '@/lib/legal'
+import { writeAcceptance } from '@/lib/legal'
 import type { AcceptanceState } from '@/lib/legal'
 
 /**
@@ -26,51 +25,32 @@ export function ConsentScreen({
   onAccepted,
 }: {
   state: Exclude<AcceptanceState, 'current'>
-  /** Called once the server has recorded acceptance and localStorage is written. */
+  /** Called once acceptance is recorded locally. Does not wait for the server. */
   onAccepted: () => void
 }) {
   const { user, logout } = useAuth()
   const authFetch = useAuthFetch()
 
   const [agreed, setAgreed] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   const isReconsent = state === 'outdated'
 
-  const handleAccept = async () => {
-    if (!agreed || isSubmitting || !user) return
-    setIsSubmitting(true)
-    setError(null)
-    try {
-      const res = await authFetch('/api/account/legal-acceptance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          terms_version: TERMS_VERSION,
-          privacy_version: PRIVACY_VERSION,
-        }),
-      })
-      if (res.status === 409) {
-        // This bundle is stale: the documents on the server have moved on, so
-        // what the user just read is not what they'd be agreeing to. Reload
-        // rather than record it.
-        setError('These documents have been updated. Reload the page to continue.')
-        setIsSubmitting(false)
-        return
-      }
-      if (!res.ok) throw new Error(`acceptance failed with ${res.status}`)
-      // Only now - see writeAcceptance's note on why this must not be optimistic.
-      writeAcceptance(user.uid)
-      // Stay in the submitting state: `onAccepted` unmounts this screen, and
-      // clearing it first would flash an enabled button on the way out.
-      onAccepted()
-    } catch (err) {
-      console.error('legal acceptance failed', err)
-      setError("We couldn't save that. Please try again.")
-      setIsSubmitting(false)
-    }
+  /**
+   * Record locally, open the app, and let the POST land whenever it lands.
+   *
+   * Nothing here awaits the network. For a new user this POST is the *first*
+   * request the backend ever sees - every other call site is inside CacheGate's
+   * children - so it eats the entire Cloud Run cold start by construction.
+   * Waiting on it meant a 26-90s spinner before the app appeared, sitting on top
+   * of a game list that had already been seeded from the CDN snapshot and was
+   * ready to paint. `useAcceptanceSync` retries if it never arrives.
+   */
+  const handleAccept = () => {
+    if (!agreed || !user) return
+    writeAcceptance(user.uid)
+    void postAcceptance(authFetch, user.uid)
+    onAccepted()
   }
 
   return (
@@ -121,7 +101,6 @@ export function ConsentScreen({
               id="legal-accept"
               checked={agreed}
               onCheckedChange={(checked) => setAgreed(checked === true)}
-              disabled={isSubmitting}
               className="mt-0.5"
             />
             <span>
@@ -139,26 +118,23 @@ export function ConsentScreen({
             </span>
           </label>
 
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
-
           <div className="flex flex-col gap-2">
-            <Button onClick={handleAccept} disabled={!agreed || isSubmitting}>
-              {isSubmitting && <Spinner />}
-              <AcceptLabel isSubmitting={isSubmitting} />
+            {/* No pending state: accepting is a local write, so this screen is
+                gone by the next frame. There is nothing to spin on and nothing
+                that can fail in front of the user. */}
+            <Button onClick={handleAccept} disabled={!agreed}>
+              Agree and continue
             </Button>
-            <Button variant="ghost" onClick={logout} disabled={isSubmitting}>
+            <Button variant="ghost" onClick={logout}>
               Sign out
             </Button>
           </div>
 
+          {/* Signing out just leaves the account sitting here un-accepted, so
+              deletion is the only way to actually withdraw. */}
           <button
             type="button"
             onClick={() => setDeleteOpen(true)}
-            disabled={isSubmitting}
             className="text-xs text-muted-foreground underline underline-offset-2 disabled:opacity-50"
           >
             Delete my account instead
@@ -169,15 +145,4 @@ export function ConsentScreen({
       <DeleteAccountDialog open={deleteOpen} onOpenChange={setDeleteOpen} />
     </>
   )
-}
-
-/**
- * For a new user this POST is often the first request to the backend, so it can
- * legitimately sit through a full Cloud Run cold start (~26s, retried up to 90s
- * by authFetch). Say so rather than leaving a silent spinner.
- */
-function AcceptLabel({ isSubmitting }: { isSubmitting: boolean }) {
-  const isSlow = useSlowLoading()
-  if (!isSubmitting) return <>Agree and continue</>
-  return <>{isSlow ? 'Still working, hang tight…' : 'Saving…'}</>
 }

@@ -11,7 +11,6 @@ from meeplemate.chatloop import ChatLoopService
 from meeplemate.db.datalayer import BaseDataLayer, UserRecord
 from meeplemate.game_service import GameService
 from meeplemate.server.auth import AuthUser, get_current_user
-from meeplemate.server.legal import ACCEPTANCE_REQUIRED_CODE, has_accepted_current
 from meeplemate.tracing import NoopTraceSink
 
 if TYPE_CHECKING:
@@ -51,6 +50,16 @@ class ApiDeps:
 #
 # Handlers that merely need a valid token (the game catalog) must keep depending
 # on `get_current_user` alone — see the note on `get_games` in api.py.
+#
+# Terms acceptance is deliberately *not* checked here. It used to be, and the 403
+# it raised was the whole reason the client had to await the acceptance POST
+# before opening the app — which put a Cloud Run cold start (~26s, up to 90s of
+# retries) in front of every new user's first screen, in a codebase whose entire
+# cold-start design exists to prevent exactly that. Gating bought almost nothing:
+# a bypass still needs a valid Firebase token, rate limiting is a separate
+# dependency, and the only person served by skipping the checkbox is the person
+# it binds. What has real value is the *record*, which is still written by
+# `POST /api/account/legal-acceptance`. See docs/legal.md.
 
 
 async def get_db_user_allow_deleted(
@@ -70,44 +79,19 @@ async def get_db_user_allow_deleted(
     return db_user
 
 
-async def get_db_user_allow_unaccepted(
+async def get_db_user(
     db_user: UserRecord = Depends(get_db_user_allow_deleted),
 ) -> UserRecord:
     """Resolve the account for the current token, rejecting deleted accounts.
 
-    Only for the acceptance endpoint itself, which by definition must be
-    callable by an account that has not accepted the current documents yet.
+    The ordinary dependency for every account-scoped endpoint, including the
+    acceptance endpoint itself — see the note above on why acceptance is not
+    checked here.
     """
     if db_user.deleted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Account deleted",
             headers={"WWW-Authenticate": "Bearer"},
-        )
-    return db_user
-
-
-async def get_db_user(
-    db_user: UserRecord = Depends(get_db_user_allow_unaccepted),
-) -> UserRecord:
-    """Resolve the account, rejecting deleted *and* non-accepting accounts.
-
-    The acceptance check lives here rather than in ``get_current_user`` on
-    purpose. The catalog endpoints are token-only so the deploy bot can snapshot
-    them, and that identity has no ``app_user`` row to carry an acceptance — see
-    the deploy-bot note in ``docs/auth.md``.
-
-    Costs nothing extra: the row was already read by the dependency above, which
-    every account-scoped request goes through regardless.
-    """
-    if not has_accepted_current(db_user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            # The client branches on `code`, not the status — 403 alone is too
-            # coarse to distinguish "accept the terms" from any other refusal.
-            detail={
-                "message": "Terms acceptance required",
-                "code": ACCEPTANCE_REQUIRED_CODE,
-            },
         )
     return db_user

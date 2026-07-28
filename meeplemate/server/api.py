@@ -12,12 +12,13 @@ if "transformers" not in sys.modules:
 
 import json
 import time
+from datetime import date
 from uuid import UUID, uuid4, uuid5
 from contextlib import asynccontextmanager
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Literal
+from typing import Annotated, Literal
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
@@ -39,7 +40,6 @@ from meeplemate.server.deps import (
     ApiDeps,
     get_db_user,
     get_db_user_allow_deleted,
-    get_db_user_allow_unaccepted,
 )
 from meeplemate.server.legal import PRIVACY_VERSION, TERMS_VERSION
 from meeplemate.server.logging_middleware import RequestContextMiddleware
@@ -335,47 +335,76 @@ async def delete_message_feedback(
 # Account
 # ---------------------------------------------------------------------------
 
+#: A document version is its effective date, verbatim, as ``YYYY-MM-DD``.
+_VERSION_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+
+#: Validated shape, never membership. See `record_legal_acceptance`.
+LegalVersion = Annotated[str, Field(pattern=_VERSION_PATTERN)]
+
+
 class LegalAcceptanceRequest(BaseModel):
-    terms_version: str
-    privacy_version: str
+    terms_version: LegalVersion
+    privacy_version: LegalVersion
+
+    @field_validator("terms_version", "privacy_version")
+    @classmethod
+    def _must_be_a_real_date(cls, value: str) -> str:
+        # The pattern alone admits "2026-13-45". Parsing is what makes the stored
+        # version comparable: `has_accepted_current` and the repository's
+        # downgrade guard both order these as strings, which is only sound while
+        # every one of them is a real, zero-padded ISO date.
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            raise ValueError("must be a calendar date in YYYY-MM-DD form")
+        return value
 
 
 @router.post("/api/account/legal-acceptance", status_code=204)
 async def record_legal_acceptance(
     body: LegalAcceptanceRequest,
-    db_user: UserRecord = Depends(get_db_user_allow_unaccepted),
+    db_user: UserRecord = Depends(get_db_user),
     deps: ApiDeps = Depends(get_deps),
 ) -> Response:
-    """Record that the user accepted the current Terms and Privacy Policy.
+    """Record which Terms and Privacy Policy versions the user accepted.
 
-    The client sends the versions it displayed rather than just "I accept", and
-    we refuse anything that isn't current. A user running a stale bundle read
-    the *old* documents, so recording that as acceptance of today's would be a
-    lie in the one record whose whole purpose is to be accurate. 409 tells the
-    client to reload and ask again.
+    Stores **what the client posted**, verbatim, rather than this process's
+    constants. That is the honest record: the client is the only party that
+    knows what it put in front of the user, and "user accepted 2026-01-01 at
+    time T" is a true statement even when today's version is 2026-07-28.
 
-    Depends on `get_db_user_allow_unaccepted` for the obvious reason: the
-    ordinary dependency rejects exactly the users who need to call this.
+    The only rejection is a **malformed** version string (see
+    `LegalAcceptanceRequest`). Nothing is refused for being stale, or for being
+    a version this process has never heard of, because either rule silently
+    couples the record to deploy order: ship the frontend first and every client
+    posts a version the backend does not yet know, so a perfectly valid
+    acceptance would be thrown away. The property worth protecting is that **no
+    deploy order can cost a user their acceptance record.**
+
+    A version this process does not consider current is therefore logged, not
+    refused — that is the signal a version allow-list would have provided, minus
+    the data loss. A stale client self-heals without help from us: it records
+    what it showed, and on its next load the newer bundle's constants no longer
+    match its localStorage, so the frontend re-prompts.
 
     Idempotent — re-accepting the same versions is a 204 that leaves the stored
-    `accepted_at` alone.
+    `accepted_at` alone. The repository also refuses to overwrite a newer stored
+    acceptance with an older one, so a stale tab cannot undo a fresh one.
     """
     if (
         body.terms_version != TERMS_VERSION
         or body.privacy_version != PRIVACY_VERSION
     ):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "Stale document version",
-                "code": "legal_version_mismatch",
-                "terms_version": TERMS_VERSION,
-                "privacy_version": PRIVACY_VERSION,
-            },
+        logger.warning(
+            "legal_acceptance_version_divergence",
+            posted_terms_version=body.terms_version,
+            posted_privacy_version=body.privacy_version,
+            current_terms_version=TERMS_VERSION,
+            current_privacy_version=PRIVACY_VERSION,
         )
 
     await deps.data_layer.record_legal_acceptance(
-        db_user.uid, TERMS_VERSION, PRIVACY_VERSION
+        db_user.uid, body.terms_version, body.privacy_version
     )
     return Response(status_code=204)
 

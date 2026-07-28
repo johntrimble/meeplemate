@@ -48,6 +48,14 @@ export const CATAN_GAME = {
   background_color: '#92400e',
 }
 
+/**
+ * The plain-text body the Cloud Run proxy returns while an instance cold-starts.
+ * Paired with a non-JSON 500 it is what `fetchWithRetry` classifies as transient
+ * infra and keeps retrying, i.e. a request that never resolves for the test.
+ */
+export const NO_INSTANCE_BODY =
+  'The request was aborted because there was no available instance.'
+
 export const EMPTY_GAMES_PAGE = {
   pageInfo: { hasNextPage: false, startCursor: null, endCursor: null },
   data: [],

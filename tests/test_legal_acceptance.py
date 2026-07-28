@@ -1,9 +1,14 @@
 """Tests for Terms/Privacy acceptance.
 
-Two halves that have to agree: `has_accepted_current` decides whether a stored
-acceptance covers the documents in force, and `get_db_user` turns that into a
-403 that the client keys off. The endpoint is the only way to move a user from
-the first state to the second.
+The server *records* acceptance; it does not enforce it. `has_accepted_current`
+still answers whether a stored acceptance covers the documents in force, but
+nothing in the request path calls it - the frontend gate is the enforcement, and
+these tests exist to keep the recording honest rather than to police access.
+
+The property most of the endpoint tests defend: **no deploy order can cost a user
+their acceptance record.** Anything that rejects a well-formed version - the old
+409, or the version allow-list that looks like its natural replacement - breaks
+that the moment the frontend ships ahead of the backend.
 """
 from datetime import UTC, datetime
 
@@ -12,9 +17,8 @@ from fastapi import HTTPException
 
 from conftest import TEST_EMAIL, TEST_FIREBASE_UID, _test_user_record
 from meeplemate.db.datalayer import LEGAL_METADATA_KEY
-from meeplemate.server.deps import get_db_user, get_db_user_allow_unaccepted
+from meeplemate.server.deps import get_db_user
 from meeplemate.server.legal import (
-    ACCEPTANCE_REQUIRED_CODE,
     PRIVACY_VERSION,
     TERMS_VERSION,
     has_accepted_current,
@@ -70,31 +74,22 @@ def test_ignores_unrelated_metadata_keys():
 
 
 # ---------------------------------------------------------------------------
-# The dependency
+# The dependency no longer gates
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_get_db_user_passes_an_accepting_account():
-    user = _test_user_record(metadata=_accepted())
+async def test_get_db_user_passes_an_account_that_has_never_accepted():
+    """The 403 this used to raise is what forced the client to await the
+    acceptance POST, which put a full Cloud Run cold start in front of every new
+    user's first screen. Enforcement is the frontend gate's job now."""
+    user = _test_user_record(metadata={})
     assert await get_db_user(user) is user
 
 
 @pytest.mark.asyncio
-async def test_get_db_user_rejects_a_non_accepting_account():
-    with pytest.raises(HTTPException) as exc_info:
-        await get_db_user(_test_user_record(metadata={}))
-
-    assert exc_info.value.status_code == 403
-    # The client branches on the code, not the status.
-    assert exc_info.value.detail["code"] == ACCEPTANCE_REQUIRED_CODE
-
-
-@pytest.mark.asyncio
-async def test_allow_unaccepted_passes_a_non_accepting_account():
-    """Otherwise the acceptance endpoint would reject exactly the users who
-    need to call it."""
-    user = _test_user_record(metadata={})
-    assert await get_db_user_allow_unaccepted(user) is user
+async def test_get_db_user_passes_an_account_on_a_stale_version():
+    user = _test_user_record(metadata=_accepted(terms="1999-01-01"))
+    assert await get_db_user(user) is user
 
 
 # ---------------------------------------------------------------------------
@@ -113,50 +108,72 @@ def test_records_acceptance(api_client, mock_data_layer):
     )
 
 
-def test_rejects_a_stale_client_bundle(api_client, mock_data_layer):
-    """A stale bundle showed the user the *old* documents, so recording that as
-    acceptance of today's would falsify the one record that has to be true."""
-    res = api_client.post(
-        ENDPOINT,
-        json={"terms_version": "1999-01-01", "privacy_version": PRIVACY_VERSION},
-    )
+def test_records_a_version_the_server_has_never_heard_of(api_client, mock_data_layer):
+    """The frontend-deployed-first case, and the reason there is no allow-list of
+    known versions.
 
-    assert res.status_code == 409
-    body = res.json()["detail"]
-    assert body["code"] == "legal_version_mismatch"
-    # Tells the client what it should be showing.
-    assert body["terms_version"] == TERMS_VERSION
-    mock_data_layer.record_legal_acceptance.assert_not_awaited()
-
-
-def test_rejects_a_stale_privacy_version_from_the_client(api_client, mock_data_layer):
-    res = api_client.post(
-        ENDPOINT,
-        json={"terms_version": TERMS_VERSION, "privacy_version": "1999-01-01"},
-    )
-
-    assert res.status_code == 409
-    mock_data_layer.record_legal_acceptance.assert_not_awaited()
-
-
-def test_ignores_a_client_claiming_a_future_version(api_client, mock_data_layer):
-    """Versions come from the request, so the endpoint must not simply trust
-    them - only the server's own constants are ever written."""
+    A newer bundle reaches users before the backend rolls out, so every client
+    posts a version this process does not recognise. Rejecting those - with a 409
+    as it once did, or a 400 against a `PUBLISHED_VERSIONS` set - throws away
+    perfectly valid acceptances purely because of deploy ordering. Record it.
+    """
     res = api_client.post(
         ENDPOINT,
         json={"terms_version": "2099-01-01", "privacy_version": "2099-01-01"},
     )
 
-    assert res.status_code == 409
+    assert res.status_code == 204
+    mock_data_layer.record_legal_acceptance.assert_awaited_once_with(
+        TEST_FIREBASE_UID, "2099-01-01", "2099-01-01"
+    )
+
+
+def test_records_a_stale_client_bundle_verbatim(api_client, mock_data_layer):
+    """A stale bundle showed the user *some* version and says which. Storing what
+    it claims is the honest record; storing today's would be the lie. The client
+    re-prompts itself on its next load, when its constants have moved on."""
+    res = api_client.post(
+        ENDPOINT,
+        json={"terms_version": "1999-01-01", "privacy_version": PRIVACY_VERSION},
+    )
+
+    assert res.status_code == 204
+    mock_data_layer.record_legal_acceptance.assert_awaited_once_with(
+        TEST_FIREBASE_UID, "1999-01-01", PRIVACY_VERSION
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "latest",
+        "",
+        "2026-7-28",  # not zero-padded: would break string ordering
+        "2026-13-45",  # matches the pattern, is not a date
+        "2026-07-28T00:00:00Z",
+        "x" * 500,
+    ],
+)
+def test_rejects_a_malformed_version(api_client, mock_data_layer, bad):
+    """The one thing still refused. Versions are compared and ordered as strings
+    - by `has_accepted_current` and by the repository's downgrade guard - so a
+    value that isn't a zero-padded ISO date would quietly corrupt both."""
+    res = api_client.post(
+        ENDPOINT,
+        json={"terms_version": bad, "privacy_version": PRIVACY_VERSION},
+    )
+
+    assert res.status_code == 422
     mock_data_layer.record_legal_acceptance.assert_not_awaited()
 
 
 def test_account_deletion_works_without_acceptance(
     api_client, mock_data_layer, fake_firebase_delete
 ):
-    """The decline path. `DELETE /api/account` depends on
-    `get_db_user_allow_deleted`, which never runs the acceptance check, so a
-    user who refuses the terms can still get their account removed."""
+    """The decline path: a user who refuses the terms can still remove their
+    account. Nothing gates on acceptance any more, but `DELETE /api/account`
+    additionally has to survive the account already being flagged, which is why
+    it keeps `get_db_user_allow_deleted`."""
     res = api_client.delete("/api/account")
 
     assert res.status_code == 204
@@ -166,17 +183,15 @@ def test_account_deletion_works_without_acceptance(
 # ---------------------------------------------------------------------------
 # Interaction with deletion
 # ---------------------------------------------------------------------------
-#
-# The deploy-bot invariant that forces this check to live in `get_db_user`
-# rather than `get_current_user` is already covered by
-# `tests/test_api_games.py`, which asserts `/api/games` resolves no account.
 
 @pytest.mark.asyncio
-async def test_a_deleted_account_cannot_accept_its_way_back_in():
+async def test_a_deleted_account_cannot_accept():
+    """Deletion is still enforced, and still by `get_db_user` - that check is
+    what makes account deletion take effect before the ID token expires."""
     deleted = _test_user_record(metadata={}, deleted_at=datetime.now(UTC))
 
     with pytest.raises(HTTPException) as exc_info:
-        await get_db_user_allow_unaccepted(deleted)
+        await get_db_user(deleted)
 
     assert exc_info.value.status_code == 401
 
