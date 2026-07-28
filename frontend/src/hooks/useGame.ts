@@ -26,7 +26,16 @@ export function useGame(gameId: string): UseGameResult {
     queryFn: ({ signal }) =>
       authFetch(`/api/games/${gameId}`, { signal })
         .then((r) => {
-          if (!r.ok) throw new Error(`Game not found: ${r.status}`)
+          // Only a 404 actually means "no such game". Everything else reaching
+          // here is a failure to load one that may well exist — an auth error, a
+          // JSON 5xx, or a cold start that outlasted fetchWithRetry's window.
+          // ChatPage renders this string, so don't tell the user a game is
+          // missing when the backend was simply unreachable.
+          if (!r.ok) {
+            throw new Error(
+              r.status === 404 ? 'Game not found' : `Failed to fetch game: ${r.status}`
+            )
+          }
           return r.json() as Promise<GameInfo>
         })
         .then(apiGameToGame),

@@ -36,11 +36,16 @@ function successEntry(queryClient: QueryClient, queryKey: QueryKey) {
 }
 
 /**
- * Find a game in the cached game lists, newest cache entry first.
+ * Find a game in the cached game lists: the `['games']` catalog (the
+ * `useInfiniteQuery` list, also what the static snapshot seeds) first, then
+ * `['recent-games']`. Returns `undefined` when the game is in neither.
  *
- * Looks in `['games']` (the `useInfiniteQuery` catalog, also what the static
- * snapshot seeds) and `['recent-games']`. Returns `undefined` when the game is
- * in neither.
+ * Catalog-first is a fixed precedence, NOT newest-wins — a newer
+ * `['recent-games']` entry does not take priority. Deliberate: the catalog is
+ * the authoritative list and matches the deploy snapshot exactly, and since the
+ * caller revalidates immediately (`staleTime: 0`) any staleness here lasts only
+ * until `/api/games/{id}` answers. Ranking the two by `dataUpdatedAt` would add
+ * a comparison for no user-visible gain.
  */
 export function findCachedGame(queryClient: QueryClient, gameId: string): CachedGame | undefined {
   const catalog = successEntry(queryClient, ['games'])
