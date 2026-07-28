@@ -134,6 +134,38 @@ test('static seed: game list paints from /games.json while /api/games is cold', 
   expect(apiCalls).toBeGreaterThanOrEqual(1)
 })
 
+test('static seed: chat page paints from the seeded catalog while /api/games/{id} is cold', async ({
+  page,
+}) => {
+  // Fresh context => empty IndexedDB, so the seed is the only possible source.
+  await page.route('**/api/recent-games', (route) => route.fulfill({ json: EMPTY_GAMES_PAGE }))
+  await page.route('**/games.json', (route) => route.fulfill({ json: GAMES_PAGE }))
+  await page.route('**/api/games?*', (route) =>
+    route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
+  )
+  await mockGameChatsRoute(page, GAME_ID)
+
+  // The detail endpoint never succeeds, so anything rendered came from the
+  // catalog seed - the whole point of the fix.
+  let detailCalls = 0
+  await page.route(`**/api/games/${GAME_ID}`, (route) => {
+    detailCalls++
+    route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
+  })
+
+  // Deep link straight to the chat page: no prior visit to /select-game, so
+  // this is the mount-order case the awaited seed in App.tsx guarantees.
+  await page.goto(`/chat/${GAME_ID}`)
+
+  // Before the fix this was a fullscreen "Loading…" for the whole cold start.
+  await expect(page.getByPlaceholder('Ask anything')).toBeVisible()
+  await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
+  await expect(page.getByText('Loading…')).not.toBeVisible()
+
+  // Seeding does not suppress revalidation against the authoritative endpoint.
+  await expect.poll(() => detailCalls).toBeGreaterThanOrEqual(1)
+})
+
 test('REST: a JSON 500 application error is NOT retried', async ({ page }) => {
   await page.route('**/api/recent-games', (route) => route.fulfill({ json: RECENT_GAMES_PAGE }))
 
