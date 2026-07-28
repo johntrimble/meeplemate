@@ -4,6 +4,7 @@ import {
   CATAN_GAME,
   mockChatMessagesRoute,
   mockGameRoute,
+  acceptLegal,
 } from './helpers/routes'
 
 // Captures the "Waking up the server..." cold-start hint on every loading
@@ -16,6 +17,11 @@ const NO_INSTANCE_BODY = 'The request was aborted because there was no available
 const WAKING = 'Waking up the server...'
 const GAME_ID = MUNCHKIN_GAME.id
 const CHAT_ID = 'screenshot-chat'
+
+// Get past the consent gate; these specs are about other behaviour.
+test.beforeEach(async ({ page }) => {
+  await acceptLegal(page)
+})
 
 // Use a phone-sized viewport - this is a mobile-first app.
 test.use({ viewport: { width: 390, height: 844 } })

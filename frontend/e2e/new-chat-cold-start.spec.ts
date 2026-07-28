@@ -1,8 +1,13 @@
 import { test, expect } from '@playwright/test'
-import { MUNCHKIN_GAME, mockGameChatsRoute, mockGameRoute } from './helpers/routes'
+import { MUNCHKIN_GAME, acceptLegal, mockGameChatsRoute, mockGameRoute } from './helpers/routes'
 
 const GAME_ID = MUNCHKIN_GAME.id
 const NEW_CHAT_URL = new RegExp(`/chat/${GAME_ID}/[0-9a-f-]{36}$`)
+
+// Get past the consent gate; these specs are about other behaviour.
+test.beforeEach(async ({ page }) => {
+  await acceptLegal(page)
+})
 
 // A minimal Vercel AI UI message stream that renders one line of text then finishes.
 const ANSWER_SSE = [

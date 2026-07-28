@@ -8,6 +8,7 @@ import {
   mockChatMessagesRoute,
   mockGameChatsRoute,
   mockGameRoute,
+  acceptLegal,
 } from './helpers/routes'
 
 // The plain-text body the Cloud Run proxy returns while an instance cold-starts.
@@ -15,6 +16,11 @@ const NO_INSTANCE_BODY = 'The request was aborted because there was no available
 
 const GAME_ID = MUNCHKIN_GAME.id
 const CHAT_ID = 'cold-start-chat'
+
+// Get past the consent gate; these specs are about other behaviour.
+test.beforeEach(async ({ page }) => {
+  await acceptLegal(page)
+})
 
 // ---------------------------------------------------------------------------
 // REST requests (game list) - transparent retry through a cold start

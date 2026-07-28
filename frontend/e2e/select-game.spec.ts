@@ -4,10 +4,12 @@ import {
   EMPTY_GAMES_PAGE,
   MUNCHKIN_GAME,
   RECENT_GAMES_PAGE,
+  acceptLegal,
   mockGameListRoutes,
 } from './helpers/routes'
 
 test.beforeEach(async ({ page }) => {
+  await acceptLegal(page)
   await mockGameListRoutes(page)
 })
 

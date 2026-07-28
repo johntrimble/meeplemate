@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { ExternalLink } from '@/components/ExternalLink'
 import { Input } from '@/components/ui/input'
 import { useAuth } from './useAuth'
 
@@ -46,6 +47,24 @@ export function LoginScreen() {
         <Button onClick={() => login()}>Sign in with Google</Button>
       )}
       {loginError && <p className="text-sm text-destructive">{loginError}</p>}
+      {/* Notice only - actual acceptance is collected by ConsentScreen after
+          sign-in, since that's the first point we have an account to record it
+          against. */}
+      <p className="max-w-xs px-6 text-center text-xs text-muted-foreground">
+        By signing in you agree to our{' '}
+        {/* New tab, like the account menu and the consent screen. This screen
+            renders inline from CacheGate at whatever gated URL was requested,
+            so navigating away in-tab would discard the very route the user was
+            trying to reach. */}
+        <ExternalLink href="/terms/" className="underline underline-offset-2">
+          Terms of Use
+        </ExternalLink>{' '}
+        and{' '}
+        <ExternalLink href="/privacy/" className="underline underline-offset-2">
+          Privacy Policy
+        </ExternalLink>
+        .
+      </p>
     </div>
   )
 }

@@ -2,13 +2,16 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useIsRestoring } from '@tanstack/react-query'
 import { useAuth } from './useAuth'
 import { LoginScreen } from './LoginScreen'
+import { ConsentScreen } from './ConsentScreen'
+import { useLegalAcceptance } from './useLegalAcceptance'
 import { reconcileUserCache } from '@/lib/userCache'
 
 /**
  * Gate for routes that render user-specific cached data. It:
  *   1. waits for the persisted cache to finish restoring AND auth to resolve,
  *   2. requires a signed-in user (shows the login screen otherwise),
- *   3. reconciles the cache against the current identity (clearing it if the
+ *   3. requires acceptance of the current Terms and Privacy Policy,
+ *   4. reconciles the cache against the current identity (clearing it if the
  *      user changed) BEFORE revealing children.
  *
  * Gating the reconcile on `!isRestoring` avoids the race where the persister
@@ -21,6 +24,7 @@ export function CacheGate({ children }: { children: ReactNode }) {
   const [reconciledUid, setReconciledUid] = useState<string | null>(null)
 
   const uid = user?.uid ?? null
+  const { state: legalState, markAccepted } = useLegalAcceptance(uid)
 
   useEffect(() => {
     if (isRestoring || isLoading || !uid) return
@@ -41,6 +45,12 @@ export function CacheGate({ children }: { children: ReactNode }) {
   if (isRestoring || isLoading) return <Splash />
   // Identity must be established before any user data is shown.
   if (!user) return <LoginScreen />
+  // Consent before the reconcile check, not after: the decision is synchronous
+  // (localStorage vs a bundled constant, no network), so there's no reason to
+  // hold it behind the async IndexedDB reconcile's splash.
+  if (legalState !== 'current') {
+    return <ConsentScreen state={legalState} onAccepted={markAccepted} />
+  }
   // Hold until the cache has been reconciled for THIS user (no stale flash).
   if (reconciledUid !== user.uid) return <Splash />
 

@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { LogOutIcon, Trash2Icon } from 'lucide-react'
+import {
+  ExternalLinkIcon,
+  FileTextIcon,
+  LogOutIcon,
+  ShieldIcon,
+  Trash2Icon,
+} from 'lucide-react'
 import { useAuth } from '@/auth/useAuth'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { DeleteAccountDialog } from '@/components/DeleteAccountDialog'
@@ -48,6 +54,33 @@ export function UserMenu({ className }: { className?: string }) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-48">
         <DropdownMenuLabel className="truncate font-normal">{label}</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {/* New tab, and real anchors rather than navigate() or window.open.
+            The menu is only ever rendered over the chat and select-game views,
+            and ChatInput holds the unsent question in local state - navigating
+            away in-tab unmounts it and silently discards whatever the user was
+            part-way through typing. A tab also keeps their scroll position and
+            costs nothing to close. Anchors (not window.open) so middle-click
+            and "open in new window" behave, and no popup blocker is involved. */}
+        <DropdownMenuItem asChild>
+          <a href="/terms/" target="_blank" rel="noreferrer">
+            <FileTextIcon />
+            Terms of Use
+            {/* Trailing and right-aligned: the leading slot is the item's own
+                icon, and a new-tab hint reads as a property of the row rather
+                than part of its label. */}
+            <ExternalLinkIcon aria-hidden className="ml-auto !size-3" />
+            <span className="sr-only">(opens in a new tab)</span>
+          </a>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <a href="/privacy/" target="_blank" rel="noreferrer">
+            <ShieldIcon />
+            Privacy Policy
+            <ExternalLinkIcon aria-hidden className="ml-auto !size-3" />
+            <span className="sr-only">(opens in a new tab)</span>
+          </a>
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={handleLogout}>
           <LogOutIcon />

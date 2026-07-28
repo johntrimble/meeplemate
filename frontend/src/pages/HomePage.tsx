@@ -237,6 +237,26 @@ export default function HomePage() {
         <div className="py-10 md:py-14">
           <HowItWorks />
         </div>
+
+        {/* Footer. The signed-out entry point to the legal documents - this is
+            the path Google's OAuth brand review follows from the homepage. */}
+        <footer className="flex flex-col items-center gap-3 border-t border-border pt-8 text-xs text-muted-foreground sm:flex-row sm:justify-between">
+          <span>© {new Date().getFullYear()} Boardbarian</span>
+          {/* Plain anchors, not react-router Links: these are pre-rendered
+              static pages outside the SPA, so a client-side navigation would
+              find no route and fall through to the 404. */}
+          <nav className="flex items-center gap-4">
+            <a href="/terms/" className="hover:text-foreground">
+              Terms of Use
+            </a>
+            <a href="/privacy/" className="hover:text-foreground">
+              Privacy Policy
+            </a>
+            <a href="mailto:support@boardbarian.com" className="hover:text-foreground">
+              Contact
+            </a>
+          </nav>
+        </footer>
       </div>
     </div>
   )

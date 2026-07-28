@@ -1,4 +1,34 @@
 import type { Page } from '@playwright/test'
+import { PRIVACY_VERSION, TERMS_VERSION } from '../../src/lib/legal'
+
+// ---------------------------------------------------------------------------
+// Consent gate
+// ---------------------------------------------------------------------------
+
+/** The bypass auth user's uid (MockAuthProvider defaults to 'local-dev'). */
+export const BYPASS_UID = 'local-dev'
+
+/**
+ * Pre-accept the current Terms and Privacy Policy for `uid`.
+ *
+ * Every authed route sits behind the consent gate in CacheGate, which blocks on
+ * an empty localStorage, so specs about anything else have to get past it
+ * first. Uses `addInitScript` so the entry is in place before the app boots on
+ * every navigation in the test - including reloads.
+ *
+ * Deliberately writes the same shape `lib/legal.ts` writes, importing the
+ * versions from it rather than hard-coding them, so a version bump doesn't
+ * quietly turn every spec here into a test of the consent screen.
+ */
+export async function acceptLegal(page: Page, uid: string = BYPASS_UID) {
+  await page.addInitScript(
+    ([key, value]) => localStorage.setItem(key, value),
+    [
+      `boardbarian-legal-v1:${uid}`,
+      JSON.stringify({ termsVersion: TERMS_VERSION, privacyVersion: PRIVACY_VERSION }),
+    ] as const,
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Mock data

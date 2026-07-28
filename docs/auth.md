@@ -100,7 +100,9 @@ sequenceDiagram
     App->>User: Redirected home, signed out
 ```
 
-It's a **soft** delete: the row is flagged rather than removed, which is what makes access stop immediately (see the stale-token row in the table below). The account and its chats are removed for good by `mm-admin purge-deleted-accounts`, run by hand.
+It's a **soft** delete: the row is flagged rather than removed, which is what makes access stop immediately (see the stale-token row in the table below). The account and its chats are removed for good by `mm-admin purge-deleted-accounts`, run by hand — the Privacy Policy states the criteria rather than a fixed deadline for exactly this reason.
+
+Deletion is also the **decline path** for the consent gate: `DELETE /api/account` never runs the acceptance check, so a user who refuses the Terms can still remove their account rather than being stuck at the prompt.
 
 Signing up again afterwards produces a new account with a new uid and no history. Their **token budget still follows them**, because `token_usage` is keyed on email — that's the whole reason for the split above.
 
@@ -130,9 +132,20 @@ Two levels. **Gated** endpoints only need a valid project token. **Account-scope
 | `GET /api/chats/{chat_id}/messages` | Account-scoped | 404 if the chat belongs to another account |
 | `PUT`/`DELETE /api/messages/{id}/feedback` | Account-scoped | 404 if the message belongs to another account |
 | `POST /api/chats/{chat_id}/stream` | Account-scoped | 404 if the chat belongs to another account; also rate-limited |
-| `DELETE /api/account` | Account-scoped* | *Resolves deleted accounts too, so a retry after a partial failure isn't blocked by the flag the first attempt set |
+| `POST /api/account/legal-acceptance` | Account-scoped† | †Skips the acceptance check via `get_db_user_allow_unaccepted` — the ordinary dependency rejects exactly the users who need to call this |
+| `DELETE /api/account` | Account-scoped* | *Resolves deleted accounts too, so a retry after a partial failure isn't blocked by the flag the first attempt set. Also skips the acceptance check, which is what makes "decline and delete" possible |
 
 Every endpoint validates the Bearer token via `get_current_user` before any handler logic runs; account-scoped ones then depend on `get_db_user` (in `meeplemate/server/deps.py`).
+
+`get_db_user` enforces two things, in order — the account isn't deleted, and it has accepted the current Terms and Privacy Policy (403, `code: "legal_acceptance_required"`). Three dependencies expose the intermediate states:
+
+| Dependency | Rejects deleted | Rejects non-accepting |
+|---|---|---|
+| `get_db_user_allow_deleted` | no | no |
+| `get_db_user_allow_unaccepted` | yes | no |
+| `get_db_user` | yes | yes |
+
+The acceptance check deliberately sits here rather than in `get_current_user` — see the deploy-bot note below, and [legal.md](legal.md) for the rest of the consent design.
 
 **The deploy-bot exception.** The frontend deploy snapshots `/api/games` into the CDN's `games.json` using a token minted from the service account for a synthetic `deploy-bot` uid (`script/mint-id-token.mjs` in the infra repo). That token carries **no email** and has no `app_user` row. Making the catalog endpoints account-scoped would mint a junk user row on every deploy — so they must stay gated. `tests/test_api_games.py` asserts this.
 

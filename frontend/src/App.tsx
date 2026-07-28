@@ -39,6 +39,9 @@ function App() {
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/login" element={<LoginPage />} />
+              {/* No /terms or /privacy route: those are pre-rendered static
+                  HTML served straight by the host, never routed through this
+                  app. See scripts/legal-pages.ts and docs/legal.md. */}
               <Route path="/select-game" element={<CacheGate><SelectGamePage /></CacheGate>} />
               <Route path="/chat/:gameId" element={<CacheGate><ChatPage /></CacheGate>} />
               <Route path="/chat/:gameId/:chatId" element={<CacheGate><ChatPage /></CacheGate>} />

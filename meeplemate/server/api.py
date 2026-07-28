@@ -35,7 +35,13 @@ from meeplemate.component_system import subsystem
 from meeplemate.config import Config, System, create_app_system
 from meeplemate.db.datalayer import Pagination, TextMessagePart, UserRecord
 from meeplemate.server.auth import AuthUser, delete_firebase_user, get_current_user
-from meeplemate.server.deps import ApiDeps, get_db_user, get_db_user_allow_deleted
+from meeplemate.server.deps import (
+    ApiDeps,
+    get_db_user,
+    get_db_user_allow_deleted,
+    get_db_user_allow_unaccepted,
+)
+from meeplemate.server.legal import PRIVACY_VERSION, TERMS_VERSION
 from meeplemate.server.logging_middleware import RequestContextMiddleware
 from meeplemate.server.rate_limit import RateLimitState, TokenCountingCallback, check_rate_limit
 from meeplemate.tracing import NoopTraceSink, PersistingTracer
@@ -328,6 +334,51 @@ async def delete_message_feedback(
 # ---------------------------------------------------------------------------
 # Account
 # ---------------------------------------------------------------------------
+
+class LegalAcceptanceRequest(BaseModel):
+    terms_version: str
+    privacy_version: str
+
+
+@router.post("/api/account/legal-acceptance", status_code=204)
+async def record_legal_acceptance(
+    body: LegalAcceptanceRequest,
+    db_user: UserRecord = Depends(get_db_user_allow_unaccepted),
+    deps: ApiDeps = Depends(get_deps),
+) -> Response:
+    """Record that the user accepted the current Terms and Privacy Policy.
+
+    The client sends the versions it displayed rather than just "I accept", and
+    we refuse anything that isn't current. A user running a stale bundle read
+    the *old* documents, so recording that as acceptance of today's would be a
+    lie in the one record whose whole purpose is to be accurate. 409 tells the
+    client to reload and ask again.
+
+    Depends on `get_db_user_allow_unaccepted` for the obvious reason: the
+    ordinary dependency rejects exactly the users who need to call this.
+
+    Idempotent — re-accepting the same versions is a 204 that leaves the stored
+    `accepted_at` alone.
+    """
+    if (
+        body.terms_version != TERMS_VERSION
+        or body.privacy_version != PRIVACY_VERSION
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Stale document version",
+                "code": "legal_version_mismatch",
+                "terms_version": TERMS_VERSION,
+                "privacy_version": PRIVACY_VERSION,
+            },
+        )
+
+    await deps.data_layer.record_legal_acceptance(
+        db_user.uid, TERMS_VERSION, PRIVACY_VERSION
+    )
+    return Response(status_code=204)
+
 
 @router.delete("/api/account", status_code=204)
 async def delete_account(

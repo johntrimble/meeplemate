@@ -186,6 +186,13 @@ class MessageDict(TypedDict):
 # ---------------------------------------------------------------------------
 
 
+#: Key under which Terms/Privacy acceptance is stored in ``UserRecord.metadata``.
+#: Lives here rather than beside the version constants in ``server/legal.py``
+#: because the repository needs it to build the merge, and the db layer must not
+#: import the server layer. The versions themselves are a server concern.
+LEGAL_METADATA_KEY = "legal"
+
+
 @dataclass
 class UserRecord:
     """A persisted application user (backed by Firebase Auth)."""
@@ -338,6 +345,25 @@ class BaseDataLayer(ABC):
         Returns the full record, *including* soft-deleted ones — callers decide
         what to do with those. Reads before writing: this runs on every
         user-scoped request, so an unchanged user must not cost a write.
+        """
+
+    @abstractmethod
+    async def record_legal_acceptance(
+        self, uid: str, terms_version: str, privacy_version: str
+    ) -> None:
+        """Record that ``uid`` accepted these Terms and Privacy Policy versions.
+
+        Deliberately *not* folded into ``upsert_user``. That method answers
+        "who is this?" on every account-scoped request, including ones with
+        nothing to do with consent, and an acceptance must only ever be written
+        as the result of a deliberate act of acceptance. Recording it there
+        would let the row claim a user agreed to these versions when all they
+        did was open their chat history — which is exactly the fact this record
+        exists to establish.
+
+        A no-op when the stored versions already match, so re-accepting from a
+        second device preserves the original ``accepted_at`` — the record should
+        say when they first agreed, not when they last cleared a browser.
         """
 
     @abstractmethod

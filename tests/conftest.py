@@ -7,9 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from meeplemate.db.datalayer import UserRecord, WindowStats
+from meeplemate.db.datalayer import LEGAL_METADATA_KEY, UserRecord, WindowStats
 from meeplemate.server.auth import AuthUser
 from meeplemate.server.deps import ApiDeps, CorsConfig
+from meeplemate.server.legal import PRIVACY_VERSION, TERMS_VERSION
 from meeplemate.server.rate_limit import RateLimitConfig, RateLimiter, RateLimitState, WINDOWS, WindowState
 
 
@@ -44,13 +45,29 @@ TEST_EMAIL = "test@example.com"
 TEST_QUOTA_KEY = TEST_EMAIL
 
 
+def _accepted_legal_metadata() -> dict:
+    """Metadata for a user who has accepted the documents currently in force.
+
+    The default so that tests about anything *else* aren't all rewritten every
+    time the documents are versioned. Pass ``metadata={}`` for the un-accepted
+    case.
+    """
+    return {
+        LEGAL_METADATA_KEY: {
+            "terms_version": TERMS_VERSION,
+            "privacy_version": PRIVACY_VERSION,
+            "accepted_at": "2026-07-28T00:00:00+00:00",
+        }
+    }
+
+
 def _test_user_record(**overrides) -> UserRecord:
     defaults = dict(
         uid=TEST_FIREBASE_UID,
         email=TEST_EMAIL,
         name="Test User",
         deleted_at=None,
-        metadata={},
+        metadata=_accepted_legal_metadata(),
     )
     return UserRecord(**{**defaults, **overrides})
 
@@ -58,6 +75,21 @@ def _test_user_record(**overrides) -> UserRecord:
 @pytest.fixture
 def mock_user() -> UserRecord:
     return _test_user_record()
+
+
+@pytest.fixture
+def fake_firebase_delete(monkeypatch) -> AsyncMock:
+    """Stub out the Firebase Admin call behind `DELETE /api/account`.
+
+    Any test touching that endpoint needs this. Without it the handler reaches
+    `_get_firebase_app()`, which constructs a real `Config()` — that reads the
+    environment, so the test passes on a developer machine with `MM_*` set and
+    fails in CI with a pydantic validation error for the missing chat/embedding
+    settings. Shared from here so the next such test doesn't rediscover it.
+    """
+    stub = AsyncMock()
+    monkeypatch.setattr("meeplemate.server.api.delete_firebase_user", stub)
+    return stub
 
 
 @pytest.fixture
@@ -101,7 +133,11 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
     """TestClient with a fresh app instance and auth/rate-limit dependencies overridden."""
     from meeplemate.server.api import create_app
     from meeplemate.server.auth import get_current_user
-    from meeplemate.server.deps import get_db_user, get_db_user_allow_deleted
+    from meeplemate.server.deps import (
+        get_db_user,
+        get_db_user_allow_deleted,
+        get_db_user_allow_unaccepted,
+    )
 
     rate_limiter = RateLimiter(config=rate_limit_config, data_layer=mock_data_layer)
 
@@ -152,6 +188,7 @@ def api_client(mock_data_layer: AsyncMock, rate_limit_config: RateLimitConfig):
     )
     app.dependency_overrides[get_db_user] = lambda: _test_user_record()
     app.dependency_overrides[get_db_user_allow_deleted] = lambda: _test_user_record()
+    app.dependency_overrides[get_db_user_allow_unaccepted] = lambda: _test_user_record()
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
