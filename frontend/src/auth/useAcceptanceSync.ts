@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { useAuthFetch } from './authFetch'
 import { markSynced, readAcceptance } from '@/lib/legal'
 
@@ -20,6 +20,24 @@ import { markSynced, readAcceptance } from '@/lib/legal'
 type AuthFetch = (url: string, options?: RequestInit) => Promise<Response>
 
 /**
+ * In-flight POST per uid, so two callers can't race the same record.
+ *
+ * There are two entry points - `ConsentScreen` fires one the moment the user
+ * accepts, and `useAcceptanceSync` retries one that never landed - and the flag
+ * they coordinate through (`synced` in localStorage) is only written when a
+ * request *settles*. For the whole time a request is outstanding the stored
+ * state still reads "unsent", so nothing in localStorage can tell a second
+ * caller that a first is already on its way. That window is at its widest
+ * exactly when it matters: a cold backend holds the POST open for up to 90s, and
+ * any re-render of `AuthProvider` in that time (a Firebase token refresh is
+ * enough) re-runs the sync effect.
+ *
+ * Keyed by uid rather than a bare boolean so switching accounts mid-flight
+ * doesn't suppress the new account's acceptance.
+ */
+const inFlight = new Map<string, Promise<void>>()
+
+/**
  * POST the *stored* acceptance for `uid` and clear its retry flag once there is
  * nothing more to try. Never throws, never blocks anything the user can see.
  *
@@ -27,9 +45,21 @@ type AuthFetch = (url: string, options?: RequestInit) => Promise<Response>
  * differ (a version bump landed between accepting and syncing), and the record
  * has to say what the user actually agreed to, not what is current now.
  *
- * A no-op when nothing is stored.
+ * Concurrent calls for the same uid share one request. A no-op when nothing is
+ * stored.
  */
-export async function postAcceptance(authFetch: AuthFetch, uid: string): Promise<void> {
+export function postAcceptance(authFetch: AuthFetch, uid: string): Promise<void> {
+  const existing = inFlight.get(uid)
+  if (existing) return existing
+
+  const request = sendAcceptance(authFetch, uid).finally(() => {
+    inFlight.delete(uid)
+  })
+  inFlight.set(uid, request)
+  return request
+}
+
+async function sendAcceptance(authFetch: AuthFetch, uid: string): Promise<void> {
   const stored = readAcceptance(uid)
   if (!stored) return
 
@@ -77,20 +107,15 @@ export async function postAcceptance(authFetch: AuthFetch, uid: string): Promise
  */
 export function useAcceptanceSync(uid: string | null): void {
   const authFetch = useAuthFetch()
-  // `markSynced` writes localStorage, which doesn't re-render, so a re-run can't
-  // see the result of an attempt still in flight. Without this the effect firing
-  // twice (a changed `authFetch` identity, StrictMode) would double-POST.
-  const inFlightFor = useRef<string | null>(null)
 
   useEffect(() => {
     if (!uid) return
     const stored = readAcceptance(uid)
     if (!stored || stored.synced) return
-    if (inFlightFor.current === uid) return
-
-    inFlightFor.current = uid
-    void postAcceptance(authFetch, uid).finally(() => {
-      if (inFlightFor.current === uid) inFlightFor.current = null
-    })
+    // Deduplication lives in `postAcceptance`, not here: this effect is only one
+    // of the two callers, and a guard local to it cannot see the request
+    // `ConsentScreen` fired moments earlier. Re-running this - StrictMode's
+    // double-invoke, a changed `authFetch` identity - is therefore free.
+    void postAcceptance(authFetch, uid)
   }, [uid, authFetch])
 }

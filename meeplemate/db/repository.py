@@ -396,11 +396,19 @@ class PostgresDataLayer(BaseDataLayer):
             #    today's. Without this guard that stale write would silently
             #    downgrade the record.
             #
-            # So: write only when nothing is stored yet, or when a posted version
-            # is strictly newer than what is stored. Versions are zero-padded ISO
-            # dates — enforced by `LegalAcceptanceRequest` — so lexicographic
-            # comparison is chronological. `IS NULL` covers the never-accepted
-            # case, where the ->> projections are NULL rather than a string.
+            # So: write only when nothing is stored yet, or when the posted pair
+            # moves *at least one* document forward and moves *neither* back.
+            #
+            # Testing the two versions independently ("either one is newer") is
+            # not enough, because the payload is written as a single blob: a
+            # request carrying a newer Terms and an older Privacy Policy would
+            # pass that test and then overwrite both, silently regressing the
+            # Privacy version it was never entitled to touch.
+            #
+            # Versions are zero-padded ISO dates — enforced by
+            # `LegalAcceptanceRequest` — so lexicographic comparison is
+            # chronological. `IS NULL` covers the never-accepted case, where the
+            # ->> projections are NULL rather than a string.
             await session.execute(
                 AppUser.__table__.update()
                 .where(
@@ -408,8 +416,14 @@ class PostgresDataLayer(BaseDataLayer):
                     sa.or_(
                         stored_terms.is_(None),
                         stored_privacy.is_(None),
-                        stored_terms < terms_version,
-                        stored_privacy < privacy_version,
+                        sa.and_(
+                            stored_terms <= terms_version,
+                            stored_privacy <= privacy_version,
+                            sa.or_(
+                                stored_terms < terms_version,
+                                stored_privacy < privacy_version,
+                            ),
+                        ),
                     ),
                 )
                 # Keyed on the Column object, not the attribute name: the

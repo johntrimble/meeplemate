@@ -388,6 +388,49 @@ test('a synced acceptance is never re-sent', async ({ page }) => {
   expect(calls).toHaveLength(0)
 })
 
+test('an idle session never contacts the backend about acceptance', async ({ page }) => {
+  // Load-bearing for cost, not just tidiness. The backend scales to zero, so any
+  // recurring background request would pin an instance up permanently and the
+  // service would never scale down. Acceptance sync must therefore be driven
+  // purely by events - mount, and sign-in/sign-out - with no timer anywhere.
+  //
+  // `AuthProvider` subscribes to `onAuthStateChanged`, not `onIdTokenChanged`,
+  // so even Firebase's hourly token refresh does not re-render it and cannot
+  // shake a request loose.
+  await mockGameListRoutes(page)
+  await seedAcceptance(page, { synced: true })
+  const calls = captureAcceptance(page)
+
+  await page.goto('/select-game')
+  await expect(page.getByText('Munchkin').first()).toBeVisible()
+
+  await page.waitForTimeout(6000)
+
+  expect(calls).toHaveLength(0)
+})
+
+test('a pending acceptance is retried once per load, not on a timer', async ({ page }) => {
+  // The retry is a catch-up, not a poll: one attempt per load. A pending record
+  // sitting in a tab left open all day must not turn into a heartbeat that keeps
+  // a Cloud Run instance warm forever.
+  await mockGameListRoutes(page)
+  await seedAcceptance(page, { synced: false })
+  // 503 leaves it pending, so if anything *were* going to re-fire on a timer,
+  // this is the state in which it would.
+  const calls = captureAcceptance(page, 503)
+
+  await page.goto('/select-game')
+  await expect(page.getByText('Munchkin').first()).toBeVisible()
+  await expect.poll(() => calls.length).toBe(1)
+
+  await page.waitForTimeout(6000)
+
+  expect(calls).toHaveLength(1)
+  // Still pending, so the next *load* will try again - which is the intended
+  // and only retry trigger.
+  expect((await readParsed(page)).synced).toBe(false)
+})
+
 test('a rejected acceptance stops retrying instead of looping forever', async ({ page }) => {
   // A 4xx fails identically on every future load, so retrying it is an infinite
   // loop rather than eventual consistency. The user is already inside the app
