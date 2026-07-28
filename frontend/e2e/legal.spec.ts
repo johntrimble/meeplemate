@@ -311,6 +311,14 @@ test('records acceptance and lets the user through', async ({ page }) => {
   })
   // Settled, so nothing is left pending for `useAcceptanceSync` to retry.
   await expect.poll(async () => (await readParsed(page)).synced).toBe(true)
+
+  // Exactly one request, not "at least one". Both `ConsentScreen` and
+  // `useAcceptanceSync` can initiate this POST, and the flag they coordinate
+  // through only flips once a request settles - so the click path is where a
+  // duplicate would surface. `expect.poll` above stops at the first match and
+  // would happily miss a second arriving later; this does not.
+  await page.waitForTimeout(1000)
+  expect(calls).toHaveLength(1)
 })
 
 // ---------------------------------------------------------------------------
