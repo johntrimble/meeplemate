@@ -61,6 +61,24 @@ describe('seedGamesFromStatic', () => {
     expect(qc.getQueryData(['games'])).toBeUndefined()
   })
 
+  it('gives up on a hanging snapshot instead of blocking startup forever', async () => {
+    // Never resolves on its own; only the abort signal can end it. CacheGate
+    // awaits this promise before revealing children, so it MUST settle
+    // regardless or the app is stuck on its splash.
+    mockFetch(
+      (...args: unknown[]) =>
+        new Promise<Response>((_resolve, reject) => {
+          const { signal } = (args[1] ?? {}) as { signal?: AbortSignal }
+          signal?.addEventListener('abort', () => reject(signal.reason))
+        })
+    )
+    const qc = new QueryClient()
+
+    await expect(seedGamesFromStatic(qc, 10)).resolves.toBeUndefined()
+
+    expect(qc.getQueryData(['games'])).toBeUndefined()
+  })
+
   it('no-ops when the snapshot has no games', async () => {
     const empty: GamesPage = { pageInfo: { hasNextPage: false }, data: [] }
     mockFetch(() => new Response(JSON.stringify(empty), { status: 200 }))

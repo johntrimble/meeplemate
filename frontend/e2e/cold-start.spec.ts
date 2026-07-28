@@ -10,6 +10,7 @@ import {
   mockGameRoute,
   acceptLegal,
 } from './helpers/routes'
+import { readIdbCache } from './helpers/cache'
 
 // The plain-text body the Cloud Run proxy returns while an instance cold-starts.
 const NO_INSTANCE_BODY = 'The request was aborted because there was no available instance.'
@@ -132,6 +133,83 @@ test('static seed: game list paints from /games.json while /api/games is cold', 
   // The seed does NOT suppress revalidation: the live request still fires (and
   // in production that's what warms the backend for the first question).
   expect(apiCalls).toBeGreaterThanOrEqual(1)
+})
+
+test('static seed: chat page paints from the seeded catalog while /api/games/{id} is cold', async ({
+  page,
+}) => {
+  // Fresh context => empty IndexedDB, so the seed is the only possible source.
+  await page.route('**/api/recent-games', (route) => route.fulfill({ json: EMPTY_GAMES_PAGE }))
+  await page.route('**/games.json', (route) => route.fulfill({ json: GAMES_PAGE }))
+  await page.route('**/api/games?*', (route) =>
+    route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
+  )
+  await mockGameChatsRoute(page, GAME_ID)
+
+  // The detail endpoint never succeeds, so anything rendered came from the
+  // catalog seed - the whole point of the fix.
+  let detailCalls = 0
+  await page.route(`**/api/games/${GAME_ID}`, (route) => {
+    detailCalls++
+    route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
+  })
+
+  // Deep link straight to the chat page: no prior visit to /select-game, so
+  // this is the mount-order case CacheGate guarantees by awaiting the seed
+  // before it renders children.
+  await page.goto(`/chat/${GAME_ID}`)
+
+  // Before the fix this was a fullscreen "Loading…" for the whole cold start.
+  await expect(page.getByPlaceholder('Ask anything')).toBeVisible()
+  await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
+  await expect(page.getByText('Loading…')).not.toBeVisible()
+
+  // Seeding does not suppress revalidation against the authoritative endpoint.
+  await expect.poll(() => detailCalls).toBeGreaterThanOrEqual(1)
+})
+
+test('warm cache: chat page paints from the persisted catalog, without refetching the snapshot', async ({
+  page,
+}) => {
+  // 1. First visit: load the catalog normally and wait for the persister to
+  //    write it to IndexedDB (and for the reconcile to record this uid).
+  await page.route('**/api/recent-games', (route) => route.fulfill({ json: EMPTY_GAMES_PAGE }))
+  await page.route('**/api/games?*', (route) => route.fulfill({ json: GAMES_PAGE }))
+  await mockGameChatsRoute(page, GAME_ID)
+
+  await page.goto('/select-game')
+  await expect(page.getByText(CATAN_GAME.name).first()).toBeVisible()
+  await expect.poll(() => readIdbCache(page), { timeout: 10_000 }).toContain(MUNCHKIN_GAME.name)
+
+  // 2. Everything the page could fetch now stays cold, including the static
+  //    snapshot - so only the RESTORED cache can supply the game.
+  let snapshotCalls = 0
+  await page.route('**/games.json', (route) => {
+    snapshotCalls++
+    route.fulfill({ status: 404, contentType: 'text/plain', body: 'not found' })
+  })
+  await page.route('**/api/games?*', (route) =>
+    route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
+  )
+  let detailCalls = 0
+  await page.route(`**/api/games/${GAME_ID}`, (route) => {
+    detailCalls++
+    route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
+  })
+
+  // 3. Deep link into the chat page on a fresh load (same uid => reconcile is a
+  //    no-op, so the restored catalog survives).
+  await page.goto(`/chat/${GAME_ID}`)
+
+  await expect(page.getByPlaceholder('Ask anything')).toBeVisible()
+  await expect(page.getByText(MUNCHKIN_GAME.name).first()).toBeVisible()
+  await expect(page.getByText('Loading…')).not.toBeVisible()
+
+  // A warm user pays nothing for the seed: `seedGamesFromStatic` short-circuits
+  // on the restored `['games']` entry before ever fetching the snapshot.
+  expect(snapshotCalls).toBe(0)
+  // Still revalidates the detail endpoint in the background.
+  await expect.poll(() => detailCalls).toBeGreaterThanOrEqual(1)
 })
 
 test('REST: a JSON 500 application error is NOT retried', async ({ page }) => {

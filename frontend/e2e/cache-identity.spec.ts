@@ -6,6 +6,7 @@ import {
   acceptLegal,
   mockGameListRoutes,
 } from './helpers/routes'
+import { readIdbCache } from './helpers/cache'
 
 const LAST_UID_KEY = 'boardbarian-last-uid'
 
@@ -13,33 +14,6 @@ const LAST_UID_KEY = 'boardbarian-last-uid'
 test.beforeEach(async ({ page }) => {
   await acceptLegal(page)
 })
-
-// Read the persisted cache blob out of idb-keyval's store (raw IndexedDB, since
-// the app doesn't expose idb-keyval globally). The persister stores the value
-// as a serialized string under 'boardbarian-cache-v1'.
-function readIdbCache(page: Page): Promise<string> {
-  return page.evaluate(
-    () =>
-      new Promise<string>((resolve) => {
-        const req = indexedDB.open('keyval-store')
-        // Match idb-keyval's store so probing never pre-creates an incompatible DB.
-        req.onupgradeneeded = () => req.result.createObjectStore('keyval')
-        req.onsuccess = () => {
-          let store: IDBObjectStore
-          try {
-            store = req.result.transaction('keyval', 'readonly').objectStore('keyval')
-          } catch {
-            resolve('')
-            return
-          }
-          const g = store.get('boardbarian-cache-v1')
-          g.onsuccess = () => resolve(typeof g.result === 'string' ? g.result : '')
-          g.onerror = () => resolve('')
-        }
-        req.onerror = () => resolve('')
-      }),
-  )
-}
 
 const getLastUid = (page: Page) => page.evaluate((k) => localStorage.getItem(k), LAST_UID_KEY)
 const setLastUid = (page: Page, v: string) => page.evaluate(([k, val]) => localStorage.setItem(k, val), [LAST_UID_KEY, v] as const)
