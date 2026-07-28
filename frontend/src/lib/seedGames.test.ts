@@ -62,8 +62,9 @@ describe('seedGamesFromStatic', () => {
   })
 
   it('gives up on a hanging snapshot instead of blocking startup forever', async () => {
-    // Never resolves on its own; only the abort signal can end it. App.tsx
-    // returns this promise to the restore gate, so it MUST settle regardless.
+    // Never resolves on its own; only the abort signal can end it. CacheGate
+    // awaits this promise before revealing children, so it MUST settle
+    // regardless or the app is stuck on its splash.
     mockFetch(
       (...args: unknown[]) =>
         new Promise<Response>((_resolve, reject) => {

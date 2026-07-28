@@ -21,8 +21,9 @@ import type { GamesPage } from '@/data/games'
 const STATIC_GAMES_URL = '/games.json'
 
 /**
- * Cap on the snapshot fetch. The restore gate awaits this seed (see App.tsx), so
- * an unresponsive CDN would otherwise hold the app on its splash. Bounded well
+ * Cap on the snapshot fetch. `CacheGate` awaits this seed before revealing
+ * children, so an unresponsive CDN would otherwise hold the app on its splash
+ * indefinitely (see the ordering note below). Bounded well
  * under the backend cold start we're avoiding: past this we just fall back to
  * `/api/games`, exactly as if no snapshot existed.
  */
