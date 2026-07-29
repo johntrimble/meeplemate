@@ -4,8 +4,8 @@ type BrandMarkProps = {
 }
 
 /**
- * The Boardbarian mascot, used wherever the brand mark appears. Decorative —
- * every placement sits next to the wordmark or a heading that names the app.
+ * The Boardbarian mascot, used wherever the brand mark appears.
+ * Decorative — keep nearby visible text (e.g., the app name or a heading) to provide context.
  */
 export function BrandMark({ className }: BrandMarkProps) {
   return (
