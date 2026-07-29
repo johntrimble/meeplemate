@@ -72,6 +72,7 @@ header a {
   font-weight: 600; letter-spacing: 0.02em;
   color: var(--muted-foreground); text-decoration: none;
 }
+header a img { width: 1.25rem; height: 1.25rem; }
 header a:hover, footer a:hover { color: var(--foreground); }
 footer {
   margin-top: 3rem; padding-top: 1.5rem;
@@ -121,12 +122,13 @@ export function renderDoc(slug: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(doc.title)} · Boardbarian</title>
 <meta name="description" content="${escapeHtml(doc.title)} for Boardbarian, a board game rules assistant.">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
 <style>${CSS}</style>
 </head>
 <body>
 <div class="page">
-<header><a href="/"><span>&#127922;</span>Boardbarian</a></header>
+<header><a href="/"><img src="/mascot.png" alt="">Boardbarian</a></header>
 <main>
 ${body}
 </main>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, useReducedMotion } from 'motion/react'
 import { ArrowRightIcon, BadgeCheckIcon, DicesIcon, MessageCircleQuestionIcon } from 'lucide-react'
+import { BrandMark } from '@/components/BrandMark'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/auth/useAuth'
 
@@ -34,7 +35,7 @@ function HeroImage() {
         />
       ) : (
         <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-muted-foreground">
-          <span className="text-4xl">🎲</span>
+          <BrandMark className="size-9" />
           <span className="text-xs uppercase tracking-wider">Hero image</span>
         </div>
       )}
@@ -181,7 +182,7 @@ export default function HomePage() {
         {/* Header */}
         <header className="flex items-center justify-between py-4">
           <div className="flex items-center gap-2">
-            <span className="text-xl">🎲</span>
+            <BrandMark className="size-5" />
             <span className="text-sm font-semibold tracking-wide">Boardbarian</span>
           </div>
           {user ? (
