@@ -3,6 +3,7 @@ import { useAuth } from './useAuth'
 import { useAuthFetch } from './authFetch'
 import { postAcceptance } from './useAcceptanceSync'
 import { Button } from '@/components/ui/button'
+import { BrandMark } from '@/components/BrandMark'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DeleteAccountDialog } from '@/components/DeleteAccountDialog'
 import { ExternalLink } from '@/components/ExternalLink'
@@ -58,7 +59,7 @@ export function ConsentScreen({
       <div className="fixed inset-0 overflow-y-auto bg-background">
         <div className="mx-auto flex min-h-full max-w-md flex-col justify-center gap-6 px-6 py-10">
           <div className="flex flex-col items-center gap-2 text-center">
-            <span className="text-4xl">🎲</span>
+            <BrandMark className="size-9" />
             <h1 className="text-xl font-semibold text-foreground">
               {isReconsent ? "We've updated our terms" : 'Before you start'}
             </h1>
