@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { BrandMark } from '@/components/BrandMark'
 import { ExternalLink } from '@/components/ExternalLink'
 import { Input } from '@/components/ui/input'
 import { useAuth } from './useAuth'
@@ -18,7 +19,7 @@ export function LoginScreen() {
   return (
     <div className="fixed inset-0 bg-background flex flex-col items-center justify-center gap-6">
       <div className="flex flex-col items-center gap-2 text-center">
-        <span className="text-4xl">🎲</span>
+        <BrandMark className="size-9" />
         <h1 className="text-xl font-semibold text-foreground">Boardbarian</h1>
         <p className="text-sm text-muted-foreground">Sign in to ask rules questions</p>
       </div>
