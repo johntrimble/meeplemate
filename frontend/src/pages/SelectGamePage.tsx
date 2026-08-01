@@ -10,6 +10,11 @@ import { UserMenu } from '@/components/UserMenu'
 import { useGameList } from '@/hooks/useGameList'
 import { useRecentGames } from '@/hooks/useRecentGames'
 
+// Shared responsive column layout for the game grid and its loading skeleton,
+// so the two stay in sync. Scales from 3 columns on phones up to 7 on wide
+// screens, which keeps tiles from ballooning on desktop.
+const GAME_GRID = 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 gap-4'
+
 function GameCard({ game, size = 'md' }: { game: Game; size?: 'sm' | 'md' }) {
   const navigate = useNavigate()
   const textSize = size === 'sm' ? 'text-xl' : 'text-3xl'
@@ -36,12 +41,9 @@ function GameCard({ game, size = 'md' }: { game: Game; size?: 'sm' | 'md' }) {
 }
 
 /** Placeholder grid shown during the initial catalog load (incl. cold start). */
-function GameGridSkeleton({ count = 15 }: { count?: number }) {
+function GameGridSkeleton({ count = 21 }: { count?: number }) {
   return (
-    <div
-      className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4"
-      aria-hidden="true"
-    >
+    <div className={GAME_GRID} aria-hidden="true">
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} className="flex flex-col items-center gap-1.5">
           <Skeleton className="w-full aspect-square rounded-xl" />
@@ -102,7 +104,7 @@ export default function SelectGamePage() {
     <div className="h-full bg-background flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-border bg-background shrink-0">
-        <div className="max-w-3xl mx-auto px-4 py-3">
+        <div className="max-w-5xl mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <h1 className="text-lg font-semibold text-foreground">Select a Game</h1>
             <UserMenu className="w-9 h-9" />
@@ -138,14 +140,14 @@ export default function SelectGamePage() {
       </header>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-4 pb-8">
+        <div className="max-w-5xl mx-auto px-4 pb-8">
           {/* Recently Used */}
           {showRecent && (
             <section className="mt-6">
               <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
                 Recently Used
               </h2>
-              <div className="grid grid-cols-4 sm:grid-cols-6 gap-3">
+              <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-3">
                 {recentGames.map((game) => (
                   <GameCard key={game.id} game={game} size="md" />
                 ))}
@@ -173,7 +175,7 @@ export default function SelectGamePage() {
                 {isSearching ? `No games match "${query.trim()}".` : 'No games available.'}
               </div>
             ) : (
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
+              <div className={GAME_GRID}>
                 {filteredGames.map((game) => (
                   <GameCard key={game.id} game={game} size="md" />
                 ))}
