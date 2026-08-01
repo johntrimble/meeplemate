@@ -1,0 +1,17 @@
+# Codecov configuration.
+# Coverage is reported for the Python backend (the `meeplemate` package);
+# see .github/workflows/test-backend.yml for the upload step.
+coverage:
+  status:
+    project:
+      default:
+        # Report coverage changes without failing the PR while the baseline
+        # is still being established.
+        informational: true
+    patch:
+      default:
+        informational: true
+
+comment:
+  layout: "reach, diff, flags, files"
+  require_changes: true

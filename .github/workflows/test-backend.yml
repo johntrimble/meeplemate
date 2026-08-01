@@ -21,5 +21,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
-      - name: Run tests
-        run: uv run pytest tests/ -v
+      - name: Run tests with coverage
+        run: uv run --with pytest-cov pytest tests/ -v --cov=meeplemate --cov-report=xml --cov-report=term
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          flags: backend
+          # Don't fail the build if the upload can't happen (e.g. fork PRs,
+          # where CODECOV_TOKEN isn't available). Coverage is still computed
+          # and printed by the step above.
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
