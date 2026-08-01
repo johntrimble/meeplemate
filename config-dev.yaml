@@ -28,11 +28,9 @@ chat:
   # model_name: "qwen/qwen3.6-35b-a3b"
   # model_name: "NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4"
   # model_name: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
-  # model_name: "Qwen/Qwen3-30B-A3B-Instruct-2507"
-  - model_name: "Qwen/Qwen3.6-35B-A3B"
+  - model_name: "Qwen/Qwen3-30B-A3B-Instruct-2507"
     endpoint_type: "openai"
-    # endpoint: "http://vllm:8000/v1"
-    endpoint: http://192.168.0.44:8000/v1
+    endpoint: "http://vllm:8000/v1"
     max_new_tokens: 3072
     timeout: 900
 

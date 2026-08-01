@@ -25,6 +25,8 @@ services:
         condition: service_started
       firebase-emulator:
         condition: service_started
+      postgres:
+        condition: service_started
     build:
       # Build context is the pytorch Dockerfile directory
       context: ./services/dev/
