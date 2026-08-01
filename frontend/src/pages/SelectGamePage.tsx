@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, Search } from 'lucide-react'
+import { RefreshCw, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -61,6 +61,10 @@ export default function SelectGamePage() {
   const q = query.trim().toLowerCase()
   const isSearching = q.length > 0
 
+  // Client-side filter over the already-loaded catalog. `useGameList` fetches
+  // the whole catalog in one page (first: 100), so this covers everything today.
+  // If the catalog ever grows past one page, move search server-side so matches
+  // on not-yet-loaded games aren't missed.
   const filteredGames = useMemo(
     () =>
       isSearching
@@ -109,13 +113,26 @@ export default function SelectGamePage() {
               aria-hidden="true"
             />
             <Input
-              type="search"
+              type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setQuery('')
+              }}
               placeholder="Search games…"
               aria-label="Search games"
-              className="pl-9"
+              className="pl-9 pr-9"
             />
+            {isSearching && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <X className="size-4" />
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -139,7 +156,7 @@ export default function SelectGamePage() {
           {/* All Games / search results */}
           <section className="mt-8">
             <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
-              {isSearching ? 'Results' : 'All Games'}
+              {isSearching ? `Results (${filteredGames.length})` : 'All Games'}
             </h2>
             {isLoading && games.length === 0 ? (
               <GameGridSkeleton />
