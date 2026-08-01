@@ -52,7 +52,7 @@ export function LoginScreen() {
           sign-in, since that's the first point we have an account to record it
           against. */}
       <p className="max-w-xs px-6 text-center text-xs text-muted-foreground">
-        By signing in you agree to our{' '}
+        By continuing you agree to our{' '}
         {/* New tab, like the account menu and the consent screen. This screen
             renders inline from CacheGate at whatever gated URL was requested,
             so navigating away in-tab would discard the very route the user was
