@@ -15,9 +15,8 @@ import { useRecentGames } from '@/hooks/useRecentGames'
 // screens, which keeps tiles from ballooning on desktop.
 const GAME_GRID = 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 gap-4'
 
-function GameCard({ game, size = 'md' }: { game: Game; size?: 'sm' | 'md' }) {
+function GameCard({ game }: { game: Game }) {
   const navigate = useNavigate()
-  const textSize = size === 'sm' ? 'text-xl' : 'text-3xl'
 
   return (
     <button
@@ -26,10 +25,13 @@ function GameCard({ game, size = 'md' }: { game: Game; size?: 'sm' | 'md' }) {
       className="flex flex-col items-center gap-1.5 group rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
       <div
-        className="w-full aspect-square rounded-xl flex items-center justify-center shadow-sm ring-1 ring-white/10 transition-transform group-hover:scale-105 active:scale-95"
+        className="@container w-full aspect-square rounded-xl flex items-center justify-center shadow-sm ring-1 ring-white/10 transition-transform group-hover:scale-105 active:scale-95"
         style={{ backgroundColor: game.bgColor }}
       >
-        <span className={textSize} aria-hidden="true">
+        {/* Size the emoji relative to the tile (container-query units) so every
+            icon fills the same proportion of its card, regardless of how large
+            the tile is at the current breakpoint. */}
+        <span className="text-[46cqi] leading-none" aria-hidden="true">
           {game.emoji}
         </span>
       </div>
@@ -149,7 +151,7 @@ export default function SelectGamePage() {
               </h2>
               <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-3">
                 {recentGames.map((game) => (
-                  <GameCard key={game.id} game={game} size="md" />
+                  <GameCard key={game.id} game={game} />
                 ))}
               </div>
             </section>
@@ -177,7 +179,7 @@ export default function SelectGamePage() {
             ) : (
               <div className={GAME_GRID}>
                 {filteredGames.map((game) => (
-                  <GameCard key={game.id} game={game} size="md" />
+                  <GameCard key={game.id} game={game} />
                 ))}
               </div>
             )}
