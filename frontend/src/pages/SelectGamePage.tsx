@@ -4,6 +4,7 @@ import { RefreshCw, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { BrandMark } from '@/components/BrandMark'
 import { LoadingLabel } from '@/components/LoadingLabel'
 import { type Game } from '@/data/games'
 import { UserMenu } from '@/components/UserMenu'
@@ -108,7 +109,10 @@ export default function SelectGamePage() {
       <header className="sticky top-0 z-30 border-b border-border bg-background shrink-0">
         <div className="max-w-5xl mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
-            <h1 className="text-lg font-semibold text-foreground">Select a Game</h1>
+            <div className="flex items-center gap-2">
+              <BrandMark className="size-7" />
+              <h1 className="text-lg font-semibold text-foreground">Select a Game</h1>
+            </div>
             <UserMenu className="w-9 h-9" />
           </div>
           <div className="relative mt-3">
