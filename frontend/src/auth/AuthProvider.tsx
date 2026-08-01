@@ -30,6 +30,9 @@ const EMULATOR_MODE = import.meta.env.VITE_FIREBASE_EMULATOR === 'true'
 // If no explicit host is configured, use the same hostname the browser is using.
 // This means localhost:5173 → localhost:9099, ubuntu-box.local:5173 → ubuntu-box.local:9099, etc.
 const EMULATOR_HOST = import.meta.env.VITE_FIREBASE_EMULATOR_HOST ?? `${window.location.hostname}:9099`
+// Allow VITE_FIREBASE_EMULATOR_HOST to optionally include a scheme (e.g. for an
+// HTTPS-terminating proxy in front of the emulator); default to http:// otherwise.
+const EMULATOR_URL = /^https?:\/\//.test(EMULATOR_HOST) ? EMULATOR_HOST : `http://${EMULATOR_HOST}`
 
 // ---------------------------------------------------------------------------
 // Firebase config — these values are NOT secrets; safe to include in client code.
@@ -54,7 +57,7 @@ function FirebaseAuthProvider({ children }: { children: ReactNode }) {
   if (!appRef.current) {
     appRef.current = initializeApp(firebaseConfig)
     if (EMULATOR_MODE) {
-      connectAuthEmulator(getAuth(appRef.current), `http://${EMULATOR_HOST}`, { disableWarnings: true })
+      connectAuthEmulator(getAuth(appRef.current), EMULATOR_URL, { disableWarnings: true })
     }
   }
   const auth = getAuth(appRef.current)
