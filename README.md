@@ -48,10 +48,10 @@
 
 Board-game rules are notoriously hard to look things up in: the answer to "can I play a *Go Up a Level* card during combat?" is often spread across several pages, buried in exceptions, and phrased in game-specific jargon. MeepleMate answers those questions in plain language **and quotes the exact rulebook passage it relied on**, so you can trust the answer and find it yourself.
 
-Under the hood it is a full retrieval-augmented generation (RAG) system built around a few deliberate ideas:
+Under the hood it is a full retrieval-augmented generation (RAG) system: it retrieves the most relevant rulebook passages first, then asks the model to answer from that evidence. The system is built around a few deliberate ideas:
 
 - **Answers are grounded in the source.** Every quoted passage in an answer is verified back against the retrieved rulebook text; anything that can't be matched is repaired or removed. Getting a rule *wrong* is worse than saying "I'm not sure," so the pipeline is built to be honest.
-- **It runs on open models you host yourself.** The chat model (Qwen3) and the OCR models are served locally with [vLLM](https://github.com/vllm-project/vllm). There is no per-token bill to a hosted API, data stays on your own hardware, and the whole app meters its own spend against a dollar budget.
+- **It supports open-weight models you host yourself.** The local stack serves Qwen3 and the OCR models with [vLLM](https://github.com/vllm-project/vllm), keeping inference under the operator's control. OpenAI-compatible endpoints make the deployment portable, while cost-weighted quotas bound usage regardless of where inference runs.
 - **It's a real application, not a notebook.** Google Sign-In, per-user rate limiting, streaming chat, account deletion / privacy handling, database migrations, a container image built and tested in CI, and an offline document-ingestion pipeline are all here.
 
 > **Naming:** the project/repository is **MeepleMate**; the deployed web app is branded **Boardbarian**. They're the same thing.
@@ -66,7 +66,7 @@ Under the hood it is a full retrieval-augmented generation (RAG) system built ar
 | 🧠 **Agentic, multi-step reasoning** | A [LangGraph](https://langchain-ai.github.io/langgraph/) pipeline classifies each question, decomposes complex ones into sub-questions answered in parallel, retrieves evidence via tool calls, and self-checks its own output. |
 | 🔀 **Hybrid retrieval** | Dense vector search **and** full-text search over pgvector, fused with Reciprocal Rank Fusion — so exact terms (card names, keywords, numbers) aren't lost the way pure embeddings lose them. |
 | 🖼️ **OCR ingestion for image-heavy PDFs** | Rulebooks are rendered to images and read by a self-hosted vision model into clean, structured markdown, with printed page numbers recovered separately for accurate citations. |
-| 🧩 **Self-hosted LLMs with failover** | An ordered list of OpenAI-compatible models with a per-model circuit breaker keeps answers flowing when an endpoint degrades. |
+| 🧩 **Self-hosted LLMs with failover** | The system supports an ordered list of OpenAI-compatible models; when multiple endpoints are configured, a per-model circuit breaker can route around a degraded endpoint. |
 | 💸 **Budget-based rate limiting** | Usage is metered as *cost-weighted tokens* against per-user and app-wide dollar budgets over rolling 8h / 7d / 30d windows. |
 | 📊 **A real evaluation harness** | `deepeval`-based correctness judging plus custom quote-validity and runaway-generation metrics, with grid/sampling hyperparameter search and run-to-run variance analysis. |
 
@@ -107,7 +107,7 @@ flowchart TB
     API -.->|"traces"| GCS
 ```
 
-The frontend is a static single-page app (it can even be served straight from a CDN). Firebase issues the user's identity token; the backend only ever *verifies* tokens. A single FastAPI service handles every request, and the answer itself is produced by a LangGraph pipeline that talks to Postgres (for both relational data and vector search) and to a self-hosted vLLM model.
+The frontend is a static single-page app (it can even be served straight from a CDN). Firebase issues the user's identity token; the backend only ever *verifies* tokens. A single FastAPI service handles every request, and the answer itself is produced by a LangGraph pipeline that talks to Postgres (for both relational data and vector search) and to a configured OpenAI-compatible model endpoint. The local development stack provides that endpoint with vLLM.
 
 ---
 
@@ -134,15 +134,15 @@ flowchart TD
         g4 -->|"yes"| g5["Respond"]
     end
 
-    GA --> OUT(["Cited answer, streamed to the UI"])
+    GA --> OUT(["Verified answer returned to the UI"])
 ```
 
 1. **Refine.** History is trimmed to a token budget and the latest turn is rewritten into a self-contained query (so "what about during combat?" becomes a standalone question).
 2. **Analyze & classify.** The model is forced to call the retrieval tool, then labels the question **simple** or **complex** and, if complex, produces 2–5 sub-questions.
 3. **Answer.** Each question is handled by a "game agent" that retrieves evidence, drafts an answer with inline quotes, formats it, and then **validates every quote** against the retrieved text — looping back to fix problems up to five times. Complex questions run one game agent per sub-question concurrently and merge the results.
-4. **Ground & stream.** The final answer, with its verified citations, is streamed back and stored as the assistant's message; token usage is recorded for rate limiting.
+4. **Ground & respond.** Progress events are streamed while the graph runs. When it completes, the verified answer is emitted through the same SSE connection and stored as the assistant's message; token usage is recorded for rate limiting.
 
-Every model call flows through a **failover chat model**: it tries the configured models in priority order and trips a per-model circuit breaker after repeated failures (defaults: 3 consecutive failures, 300s cooldown), so a flaky endpoint is skipped instead of failing the request.
+Every answer-pipeline model call flows through a **failover chat model**: it tries configured models in priority order and trips a per-model circuit breaker after repeated failures (defaults: 3 consecutive failures, 300s cooldown). When multiple endpoints are configured, this lets the pipeline route around a flaky endpoint instead of immediately failing the request.
 
 ---
 
@@ -197,8 +197,8 @@ Pages are rendered to PNGs, read by a self-hosted **DeepSeek-OCR** vision model 
 |---|---|---|
 | **FastAPI + uvicorn** | HTTP API & streaming | Async-first with first-class SSE streaming and pydantic models; a natural fit for a single, thin service. |
 | **LangGraph** | Orchestration | The answer flow is genuinely multi-step (classify → decompose → retrieve → answer → self-verify). A typed state graph makes that explicit, debuggable, and streamable — unlike an opaque chain. |
-| **Self-hosted vLLM + Qwen3** | LLM inference | Predictable cost (the app budgets its own spend), data stays local, and full control over sampling and tool-calling. The OpenAI-compatible API keeps hosted models a config change away. |
-| **Failover model + circuit breaker** | Resilience | Self-hosted endpoints degrade; ordered failover with per-model breakers keeps answers flowing. |
+| **Self-hosted vLLM + Qwen3** | LLM inference | The local stack provides full control over model selection, sampling, and tool-calling. The OpenAI-compatible API keeps alternative self-hosted or managed endpoints a configuration change away. |
+| **Failover model + circuit breaker** | Resilience | When multiple endpoints are configured, ordered failover with per-model breakers routes around transient provider failures. |
 | **PostgreSQL + pgvector** | Storage & vector search | One database for relational data *and* vectors — far fewer moving parts to run, back up, and keep consistent than a separate vector store. |
 | **Hybrid search + RRF** | Retrieval quality | Embeddings miss exact terms that rules depend on; full-text catches them; RRF fuses both without weight tuning. |
 | **Parent-document retrieval** | Retrieval quality | Precise matching on small chunks, enough context from their parents. |
@@ -239,13 +239,13 @@ erDiagram
     }
     chat_message_part {
         uuid message_id PK
-        int part_id PK
+        text part_id PK
         text part_type
         jsonb payload
     }
     token_usage {
         text quota_key "lower(email)"
-        bigint tokens_used
+        int tokens_used
         timestamptz recorded_at
     }
 ```
@@ -302,7 +302,7 @@ docker/Dockerfile.api     # production API image
 MeepleMate runs inside a **VS Code Dev Container** defined by [`compose.yaml`](compose.yaml). The default stack includes the vLLM chat model, so an **NVIDIA GPU is required** for the full backend; the OCR models are additional and gated behind Compose profiles.
 
 1. **Prerequisites:** Docker + Docker Compose (v2.24+), and for the LLM services an NVIDIA GPU with the container toolkit.
-2. **Bootstrap** (writes `.env` with your UID/GID and creates data dirs):
+2. **Bootstrap.** This copies [`.env.example`](.env.example) to `.env` when needed, records your UID/GID, and creates the local data directories:
    ```bash
    ./script/bootstrap
    ```
@@ -315,20 +315,19 @@ MeepleMate runs inside a **VS Code Dev Container** defined by [`compose.yaml`](c
 
 **Frontend-only work** doesn't need the GPU stack — the SPA runs on plain Node against a remote (or bypassed) backend. See [`frontend/README.md`](frontend/README.md).
 
-**No Firebase project?** Use bypass mode (`MM_AUTH_BYPASS=true` on the backend, `VITE_AUTH_BYPASS=true` on the frontend) to skip auth entirely with a hardcoded dev user — details in [`docs/auth.md`](docs/auth.md#bypass-mode-local-development).
+The example environment enables authentication bypass (`MM_AUTH_BYPASS=true` and `VITE_AUTH_BYPASS=true`) so the local stack works without a Firebase project. Remove those flags and configure Firebase credentials when testing real sign-in; details are in [`docs/auth.md`](docs/auth.md#bypass-mode-local-development).
 
 ---
 
 ## Command-line tools
 
-Four CLIs are registered in `pyproject.toml` and run from inside the dev container:
+Three working CLIs are registered in `pyproject.toml` and run from inside the dev container:
 
 | Command | Purpose |
 |---|---|
 | `mm-ingest` | Turn a rulebook PDF into searchable, chunked, embedded data → [`docs/ingestion.md`](docs/ingestion.md) |
 | `mm-eval` | Generate and score answers against golden test cases |
 | `mm-admin` | Operator tasks (e.g. `purge-deleted-accounts`) |
-| `meeplemate-cli` | General project CLI |
 
 ---
 

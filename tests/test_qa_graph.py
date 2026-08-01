@@ -15,6 +15,7 @@ from meeplemate.qa_graph import (
     QuoteEntry,
     ValidateAndFixResponseOutput,
     ValidateAndFixResponseInput,
+    _strip_invalid_quotes,
     apply_replacements,
     are_segments_adjacent,
     build_segments,
@@ -158,6 +159,42 @@ def test_validation_mixed_quote_types():
     assert '> "Blockquote text here."\n> \n> (Book A, p. 1)' in result.fixed_text
     # Inline quote should remain unchanged
     assert '"Inline quote text here." (Book B, p. 2)' in result.fixed_text
+
+
+def test_strip_invalid_quotes_preserves_verified_quotes_and_prose():
+    """The exhausted-retry fallback must fail closed without losing the answer."""
+    chunks: List[Chunk] = [
+        {
+            "content": "Items can be sold for levels.",
+            "start_index": 0,
+            "end_index": 29,
+            "page": "1",
+            "rulebook_name": "Rules",
+        }
+    ]
+    response = inspect.cleandoc(
+        '''\
+        You may sell items during your turn.
+
+        > "Items can be sold for levels."
+        >
+        > (Rules, p. 1)
+
+        This second claim has no supporting source.
+
+        > "Invented rulebook text."
+        >
+        > (Rules, p. 99)
+        '''
+    )
+
+    fix_result = fix_quote_citations_in_text(response, chunks)
+    result = _strip_invalid_quotes(fix_result, chunks)
+
+    assert "Items can be sold for levels." in result["response"]
+    assert "This second claim has no supporting source." in result["response"]
+    assert "Invented rulebook text." not in result["response"]
+    assert result["invalid_quotes"] == []
 
 
 def test_validation_preserves_standalone_citation():
