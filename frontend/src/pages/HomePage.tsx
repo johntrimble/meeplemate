@@ -212,11 +212,6 @@ export default function HomePage() {
                 Get started
                 <ArrowRightIcon className="size-4" />
               </Button>
-              {!user && (
-                <Button size="lg" variant="ghost" onClick={() => navigate('/login')}>
-                  Sign in
-                </Button>
-              )}
             </div>
           </div>
           <div className="flex justify-center md:justify-end">
