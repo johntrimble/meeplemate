@@ -16,7 +16,9 @@ from meeplemate.ingest.gamepackage import (
     Page,
     document_keys,
     get_page,
+    get_page_one_offset,
     get_pages_iter,
+    get_rulebook,
     load_game_package,
     page_md_path,
     page_structured,
@@ -628,6 +630,9 @@ class PageNumberFixUpJob:
 
         tasks = []
         for document_key in document_keys(self.gp):
+            rulebook = get_rulebook(self.gp, document_key)
+            if get_page_one_offset(rulebook) != "auto":
+                continue
             tasks.append(fixup_page_numbers_for_document(document_key))
         await asyncio.gather(*tasks)
 
@@ -662,6 +667,9 @@ class PageNumberOcrJob:
                 await aspit(page_number_text, page_number_raw_path(page))
 
         for document_key in document_keys(self.gp):
+            rulebook = get_rulebook(self.gp, document_key)
+            if get_page_one_offset(rulebook) != "auto":
+                continue
             async for page in get_pages_iter(self.gp, document_key):
                 tasks.append(
                     asyncio.create_task(ocr_and_write_page_number(page))
