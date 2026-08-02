@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <a href="https://boardbarian.web.app/"><strong>🔗 Live demo — boardbarian.web.app</strong></a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12" />
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/LangGraph-1C3C3C" alt="LangGraph" />
@@ -20,7 +24,11 @@
 </p>
 
 <p align="center">
-  <img src="frontend/public/hero.webp" alt="Boardbarian — a board game rules assistant" width="640" />
+  <img src="docs/img/munchkin-question-and-answer.png" alt="Boardbarian answering a Munchkin rules question, with each quoted rule marked Verified" width="820" />
+</p>
+
+<p align="center">
+  <sub><em>A live answer in Boardbarian — every quoted rule is checked against the source and marked ✓ Verified.</em></sub>
 </p>
 
 ---
