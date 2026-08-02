@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, NotRequired, Sequence, TypedDict
+from typing import AsyncIterator, Literal, NotRequired, Sequence, TypedDict
 
 import yaml
 
@@ -15,6 +15,7 @@ class RulebookDescriptor(TypedDict):
     document_key: str
     strategy: NotRequired[str]
     page_count: int
+    page_one_offset: NotRequired[int | Literal["auto"]]
 
 
 class Manifest(TypedDict):
@@ -176,10 +177,20 @@ def load_page_metadata(page: Page) -> dict:
     return metadata
 
 
+def get_rulebook(gp: GamePackage, document_key: str) -> RulebookDescriptor:
+    return next(rb for rb in gp["rulebooks"] if rb["document_key"] == document_key)
+
+
+def get_page_one_offset(rulebook: RulebookDescriptor) -> int | Literal["auto"]:
+    return rulebook.get("page_one_offset", "auto")
+
+
+def page_num_from_offset(page_num: int, page_one_offset: int) -> str:
+    return str(page_num - page_one_offset + 1)
+
+
 def get_page_metadata(page: Page) -> dict:
-    rulebook = next(
-        rb for rb in page.gp["rulebooks"] if rb["document_key"] == page.document_key
-    )
+    rulebook = get_rulebook(page.gp, page.document_key)
     game_id = page.gp["game_id"]
     metadata = {
         "game_name": page.gp["name"],
