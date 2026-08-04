@@ -101,6 +101,7 @@ function FirebaseAuthProvider({ children }: { children: ReactNode }) {
   }
 
   const login = (credentials?: { email: string; password: string }) => {
+    setLoginError(null)
     if (EMULATOR_MODE && credentials) {
       return signInWithEmailAndPassword(auth, credentials.email, credentials.password)
         .then(() => {})
@@ -110,8 +111,14 @@ function FirebaseAuthProvider({ children }: { children: ReactNode }) {
         })
     }
     // Navigates the tab away; any provider-side failure (e.g. sign-up
-    // disabled) surfaces later via getRedirectResult, once we're back.
-    return signInWithRedirect(auth, new GoogleAuthProvider()).then(() => {})
+    // disabled) surfaces later via getRedirectResult, once we're back. A
+    // rejection here instead means the redirect never started (e.g. an
+    // unsupported environment or a storage write failure), so there's no
+    // round trip to catch it - surface it immediately.
+    return signInWithRedirect(auth, new GoogleAuthProvider()).catch((err: { code?: string }) => {
+      setLoginError('Sign-in failed. Please try again.')
+      console.error(err)
+    })
   }
 
   const logout = () => {
