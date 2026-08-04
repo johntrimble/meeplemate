@@ -10,7 +10,6 @@ export interface Game {
 export interface GameInfo {
   id: string
   name: string
-  summary?: string
   emoji?: string
   background_color?: string
   example_questions?: string[]

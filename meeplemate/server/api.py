@@ -148,7 +148,6 @@ def create_app(api_deps: ApiDeps | None = None) -> FastAPI:
 class GameInfo(BaseModel):
     id: str
     name: str
-    summary: str | None = None
     emoji: str | None = None
     background_color: str | None = None
     example_questions: list[str] | None = None
@@ -192,7 +191,7 @@ async def get_games(
     questions = await deps.game_service.get_example_questions([g["game_id"] for g in games])
     return GamesPage(
         pageInfo=PageInfo(hasNextPage=has_next, startCursor=start_cursor, endCursor=end_cursor),
-        data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary"), emoji=g.get("emoji"), background_color=g.get("background_color"), example_questions=q) for g, q in zip(games, questions)],
+        data=[GameInfo(id=g["game_id"], name=g["name"], emoji=g.get("emoji"), background_color=g.get("background_color"), example_questions=q) for g, q in zip(games, questions)],
     )
 
 
@@ -207,7 +206,7 @@ async def get_game(
     if manifest is None:
         raise HTTPException(status_code=404, detail="Game not found")
     questions = (await deps.game_service.get_example_questions([game_id]))[0]
-    return GameInfo(id=manifest["game_id"], name=manifest["name"], summary=manifest.get("summary"), emoji=manifest.get("emoji"), background_color=manifest.get("background_color"), example_questions=questions)
+    return GameInfo(id=manifest["game_id"], name=manifest["name"], emoji=manifest.get("emoji"), background_color=manifest.get("background_color"), example_questions=questions)
 
 
 @router.get("/api/recent-games")
@@ -226,7 +225,7 @@ async def get_recent_games(
     questions = await deps.game_service.get_example_questions([g["game_id"] for g in games])
     return GamesPage(
         pageInfo=PageInfo(hasNextPage=recent.pageInfo.hasNextPage, startCursor=recent.pageInfo.startCursor, endCursor=recent.pageInfo.endCursor),
-        data=[GameInfo(id=g["game_id"], name=g["name"], summary=g.get("summary"), emoji=g.get("emoji"), background_color=g.get("background_color"), example_questions=q) for g, q in zip(games, questions)],
+        data=[GameInfo(id=g["game_id"], name=g["name"], emoji=g.get("emoji"), background_color=g.get("background_color"), example_questions=q) for g, q in zip(games, questions)],
     )
 
 
