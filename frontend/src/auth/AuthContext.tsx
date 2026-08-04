@@ -16,7 +16,7 @@ export interface AuthContextValue {
   getIdToken: () => Promise<string>
   /** When true, the app is connected to the Firebase Auth Emulator. */
   emulatorMode: boolean
-  /** In emulator mode, pass { email, password } credentials. In production, opens Google OAuth popup. */
+  /** In emulator mode, pass { email, password } credentials. In production, redirects to Google OAuth. */
   login: (credentials?: { email: string; password: string }) => Promise<void>
   logout: () => void
 }
