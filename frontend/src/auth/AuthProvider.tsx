@@ -16,10 +16,11 @@ import { initializeApp, type FirebaseApp } from 'firebase/app'
 import {
   connectAuthEmulator,
   getAuth,
+  getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithEmailAndPassword,
-  signInWithPopup,
+  signInWithRedirect,
   signOut,
   type User,
 } from 'firebase/auth'
@@ -79,6 +80,20 @@ function FirebaseAuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe
   }, [auth])
 
+  useEffect(() => {
+    // Picks up the result of the signInWithRedirect round trip. A no-op when
+    // there's no pending redirect (the common case, since this runs on every
+    // mount) - it only ever surfaces provider-side failures, since a
+    // successful sign-in is already reflected by onAuthStateChanged above.
+    getRedirectResult(auth).catch((err: { code?: string }) => {
+      if (err?.code === 'auth/admin-restricted-operation') {
+        setLoginError('Sign-up is currently disabled. Contact the app administrator.')
+      } else if (err?.code) {
+        setLoginError('Sign-in failed. Please try again.')
+      }
+    })
+  }, [auth])
+
   const getIdToken = () => {
     const firebaseUser = auth.currentUser
     if (!firebaseUser) return Promise.reject(new Error('Not authenticated'))
@@ -94,13 +109,9 @@ function FirebaseAuthProvider({ children }: { children: ReactNode }) {
           console.error(err)
         })
     }
-    return signInWithPopup(auth, new GoogleAuthProvider()).then(() => {}).catch((err: { code?: string }) => {
-      if (err?.code === 'auth/admin-restricted-operation') {
-        setLoginError('Sign-up is currently disabled. Contact the app administrator.')
-      } else if (err?.code && err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
-        setLoginError('Sign-in failed. Please try again.')
-      }
-    })
+    // Navigates the tab away; any provider-side failure (e.g. sign-up
+    // disabled) surfaces later via getRedirectResult, once we're back.
+    return signInWithRedirect(auth, new GoogleAuthProvider()).then(() => {})
   }
 
   const logout = () => {
