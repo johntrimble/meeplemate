@@ -225,8 +225,8 @@ When you delete your account:
 * Access to the account is disabled immediately. The account is flagged as deleted, and further requests using it are refused from that point on.
 * The flagged account and the conversations, messages, and related records associated with it are then permanently removed.
 * Permanent removal happens on a periodic basis rather than at a fixed moment. Boardbarian keeps a flagged account for a retention window of at least 90 days before it becomes eligible for removal, and removal is carried out by an operator rather than automatically. Boardbarian does not guarantee that removal occurs on a particular date.
-* Some conversations, messages, uploads, generated responses, and related data may continue to be retained under a separate test identifier.
-* Multiple retained conversations may remain associated with one another when needed for memory or multi-session testing.
+* Some conversations, messages, uploads, generated responses, and related data may continue to be retained, in some cases under a separate test identifier.
+* Multiple retained conversations may remain associated with one another.
 * Content contained inside retained messages, images, or documents may still include identifying information that you submitted.
 * Security records, logs, analytics data, backups, and operational records may remain for their configured retention periods.
 * Information previously transmitted to third-party providers may remain subject to those providers’ retention and deletion policies.
