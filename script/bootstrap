@@ -4,11 +4,30 @@ set -e  # Exit immediately if a command exits with non-zero status
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
 DOT_ENV_FILE="$PROJECT_ROOT/.env"
+DOT_ENV_EXAMPLE_FILE="$PROJECT_ROOT/.env.example"
 
 # Error handling function
 error_exit() {
     echo "ERROR: $1" >&2
     exit 1
+}
+
+set_env_value() {
+    local key="$1"
+    local value="$2"
+
+    if grep -q "^${key}=" "$DOT_ENV_FILE"; then
+        local temp_file
+        temp_file=$(mktemp "${DOT_ENV_FILE}.XXXXXX") || error_exit "Failed to create temporary env file"
+        awk -v key="$key" -v value="$value" '
+            index($0, key "=") == 1 { print key "=" value; next }
+            { print }
+        ' "$DOT_ENV_FILE" > "$temp_file" || error_exit "Failed to update $key in .env"
+        mv "$temp_file" "$DOT_ENV_FILE" || error_exit "Failed to replace .env"
+    else
+        echo "${key}=${value}" >> "$DOT_ENV_FILE" || error_exit "Failed to add $key to .env"
+    fi
+    echo "$key set in $DOT_ENV_FILE"
 }
 
 # Check for required tools
@@ -24,27 +43,13 @@ fi
 
 # Create the .env file if it doesn't already exist
 if [ ! -f "$DOT_ENV_FILE" ]; then
-    echo "Creating .env file at $DOT_ENV_FILE"
-    touch "$DOT_ENV_FILE" || error_exit "Failed to create .env file"
+    echo "Creating .env file from $DOT_ENV_EXAMPLE_FILE"
+    cp "$DOT_ENV_EXAMPLE_FILE" "$DOT_ENV_FILE" || error_exit "Failed to create .env file"
 fi
 
-# Add MY_UID to the .env file
-if ! grep -q "MY_UID=" "$DOT_ENV_FILE"; then
-    echo "MY_UID=$(id -u)" >> "$DOT_ENV_FILE" || error_exit "Failed to add MY_UID to .env"
-    echo "MY_UID added to $DOT_ENV_FILE"
-else
-    sed -i "s/^MY_UID=.*/MY_UID=$(id -u)/" "$DOT_ENV_FILE" || error_exit "Failed to update MY_UID in .env"
-    echo "MY_UID updated in $DOT_ENV_FILE"
-fi
-
-# Add MY_GID to the .env file
-if ! grep -q "MY_GID=" "$DOT_ENV_FILE"; then
-    echo "MY_GID=$(id -g)" >> "$DOT_ENV_FILE" || error_exit "Failed to add MY_GID to .env"
-    echo "MY_GID added to $DOT_ENV_FILE"
-else
-    sed -i "s/^MY_GID=.*/MY_GID=$(id -g)/" "$DOT_ENV_FILE" || error_exit "Failed to update MY_GID in .env"
-    echo "MY_GID updated in $DOT_ENV_FILE"
-fi
+# Keep mounted-volume ownership aligned with the host on both macOS and Linux.
+set_env_value "MY_UID" "$(id -u)"
+set_env_value "MY_GID" "$(id -g)"
 
 # Create data and .cache directories if they do not exist
 mkdir -p "$PROJECT_ROOT/data" || error_exit "Failed to create data directory"
