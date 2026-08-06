@@ -2135,24 +2135,7 @@ def build_question_answer_graph(
             "valid": len(state.get("invalid_quotes", [])) == 0,
         }
 
-    async def strip_invalid_quotes(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        """Fail closed after quote-repair retries are exhausted.
-
-        The final response must never expose text presented as a rulebook quote
-        unless it can be matched back to retrieved evidence. Preserve the prose
-        around an unverified quote, but remove the quote and its citation.
-        """
-        documents = sort_chunks(get_evidence(state), runtime.context.manifest)
-        fix_result = fix_quote_citations_in_text(state["response"], documents)
-        logger.warning(
-            "Removing invalid quotes after exhausting validation attempts",
-            invalid_quote_count=len(fix_result.unfixable_quotes),
-            validation_attempts=state.get("validation_attempts", 0),
-            query=state["query"],
-        )
-        return _strip_invalid_quotes(fix_result, documents)
-
-    def check_validation_result(state: GameAgentOverallState) -> Literal["format_answer", "strip_invalid_quotes", "provide_response"]:
+    def check_validation_result(state: GameAgentOverallState) -> Literal["format_answer", "provide_response"]:
         invalid_quotes = state.get("invalid_quotes", [])
         validation_attempts = state.get("validation_attempts", 0)
         if invalid_quotes:
@@ -2163,8 +2146,6 @@ def build_question_answer_graph(
             logger.debug("Invalid quote context", invalid_quotes=invalid_quotes, documents=documents, response=state["response"])
         if invalid_quotes and validation_attempts < 5:
             return "format_answer"
-        if invalid_quotes:
-            return "strip_invalid_quotes"
         return "provide_response"
     
     def select_start_node(state: GameAgentInputState) -> Literal["answer_question", "retrieve_data"]:
@@ -2189,7 +2170,6 @@ def build_question_answer_graph(
     # graph.add_node("validate_answer", validate_answer)
     graph.add_node("format_answer", format_answer)
     graph.add_node("validate_and_fix_response", validate_and_fix_response)
-    graph.add_node("strip_invalid_quotes", strip_invalid_quotes)
     graph.add_node("provide_response", provide_response)
     graph.add_node("tool_node", tool_node)
 
@@ -2202,7 +2182,6 @@ def build_question_answer_graph(
     
     # graph.add_edge("answer_question", "validate_answer")
     graph.add_conditional_edges("validate_and_fix_response", check_validation_result)
-    graph.add_edge("strip_invalid_quotes", "provide_response")
     graph.add_edge("provide_response", END)
 
     # Compile the agent

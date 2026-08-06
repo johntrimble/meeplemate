@@ -70,6 +70,7 @@ module-root = ""
 [tool.uv.sources]
 
 [project.scripts]
+meeplemate-cli = "meeplemate.cli:cli"
 mm-eval = "meeplemate.eval.__main__:cli"
 mm-ingest = "meeplemate.ingest.__main__:cli"
 mm-admin = "meeplemate.admin.__main__:cli"
