@@ -1,16 +1,16 @@
 <p align="center">
-  <img src="frontend/public/mascot.png" alt="MeepleMate mascot" width="120" />
+  <img src="frontend/public/mascot.png" alt="Boardbarian mascot" width="120" />
 </p>
 
-<h1 align="center">MeepleMate</h1>
+<h1 align="center">Boardbarian</h1>
 
 <p align="center">
   <strong>An AI assistant that answers board-game rules questions — with citations straight from the rulebook.</strong><br/>
-  <em>The retrieval-augmented system that powers the <b>Boardbarian</b> web app.</em>
+  <em>A retrieval-augmented web app for reliable answers at the game table.</em>
 </p>
 
 <p align="center">
-  <a href="https://boardbarian.web.app/"><strong>🔗 Live demo — boardbarian.web.app</strong></a>
+  <a href="https://boardbarian.com/"><strong>🔗 Live demo — boardbarian.com</strong></a>
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@
 
 ## Contents
 
-- [What is MeepleMate?](#what-is-meeplemate)
+- [What is Boardbarian?](#what-is-boardbarian)
 - [Highlights](#highlights)
 - [System architecture](#system-architecture)
 - [How a question is answered](#how-a-question-is-answered)
@@ -52,17 +52,17 @@
 
 ---
 
-## What is MeepleMate?
+## What is Boardbarian?
 
-Board-game rules are notoriously hard to look things up in: the answer to "can I play a *Go Up a Level* card during combat?" is often spread across several pages, buried in exceptions, and phrased in game-specific jargon. MeepleMate answers those questions in plain language **and quotes the exact rulebook passage it relied on**, so you can trust the answer and find it yourself.
+Board-game rules are notoriously hard to look things up in: the answer to "can I play a *Go Up a Level* card during combat?" is often spread across several pages, buried in exceptions, and phrased in game-specific jargon. Boardbarian answers those questions in plain language **and quotes the exact rulebook passage it relied on**, so you can trust the answer and find it yourself.
 
 Under the hood it is a full retrieval-augmented generation (RAG) system: it retrieves the most relevant rulebook passages first, then asks the model to answer from that evidence. The system is built around a few deliberate ideas:
 
-- **Answers are grounded in the source.** Every quoted passage in an answer is verified back against the retrieved rulebook text; anything that can't be matched is repaired or removed. Getting a rule *wrong* is worse than saying "I'm not sure," so the pipeline is built to be honest.
+- **Answers are grounded in the source.** Quoted passages are checked against the retrieved rulebook text, and mismatches trigger an automated repair loop before the response is returned. Getting a rule *wrong* is worse than saying "I'm not sure," so the pipeline is built to surface whether its citations passed validation.
 - **It supports open-weight models you host yourself.** The local stack serves Qwen3 and the OCR models with [vLLM](https://github.com/vllm-project/vllm), keeping inference under the operator's control. OpenAI-compatible endpoints make the deployment portable, while cost-weighted quotas bound usage regardless of where inference runs.
 - **It's a real application, not a notebook.** Google Sign-In, per-user rate limiting, streaming chat, account deletion / privacy handling, database migrations, a container image built and tested in CI, and an offline document-ingestion pipeline are all here.
 
-> **Naming:** the project/repository is **MeepleMate**; the deployed web app is branded **Boardbarian**. They're the same thing.
+> **Naming:** **Boardbarian** is the product name. The repository and Python package retain the legacy **MeepleMate** / `meeplemate` name, so commands and code paths below still use it.
 
 ---
 
@@ -70,7 +70,7 @@ Under the hood it is a full retrieval-augmented generation (RAG) system: it retr
 
 | | |
 |---|---|
-| 🔎 **Cited, verified answers** | Every quote is fuzzy-matched back to the retrieved source text and corrected or dropped if it can't be verified — a concrete guardrail against hallucinated rules. |
+| 🔎 **Cited, verified answers** | Every quote is fuzzy-matched back to the retrieved source text, with mismatches sent through an automated repair loop and validation status returned with the answer — a concrete guardrail against hallucinated rules. |
 | 🧠 **Agentic, multi-step reasoning** | A [LangGraph](https://langchain-ai.github.io/langgraph/) pipeline classifies each question, decomposes complex ones into sub-questions answered in parallel, retrieves evidence via tool calls, and self-checks its own output. |
 | 🔀 **Hybrid retrieval** | Dense vector search **and** full-text search over pgvector, fused with Reciprocal Rank Fusion — so exact terms (card names, keywords, numbers) aren't lost the way pure embeddings lose them. |
 | 🖼️ **OCR ingestion for image-heavy PDFs** | Rulebooks are rendered to images and read by a self-hosted vision model into clean, structured markdown, with printed page numbers recovered separately for accurate citations. |
@@ -307,7 +307,7 @@ docker/Dockerfile.api     # production API image
 
 ## Getting started
 
-MeepleMate runs inside a **VS Code Dev Container** defined by [`compose.yaml`](compose.yaml). The default stack includes the vLLM chat model, so an **NVIDIA GPU is required** for the full backend; the OCR models are additional and gated behind Compose profiles.
+Boardbarian runs inside a **VS Code Dev Container** defined by [`compose.yaml`](compose.yaml). The default stack includes the vLLM chat model, so an **NVIDIA GPU is required** for the full backend; the OCR models are additional and gated behind Compose profiles.
 
 1. **Prerequisites:** Docker + Docker Compose (v2.24+), and for the LLM services an NVIDIA GPU with the container toolkit.
 2. **Bootstrap.** This copies [`.env.example`](.env.example) to `.env` when needed, records your UID/GID, and creates the local data directories:
