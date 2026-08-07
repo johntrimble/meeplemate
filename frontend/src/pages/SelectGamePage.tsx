@@ -88,11 +88,11 @@ export default function SelectGamePage() {
 
   useEffect(() => {
     const sentinel = sentinelRef.current
-    if (!sentinel) return
+    if (!sentinel || isSearching || isFetchingMore) return
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore) {
+        if (entries[0].isIntersecting && hasMore && !isSearching && !isFetchingMore) {
           loadMore()
         }
       },
@@ -101,7 +101,7 @@ export default function SelectGamePage() {
 
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasMore, loadMore])
+  }, [hasMore, isFetchingMore, isSearching, loadMore])
 
   return (
     <div className="h-full bg-background flex flex-col">
