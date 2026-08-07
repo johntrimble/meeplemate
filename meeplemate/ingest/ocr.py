@@ -21,6 +21,7 @@ from meeplemate.ingest.gamepackage import (
     get_rulebook,
     load_game_package,
     page_md_path,
+    page_raw_md_path,
     page_structured,
     page_structured_fixed_path,
     page_structured_path,
@@ -321,13 +322,6 @@ async def image_to_deepseek_ocr(ocr_client, image_path: Path) -> str:
         },
     )
     return response.choices[0].message.content
-
-
-async def image_to_markdown_structured(ocr_client, image_path: Path) -> Sequence[dict]:
-    markdown_text = await image_to_deepseek_ocr(ocr_client, image_path)
-    structured_metadata = markdown_text_to_structured_metadata(markdown_text)
-    # markdown = markdown_with_metadata_to_plain_markdown(structured_metadata)
-    return structured_metadata
 
 
 def page_image_path(page: Page):
@@ -742,7 +736,10 @@ class OcrJob:
         markdown_text = await image_to_deepseek_ocr(self.ocr_client, image_path)
         structured = markdown_text_to_structured_metadata(markdown_text)
         structured = drop_empty_blocks(structured)
-        await aspit_json(structured, page_structured_path(page))
+        await asyncio.gather(
+            aspit(markdown_text, page_raw_md_path(page)),
+            aspit_json(structured, page_structured_path(page)),
+        )
         return page
 
 

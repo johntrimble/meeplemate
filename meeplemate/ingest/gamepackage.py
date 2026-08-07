@@ -112,6 +112,12 @@ def page_md_path(page: Page) -> Path:
     return markdown_path
 
 
+def page_raw_md_path(page: Page) -> Path:
+    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
+    raw_markdown_path = page_base.with_suffix(".raw.md")
+    return raw_markdown_path
+
+
 def page_structured_path(page: Page) -> Path:
     page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
     structured_path = page_base.with_suffix(".structured.json")
