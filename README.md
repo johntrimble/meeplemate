@@ -14,6 +14,11 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/johntrimble/meeplemate/actions/workflows/test-backend.yml"><img src="https://github.com/johntrimble/meeplemate/actions/workflows/test-backend.yml/badge.svg?branch=dev" alt="Backend tests" /></a>
+  <a href="https://codecov.io/gh/johntrimble/meeplemate"><img src="https://codecov.io/gh/johntrimble/meeplemate/branch/dev/graph/badge.svg" alt="Code coverage" /></a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12" />
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/LangGraph-1C3C3C" alt="LangGraph" />
