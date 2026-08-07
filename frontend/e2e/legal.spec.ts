@@ -355,7 +355,7 @@ test('the game list paints from /games.json while the acceptance POST is still c
   // its presence proves the seeded catalog rendered - with the POST unanswered
   // and /api/games still failing.
   await expect(page.getByText(CATAN_GAME.name).first()).toBeVisible()
-  await expect(page.getByText('Loading games…')).not.toBeVisible()
+  await expect(page.getByRole('status', { name: 'Loading games' })).not.toBeVisible()
   await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
 
   // The POST was genuinely issued and is genuinely still outstanding - otherwise

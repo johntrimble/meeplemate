@@ -68,11 +68,11 @@ test('REST: retries a network abort (failed CORS preflight) then renders data', 
   await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
 })
 
-test('REST: the loading indicator switches to the cold-start hint, then recovers', async ({ page }) => {
+test('REST: the loading skeleton stays visible through retries, then recovers', async ({ page }) => {
   await page.route('**/api/recent-games', (route) => route.fulfill({ json: RECENT_GAMES_PAGE }))
 
   // Keep the games request failing (retrying) until we let it succeed, so the
-  // loading indicator stays visible long enough to cross the slow threshold.
+  // loading skeleton remains visible throughout the cold start.
   let allowSuccess = false
   let calls = 0
   await page.route('**/api/games?*', (route) => {
@@ -86,15 +86,15 @@ test('REST: the loading indicator switches to the cold-start hint, then recovers
 
   await page.goto('/select-game')
 
-  // The normal loading text shows first...
-  await expect(page.getByText('Loading games…')).toBeVisible()
-  // ...then, once it's been pending a while, it reassures that the server is waking up.
-  await expect(page.getByText('Waking up the server...')).toBeVisible({ timeout: 15_000 })
+  const loading = page.getByRole('status', { name: 'Loading games' })
+  await expect(loading).toBeVisible()
+  await expect.poll(() => calls, { timeout: 15_000 }).toBeGreaterThanOrEqual(2)
+  await expect(loading).toBeVisible()
 
   // Let the "cold start" finish and confirm the UI recovers with no error.
   allowSuccess = true
   await expect(page.getByText(CATAN_GAME.name).first()).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByText('Waking up the server...')).not.toBeVisible()
+  await expect(loading).not.toBeVisible()
   await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
   expect(calls).toBeGreaterThanOrEqual(2)
 })
@@ -125,7 +125,7 @@ test('static seed: game list paints from /games.json while /api/games is cold', 
   // empty here), so its presence proves the seed rendered the catalog.
   await expect(page.getByText(CATAN_GAME.name).first()).toBeVisible()
   // Never shows the cold-start loading state and never errors - it's instant.
-  await expect(page.getByText('Loading games…')).not.toBeVisible()
+  await expect(page.getByRole('status', { name: 'Loading games' })).not.toBeVisible()
   await expect(page.getByText(/failed to fetch games/i)).not.toBeVisible()
 
   // The seed does NOT suppress revalidation: the live request still fires (and

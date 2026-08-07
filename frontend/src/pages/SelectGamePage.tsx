@@ -46,13 +46,15 @@ function GameCard({ game }: { game: Game }) {
 /** Placeholder grid shown during the initial catalog load (incl. cold start). */
 function GameGridSkeleton({ count = 21 }: { count?: number }) {
   return (
-    <div className={GAME_GRID} aria-hidden="true">
-      {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="flex flex-col items-center gap-1.5">
-          <Skeleton className="w-full aspect-square rounded-xl" />
-          <Skeleton className="h-3 w-12" />
-        </div>
-      ))}
+    <div role="status" aria-label="Loading games">
+      <div className={GAME_GRID} aria-hidden="true">
+        {Array.from({ length: count }).map((_, i) => (
+          <div key={i} className="flex flex-col items-center gap-1.5">
+            <Skeleton className="w-full aspect-square rounded-xl" />
+            <Skeleton className="h-3 w-12" />
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

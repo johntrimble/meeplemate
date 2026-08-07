@@ -7,11 +7,9 @@ import {
   acceptLegal,
 } from './helpers/routes'
 
-// Captures the "Waking up the server..." cold-start hint on every loading
-// indicator we changed. Each case keeps the relevant request failing (the
-// plain-text 500 Cloud Run returns during a cold start), so the loading
-// indicator stays visible long enough to cross the slow threshold, then we
-// screenshot it into frontend/screenshots/.
+// Captures each cold-start loading state. Each case keeps the relevant request
+// failing (the plain-text 500 Cloud Run returns during a cold start), then
+// screenshots the resulting UI into frontend/screenshots/.
 
 const NO_INSTANCE_BODY = 'The request was aborted because there was no available instance.'
 const WAKING = 'Waking up the server...'
@@ -42,7 +40,8 @@ test('select-game: initial game list load', async ({ page }) => {
   await coldStart(page, '**/api/recent-games')
   await coldStart(page, '**/api/games?*')
   await page.goto('/select-game')
-  await shoot(page, 'select-game-list')
+  await expect(page.getByRole('status', { name: 'Loading games' })).toBeVisible()
+  await page.screenshot({ path: 'screenshots/cold-start-select-game-list.png' })
 })
 
 test('select-game: load-more pagination', async ({ page }) => {
