@@ -77,7 +77,7 @@ Under the hood it is a full retrieval-augmented generation (RAG) system: it retr
 |---|---|
 | 🔎 **Cited, verified answers** | Every quote is fuzzy-matched back to the retrieved source text, with mismatches sent through an automated repair loop and validation status returned with the answer — a concrete guardrail against hallucinated rules. |
 | 🧠 **Agentic, multi-step reasoning** | A [LangGraph](https://langchain-ai.github.io/langgraph/) pipeline classifies each question, decomposes complex ones into sub-questions answered in parallel, retrieves evidence via tool calls, and self-checks its own output. |
-| 🔀 **Hybrid retrieval** | Dense vector search **and** full-text search over pgvector, fused with Reciprocal Rank Fusion — so exact terms (card names, keywords, numbers) aren't lost the way pure embeddings lose them. |
+| 🔀 **Hybrid retrieval** | Dense vector search over pgvector **and** a purpose-built BM25 index, fused with Reciprocal Rank Fusion — so exact terms (card names, keywords, numbers) aren't lost the way pure embeddings lose them. |
 | 🖼️ **OCR ingestion for image-heavy PDFs** | Rulebooks are rendered to images and read by a self-hosted vision model into clean, structured markdown, with printed page numbers recovered separately for accurate citations. |
 | 🧩 **Self-hosted LLMs with failover** | The system supports an ordered list of OpenAI-compatible models; when multiple endpoints are configured, a per-model circuit breaker can route around a degraded endpoint. |
 | 💸 **Budget-based rate limiting** | Usage is metered as *cost-weighted tokens* against per-user and app-wide dollar budgets over rolling 8h / 7d / 30d windows. |
@@ -166,20 +166,29 @@ Retrieval is a tool the agent calls, not a fixed first step — and it does more
 ```mermaid
 flowchart LR
     query["Sub-query"] --> emb["Embed with BGE-small<br/>(+ query instruction)"]
-    emb --> dense["Dense search<br/>pgvector · cosine"]
-    query --> fts["Full-text search<br/>tsvector"]
-    dense --> rrf["Fuse — Reciprocal Rank Fusion"]
-    fts --> rrf
-    rrf --> ak["Adaptive-k cutoff"]
-    ak --> parent["Fetch parent chunks<br/>(small-to-big)"]
+    emb --> dense["Dense search over child chunks<br/>pgvector · cosine"]
+    dense --> ak1["Adaptive-k cutoff"]
+    ak1 --> par1["Resolve to parent ids"]
+    query --> bm25["BM25 over parent chunks<br/>precomputed postings"]
+    bm25 --> ak2["Adaptive-k cutoff"]
+    par1 --> rrf["Fuse — Reciprocal Rank Fusion"]
+    ak2 --> rrf
+    rrf --> parent["Fetch parent chunks"]
     parent --> budget["Enforce token budget"]
     budget --> out["Context for the model"]
 ```
 
-- **Hybrid search.** Dense embeddings are great at meaning but miss exact strings; full-text search catches the card names, keywords, and numbers that rules hinge on. The two result sets are fused with Reciprocal Rank Fusion so neither needs hand-tuned weighting.
+- **Hybrid search, at two granularities.** Dense embeddings are great at meaning but miss exact strings; lexical search catches the card names, keywords, and numbers that rules hinge on. The two arms deliberately search different units: dense over small child chunks, because embeddings dilute over long text, and BM25 over their parents, because splitting destroys the term co-occurrence that BM25 scores on. Both reduce to parent ids before Reciprocal Rank Fusion, so neither arm needs hand-tuned weighting.
+- **Real BM25, not `ts_rank`.** Postgres full-text ranking has no IDF, so a rare card name counts for no more than "rules" or "item". A postings index built at ingest (`bm25_*` tables) stores document frequency per rulebook and a precomputed length factor per posting, giving proper BM25 at roughly the cost of the vector query. Because a `game_version` is immutable once imported, every corpus statistic is fixed at build time and only IDF is computed per query.
 - **Small-to-big (parent-document) retrieval.** Small child chunks are embedded for precise matching, but the *parent* chunks are returned so the model gets enough surrounding context.
-- **Adaptive-k.** Instead of always returning a fixed number of chunks, the cutoff adapts to how relevant the results actually are, then a token budget caps the context.
+- **Adaptive-k.** Instead of always returning a fixed number of chunks, the cutoff adapts to how relevant the results actually are, then a token budget caps the context. It runs on each arm's own scores, before fusion — RRF discards score magnitude, and adaptive-k needs magnitude to find a real drop-off.
 - **Per-game partitioning.** Vectors live in a `rules_vectors` table partitioned by `game_version`, so retrieval is scoped to the right game (and the right edition) and old versions can be swapped out cleanly.
+
+Retrieval can be measured on its own, without LLM calls, against the evidence quotes in the eval test cases:
+
+```bash
+python -m meeplemate.eval retrieval "*"   # recall / MRR per arm, plus which arm found what
+```
 
 ---
 
@@ -213,7 +222,7 @@ Pages are rendered to PNGs, read by a self-hosted **DeepSeek-OCR** vision model 
 | **Self-hosted vLLM + Qwen3** | LLM inference | The local stack provides full control over model selection, sampling, and tool-calling. The OpenAI-compatible API keeps alternative self-hosted or managed endpoints a configuration change away. |
 | **Failover model + circuit breaker** | Resilience | When multiple endpoints are configured, ordered failover with per-model breakers routes around transient provider failures. |
 | **PostgreSQL + pgvector** | Storage & vector search | One database for relational data *and* vectors — far fewer moving parts to run, back up, and keep consistent than a separate vector store. |
-| **Hybrid search + RRF** | Retrieval quality | Embeddings miss exact terms that rules depend on; full-text catches them; RRF fuses both without weight tuning. |
+| **Hybrid search + RRF** | Retrieval quality | Embeddings miss exact terms that rules depend on; BM25 catches them; RRF fuses both without weight tuning. Postgres' own `ts_rank` was not enough — it has no IDF, so a rare card name scores no higher than a common word, which is exactly backwards for rules questions. |
 | **Parent-document retrieval** | Retrieval quality | Precise matching on small chunks, enough context from their parents. |
 | **FastEmbed / BGE-small (384-d)** | Embeddings | Small, fast, CPU-friendly, and baked into the image for quick cold starts. |
 | **DeepSeek-OCR / GLM-OCR (vLLM)** | Ingestion | Grounded OCR turns visual PDFs into structured, citable markdown with real page numbers. |
@@ -293,7 +302,7 @@ meeplemate/               # Python backend
   search.py               # hybrid chunk retrieval service
   quote_util.py           # quote / citation grounding & verification
   failover_chat_model.py  # multi-model failover + circuit breaker
-  postgres/               # pgvector store + key-value stores
+  postgres/               # pgvector store, BM25 index, key-value stores
   db/                     # SQLAlchemy models, repository, data layer
   ingest/                 # rulebook ingestion pipeline (mm-ingest)
   eval/                   # deepeval-based evaluation harness (mm-eval)

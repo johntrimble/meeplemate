@@ -6,8 +6,8 @@ import os
 
 from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_postgres import PGEngine
+from meeplemate.postgres.bm25 import Bm25IndexBuilder, Bm25Searcher
 from meeplemate.postgres.vectorstore import PartitionedPGVectorStore
-from langchain_postgres.v2.hybrid_search_config import HybridSearchConfig, reciprocal_rank_fusion
 from langchain_postgres.v2.indexes import DistanceStrategy
 import yaml
 
@@ -574,14 +574,13 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     metadata_columns=["game_version", "game_id"],
                     metadata_json_column="langchain_metadata",
                     distance_strategy=DistanceStrategy.COSINE_DISTANCE,
-                    hybrid_search_config=HybridSearchConfig(
-                        tsv_column="content_tsv",
-                        tsv_lang="pg_catalog.english",
-                        fusion_function=reciprocal_rank_fusion,
-                        fusion_function_parameters={"rrf_k": 60},
-                        primary_top_k=50,
-                        secondary_top_k=50,
-                    ),
+                    # No hybrid_search_config: the library's sparse arm builds
+                    # its query with plainto_tsquery, which ANDs every term and
+                    # so matched nothing for 82% of real queries. Lexical
+                    # retrieval now lives in Bm25Searcher over parent chunks.
+                    # Note this makes asimilarity_search_with_score return raw
+                    # cosine *distance* (lower is better) rather than RRF
+                    # scores — search.py accounts for that.
                 ),
                 {
                     "embedding_service": "embedding_model",
@@ -640,12 +639,21 @@ def create_app_system(cfg: Config) -> System[AppServices]:
                     "engine": "async_engine",
                 }
             ),
+            "bm25_searcher": (
+                factory(Bm25Searcher)(),
+                {"engine": "async_engine"},
+            ),
+            "bm25_index_builder": (
+                factory(Bm25IndexBuilder)(),
+                {"engine": "async_engine"},
+            ),
             "chunk_search_service_2": (
                 factory(build_chunk_search_service_2)(default_token_budget=15_000),
                 {
                     "vectorstore": "vector_store",
                     "docstore": "docstore",
                     "tokenizer": "tokenizer",
+                    "bm25": "bm25_searcher",
                 }
             ),
             "qa_service": (

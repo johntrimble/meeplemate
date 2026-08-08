@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import dataclasses
-from dataclasses import dataclass
 from operator import itemgetter
-from typing import Annotated, Any, Literal, NotRequired, Optional, Sequence, TypedDict, List, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, Optional, Sequence, TypedDict, List, cast
 from langchain.messages import AIMessage
 from langchain_classic.schema.runnable import ConfigurableField
 from langchain_core.documents import Document
@@ -21,6 +19,11 @@ from langchain_core.runnables.config import patch_config
 from meeplemate.ingest.gamepackage import Manifest
 from meeplemate.util import select_keys, slugify
 from structlog import get_logger
+
+if TYPE_CHECKING:
+    # Import-time only: keeps search.py free of a hard dependency on SQLAlchemy
+    # so it stays importable in tests that construct the service with bm25=None.
+    from meeplemate.postgres.bm25 import Bm25Searcher
 
 logger = get_logger(__name__)
 
@@ -491,10 +494,26 @@ def find_cutoff_adaptive_k(scores, post_k_buffer=5, find_gap_within_top_percent=
     From "Efficient Context Selection for Long-Context QA: No Tuning, No
     Iteration, Just Adaptive-k" by Taguchi et al. 2025
     https://arxiv.org/abs/2506.08479
+
+    Returns a slice LENGTH, not an index: callers do ``docs[:adaptive_k]``.
+
+    The algorithm needs scores whose magnitudes carry meaning — it looks for the
+    largest gap. Do not feed it RRF scores: those are ``1/(rank + k)``, whose
+    deltas decrease monotonically, so the largest gap is always at index 0 and
+    the result collapses to the constant ``post_k_buffer + 1``.
     """
+    # Two degenerate inputs the BM25 arm hits routinely (a query with no term in
+    # the index returns nothing; a rare term can match exactly one document).
+    # Returning -1 for the empty case would make ``docs[:-1]`` silently drop the
+    # last document rather than return nothing.
     if not scores:
-        return -1
-    
+        return 0
+    if len(scores) <= post_k_buffer + 1:
+        # The smallest value the algorithm below can return is post_k_buffer + 1,
+        # so the slice would already take everything. Short-circuit rather than
+        # index into an empty delta list.
+        return len(scores)
+
     # Assert scores are sorted in descending order
     assert all(scores[i] >= scores[i+1] for i in range(len(scores)-1)), "Scores must be sorted in descending order"
 
@@ -515,22 +534,66 @@ def find_cutoff_adaptive_k(scores, post_k_buffer=5, find_gap_within_top_percent=
     return adaptive_k
 
 
+def rrf_fuse(ranked_lists: Sequence[Sequence[str]], rrf_k: float = 60.0) -> list[str]:
+    """Reciprocal Rank Fusion over already-truncated ranked id lists.
+
+    Deliberately consumes only rank, never score — the two arms are on
+    incomparable scales (cosine similarity vs BM25), and rank is the one thing
+    they agree on.
+
+    The tie-break matters: an id found by a single arm at rank *r* has exactly
+    the same fused score as every other single-arm id at rank *r*, so without
+    one the output order would come from dict insertion and evals would not
+    reproduce.
+    """
+    scores: dict[str, float] = {}
+    best_rank: dict[str, int] = {}
+    first_seen: dict[str, int] = {}
+    for ranked in ranked_lists:
+        for rank, doc_id in enumerate(ranked):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank + 1)
+            if rank < best_rank.get(doc_id, len(scores) + len(ranked) + 1):
+                best_rank[doc_id] = rank
+            first_seen.setdefault(doc_id, len(first_seen))
+    return sorted(scores, key=lambda d: (-scores[d], best_rank[d], first_seen[d]))
+
+
 def build_chunk_search_service_2(
     vectorstore: VectorStore,
     docstore: BaseStore[str, Document],
     tokenizer: Any,
+    bm25: Optional["Bm25Searcher"] = None,
     default_token_budget: int = 13000,
+    vector_top_k: int = 50,
+    bm25_top_k: int = 10,
+    rrf_k: float = 60.0,
 ):
-    # If the vectorstore has a HybridSearchConfig, we grab it once here so we
-    # can create a fresh per-query copy on each call.  This avoids two bugs in
-    # the langchain-postgres library:
-    #   1. asimilarity_search_with_relevance_scores applies a "1 - score"
-    #      cosine transform to RRF scores, reversing their order and breaking
-    #      the descending-order assertion in find_cutoff_adaptive_k.
-    #   2. The library mutates hybrid_search_config.fts_query on the first
-    #      call; subsequent calls then re-use the stale first-query FTS string
-    #      regardless of the actual query.
-    _base_hybrid_config = getattr(getattr(vectorstore, '_vs', None), 'hybrid_search_config', None)
+    """Hybrid retrieval: dense over child chunks, lexical over their parents.
+
+    The two arms deliberately search different granularities. Child chunks
+    exist because dense embeddings dilute over long text; BM25 has no such
+    bottleneck and is actively hurt by splitting, since a query naming several
+    things can only reward a document that contains several of them. Both arms
+    are reduced to parent ids before fusion, which is also what the caller
+    ultimately receives.
+
+    ``bm25=None`` degrades to vector-only, which keeps the service constructible
+    without a database (used by the streaming tests).
+
+    Note ``vector_top_k`` is an upper bound the index may not reach: pgvector's
+    ``hnsw.ef_search`` defaults to 40, which caps the candidate list, so asking
+    for 50 returns 40. Harmless while adaptive-k cuts to well under that, but
+    raising ``vector_top_k`` alone will not widen the arm — ``hnsw.ef_search``
+    has to move with it.
+
+    ``bm25_top_k`` is lower than ``vector_top_k`` on purpose. Retrieval recall
+    over the eval evidence set saturates at 10: raising it to 50 adds ~684
+    tokens of context per call and finds no additional gold passage. The BM25
+    score curve has a much wider dynamic range than cosine similarity, so
+    adaptive-k occasionally selects 20+ parents from a deep candidate list —
+    all of them below the point where anything relevant is left. Measured on 30
+    cases, so treat it as a tuned default rather than a constant of nature.
+    """
 
     @chain
     async def chain_func(input: ChunkSearchServiceInput) -> ChunkSearchOutputState:
@@ -550,46 +613,66 @@ def build_chunk_search_service_2(
         filter = {"game_id": game_id, "game_version": game_version}
         logger.info("Vectorstore search", game_id=game_id, game_version=game_version, filter=filter, query_count=len(query))
 
-        retrieved_results = []
+        fused_parent_ids: list[str] = []
 
         for q in query:
-            # Step 1: Retrieve a large set of potentially relevant chunks using
-            # the vectorstore
-            extra: dict = {}
-            if _base_hybrid_config is not None:
-                # Build a fresh per-query config so fts_query is always current
-                # and the shared instance config object is never mutated.
-                extra['hybrid_search_config'] = dataclasses.replace(_base_hybrid_config, fts_query=q)
+            # --- Step 1: dense arm, over child chunks ---
             docs_and_scores = await vectorstore.asimilarity_search_with_score(
                 q,
                 filter=filter,
-                k=50,
-                **extra
+                k=vector_top_k,
             )
-            # RRF scores (higher = better) are already sorted descending by the
-            # fusion function, but sort explicitly to be safe.
-            docs_and_scores.sort(key=lambda x: x[1], reverse=True)
-            logger.debug("Vectorstore returned", query=q, result_count=len(docs_and_scores))
+            # These are raw cosine DISTANCES — lower is better. (They were RRF
+            # scores, higher-is-better, back when a HybridSearchConfig was
+            # attached; sorting descending here without one silently inverts the
+            # ranking.) Sort ascending, then flip to a similarity so adaptive-k
+            # gets the descending series its contract requires.
+            docs_and_scores.sort(key=lambda x: x[1])
+            vec_scores = [1.0 - distance for _, distance in docs_and_scores]
+            vec_docs = [doc for doc, _ in docs_and_scores]
+            vec_k = find_cutoff_adaptive_k(vec_scores)
 
-            # Step 2: Use the adaptive k algorithm to find the cutoff point in
-            # the retrieved results
-            scores = [score for _, score in docs_and_scores]
-            docs = [doc for doc, _ in docs_and_scores]
-            adaptive_k = find_cutoff_adaptive_k(scores)
-            selected_docs = docs[:adaptive_k]
-            logger.debug("Adaptive k selection", query=q, raw_count=len(docs), adaptive_k=adaptive_k, selected_count=len(selected_docs))
+            # Resolve children to their parents, keeping the highest-ranked
+            # occurrence of each parent.
+            vec_parent_ids: list[str] = []
+            seen_vec: set[str] = set()
+            for doc in vec_docs[:vec_k]:
+                parent_id = doc.metadata.get("doc_id")
+                if parent_id is not None and parent_id not in seen_vec:
+                    seen_vec.add(parent_id)
+                    vec_parent_ids.append(parent_id)
 
-            # Step 3: Add the selected chunks to the overall results
-            retrieved_results.extend(selected_docs)
+            # --- Step 2: lexical arm, directly over parents ---
+            bm25_parent_ids: list[str] = []
+            bm25_hits = 0
+            if bm25 is not None:
+                hits = await bm25.asearch(q, game_version, k=bm25_top_k)
+                bm25_hits = len(hits)
+                bm25_k = find_cutoff_adaptive_k([score for _, score in hits])
+                bm25_parent_ids = [parent_id for parent_id, _ in hits[:bm25_k]]
 
-        # Step 4: Get parent chunks
-        parent_doc_ids = []
-        for doc in retrieved_results:
-            parent_doc_ids.append(doc.metadata.get("doc_id"))
-        # Make parent_doc_ids unique keeping first occurrence
+            # --- Step 3: fuse ---
+            # No adaptive-k on the fused list: both inputs are already cut, and
+            # the token budget below is the final trim.
+            fused = rrf_fuse([vec_parent_ids, bm25_parent_ids], rrf_k=rrf_k)
+            fused_parent_ids.extend(fused)
+
+            logger.info(
+                "Chunk search query",
+                query=q,
+                vec_hits=len(docs_and_scores),
+                vec_selected=len(vec_parent_ids),
+                bm25_hits=bm25_hits,
+                bm25_selected=len(bm25_parent_ids),
+                fused=len(fused),
+                overlap=len(set(vec_parent_ids) & set(bm25_parent_ids)),
+            )
+
+        # Step 4: Get parent chunks. Dedupe across queries, keeping the first
+        # occurrence so earlier queries keep priority for the token budget.
         seen = set()
         unique_parent_doc_ids = []
-        for doc_id in parent_doc_ids:
+        for doc_id in fused_parent_ids:
             if doc_id not in seen:
                 unique_parent_doc_ids.append(doc_id)
                 seen.add(doc_id)
@@ -636,12 +719,16 @@ def build_chunk_search_service_2(
         # Step 7: Add chunk IDs to the documents
         docs_in_budget = add_chunk_ids(docs_in_budget)
 
-        # Step 8: Create result object
+        # Step 8: Create result object.
+        # `reasoning` reaches the model as `relevance_reason` on every chunk, so
+        # it is prompt text, not a log line. Keep it arm-agnostic: telling the
+        # model a passage "matched by keyword search" would change how it reads
+        # that passage.
         relevance_results: ChunksRelevanceResults = {
             "chunks": [
                 ChunkRelevanceResult(
                     id=get_chunk_id(doc),
-                    reasoning="Selected based on vector similarity and adaptive k cutoff.",
+                    reasoning="Selected by relevance search with adaptive k cutoff.",
                     is_relevant=True,
                 )
                 for doc in docs_in_budget

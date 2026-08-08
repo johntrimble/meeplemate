@@ -43,12 +43,14 @@ class PartitionedAsyncPGVectorStore(AsyncPGVectorStore):
                 if len(self.metadata_columns) > 0
                 else ""
             )
-            hybrid_search_column = (
-                f', "{self.hybrid_search_config.tsv_column}"'
-                if self.hybrid_search_config and self.hybrid_search_config.tsv_column
-                else ""
-            )
-            insert_stmt = f'INSERT INTO "{self.schema_name}"."{self.table_name}"("{self.id_column}", "{self.content_column}", "{self.embedding_column}"{hybrid_search_column}{metadata_col_names}'
+            # No tsv column: lexical retrieval moved to the BM25 index over
+            # parent chunks (meeplemate/postgres/bm25.py), and migration 0003
+            # dropped rules_vectors.content_tsv. Re-attaching a
+            # HybridSearchConfig would not resurrect it — AsyncPGVectorStore.create
+            # silently blanks tsv_column when the column is absent and then falls
+            # back to an unindexed to_tsvector(content) scan of the whole
+            # partition, which looks like a slowdown rather than an error.
+            insert_stmt = f'INSERT INTO "{self.schema_name}"."{self.table_name}"("{self.id_column}", "{self.content_column}", "{self.embedding_column}"{metadata_col_names}'
             values: dict[str, Any] = {
                 "langchain_id": id,
                 "content": content,
@@ -58,15 +60,6 @@ class PartitionedAsyncPGVectorStore(AsyncPGVectorStore):
 
             if not embedding and can_inline_embed:
                 values_stmt = f"VALUES (:langchain_id, :content, {self.embedding_service.embed_query_inline(content)}"  # type: ignore[union-attr]
-
-            if self.hybrid_search_config and self.hybrid_search_config.tsv_column:
-                lang = (
-                    f"'{self.hybrid_search_config.tsv_lang}',"
-                    if self.hybrid_search_config.tsv_lang
-                    else ""
-                )
-                values_stmt += f", to_tsvector({lang} :tsv_content)"
-                values["tsv_content"] = content
 
             extra = copy.deepcopy(metadata)
             for metadata_column in self.metadata_columns:
@@ -99,9 +92,6 @@ class PartitionedAsyncPGVectorStore(AsyncPGVectorStore):
                 f' "{self.content_column}" = EXCLUDED."{self.content_column}",'
                 f' "{self.embedding_column}" = EXCLUDED."{self.embedding_column}"'
             )
-
-            if self.hybrid_search_config and self.hybrid_search_config.tsv_column:
-                upsert_stmt += f', "{self.hybrid_search_config.tsv_column}" = EXCLUDED."{self.hybrid_search_config.tsv_column}"'
 
             if self.metadata_json_column:
                 upsert_stmt += f', "{self.metadata_json_column}" = EXCLUDED."{self.metadata_json_column}"'

@@ -14,6 +14,7 @@ from langchain_core.vectorstores.base import VectorStore
 
 from meeplemate.ingest.chunkbuild import ChildChunkDescriptor, ChunkDescriptor, child_chunks_for_chunk_iter, chunks_for_page_iter, get_child_chunk_path, get_chunk_path
 from meeplemate.ingest.gamepackage import GamePackage, get_game_example_questions_path, get_game_presentation_path, get_page, get_pages_iter, page_to_document, get_game_key
+from meeplemate.postgres.bm25 import Bm25IndexBuilder
 from structlog import get_logger
 
 from meeplemate.util import amap, achain_from_aiterable, aslurp, aslurp_yaml, sem_guard
@@ -29,6 +30,7 @@ class ImportDocumentsJob:
     game_data_store: BaseStore[str, Any]
     game_version_store: BaseStore[str, Any]
     chunk_store: BaseStore[str, Document]
+    bm25_builder: Bm25IndexBuilder
     path: Path
     concurrency: int
 
@@ -216,6 +218,16 @@ async def run_import_documents(job: ImportDocumentsJob, *, overwrite: bool = Fal
 
     # Wait for all tasks to complete
     await asyncio.gather(*tasks)
+
+    # Build the BM25 postings index. It reads parent chunks straight out of the
+    # docstore, so it has to run after the gather above — that is when every
+    # parent is durable — and before the version pointer below, so no query can
+    # ever see a version whose lexical arm is missing or half-built.
+    if job.gp.get("game_version"):
+        await job.bm25_builder.abuild(
+            game_id=job.gp["game_id"],
+            game_version=job.gp["game_version"],
+        )
 
     # Data imported! Lets update the current game version
     await job.game_version_store.amset([(job.gp['game_id'], game_key)])

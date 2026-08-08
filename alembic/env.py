@@ -17,6 +17,33 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+# Tables that exist in the database but deliberately have no SQLAlchemy model.
+# Without this filter autogenerate sees them as orphans and emits drop_table()
+# for each one — which was already true of rules_vectors and the langchain KV
+# store before the bm25_* tables were added. They live in raw SQL inside the
+# migrations because they use features the ORM cannot model (LIST partitioning,
+# vector/tsvector columns, HNSW and covering indexes).
+EXTERNALLY_MANAGED_TABLES = {
+    "rules_vectors",
+    "langchain_key_value_stores",
+    "bm25_doc",
+    "bm25_term",
+    "bm25_posting",
+    "bm25_df",
+    "bm25_rulebook",
+    "bm25_index_meta",
+}
+
+
+def include_object(object_, name, type_, reflected, compare_to) -> bool:
+    """Hide externally-managed tables (and their indexes) from autogenerate."""
+    if type_ == "table":
+        return name not in EXTERNALLY_MANAGED_TABLES
+    if type_ == "index":
+        table = getattr(object_, "table", None)
+        return table is None or table.name not in EXTERNALLY_MANAGED_TABLES
+    return True
+
 
 def run_migrations_offline() -> None:
     url = str(PGSettings().pg.build_url())
@@ -27,6 +54,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         compare_server_default=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -39,6 +67,7 @@ def do_run_migrations(connection: Connection) -> None:
         target_metadata=target_metadata,
         compare_type=True,
         compare_server_default=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():

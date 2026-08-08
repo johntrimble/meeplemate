@@ -237,6 +237,7 @@ def import_documents(path: Path, overwrite: bool):
                     "chunk_store": "docstore",
                     "full_page_store": "full_page_store",
                     "game_data_store": "game_data_store",
+                    "bm25_builder": "bm25_index_builder",
                 },
             )
         }
@@ -248,6 +249,58 @@ def import_documents(path: Path, overwrite: bool):
             await run_import_documents(services["import_job"], overwrite=overwrite)
 
     asyncio.run(_import_documents())
+
+
+@cli.command()
+@click.argument("path", type=Path)
+@click.option("--version", "version_override", default=None,
+              help="Index this game_version instead of the currently-published one.")
+def rebuild_bm25(path: Path, version_override: str | None):
+    """Rebuild the BM25 postings index for a game's published version.
+
+    The build reads parent chunks straight out of the docstore, so it needs
+    nothing but (game_id, game_version) — no chunk files, no re-embedding.
+    That makes it the cheap way to index a version imported before the index
+    existed, and the fast loop for tuning k1/b without touching ingest.
+
+    Defaults to the version the game_version_store currently points at, not the
+    one in the local manifest: those diverge as soon as someone runs
+    `update-version` without re-importing, and indexing an unimported version
+    silently produces an empty index.
+    """
+    settings: Config = Config()  # type: ignore
+    app_system: System = create_app_system(settings)
+    system = System.subsystem(app_system, names=["bm25_index_builder", "game_version_store"])
+    gp = load_game_package(path)
+    game_id = gp["game_id"]
+
+    async def _rebuild():
+        async with system.astart() as services:
+            game_version = version_override
+            if game_version is None:
+                game_key = (await services["game_version_store"].amget([game_id]))[0]
+                if game_key:
+                    game_version = game_key.split("#", 1)[1]
+                else:
+                    game_version = gp.get("game_version")
+                    click.echo(
+                        f"{game_id}: not published yet, falling back to the manifest version"
+                    )
+            if not game_version:
+                raise click.ClickException(
+                    f"No game_version for {game_id}: it has never been imported and the "
+                    f"manifest at {path} has none."
+                )
+            counts = await services["bm25_index_builder"].abuild(
+                game_id=game_id, game_version=game_version
+            )
+            click.echo(
+                f"{game_id}#{game_version}: "
+                f"{counts['doc_count']} parents, {counts['term_count']} terms, "
+                f"{counts['posting_count']} postings"
+            )
+
+    asyncio.run(_rebuild())
 
 
 @cli.command()
@@ -278,6 +331,7 @@ def clear_old_data():
                     "docstore": "docstore",
                     "full_page_store": "full_page_store",
                     "vector_store": "vector_store",
+                    "bm25_index": "bm25_index_builder",
                 }
             )
         }

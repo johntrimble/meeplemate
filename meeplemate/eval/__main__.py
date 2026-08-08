@@ -580,5 +580,147 @@ def token_usage(group_run_id: str):
         click.echo(f"{model_name:<{w}} {n:>5} {avg_in:>10.0f} {avg_out:>10.0f} {avg_in + avg_out:>10.0f} {cost_str:>12}")
 
 
+@cli.command()
+@click.argument("filter", required=False, default="*")
+@click.option("--token-budget", default=15_000, type=int)
+def retrieval(filter: str, token_budget: int):
+    """Score retrieval alone against the evidence quotes in test_cases.yaml.
+
+    No LLM calls: each test case's raw query goes straight to the chunk search
+    service, and we ask whether the parent chunk containing the reference
+    answer's quote came back. Runs three arm configurations so the lexical arm
+    has to justify itself rather than just not hurting.
+    """
+    import logging
+
+    from meeplemate.eval.retrieval import (
+        CaseResult,
+        load_retrieval_cases,
+        resolve_gold_parents,
+        run_case,
+        summarise,
+    )
+    from meeplemate.search import build_chunk_search_service_2, get_chunk_id
+
+    cases = load_retrieval_cases(filter)
+    if not cases:
+        raise click.ClickException(f"No test cases with evidence matched {filter!r}")
+
+    async def _run():
+        base = create_eval_system(
+            names=["vector_store", "docstore", "tokenizer", "bm25_searcher",
+                   "game_data_store", "game_version_store"]
+        )
+        async with base.astart() as svc:
+            # Pull every parent chunk once per game, so gold resolution is a
+            # local fuzzy match rather than N round trips.
+            parents_by_game: dict[str, list[tuple[str, str, str, str]]] = {}
+            manifests: dict[str, Any] = {}
+            # The search service returns synthetic chunk ids, not docstore keys
+            # (add_chunk_ids rewrites Document.id), so we need the translation
+            # back or the gold set can never match.
+            chunk_id_to_parent: dict[str, str] = {}
+            for game_id in sorted({c.game_id for c in cases}):
+                gkey = (await svc["game_version_store"].amget([game_id]))[0]
+                manifests[game_id] = (await svc["game_data_store"].amget([gkey]))[0]
+                prefix = f"{gkey}#"
+                keys = [k async for k in svc["docstore"].ayield_keys(prefix=prefix)]
+                docs = await svc["docstore"].amget(keys)
+                parents_by_game[game_id] = [
+                    (k, d.metadata.get("rulebook_name", ""), str(d.metadata.get("page_num", "")), d.page_content)
+                    for k, d in zip(keys, docs) if d is not None
+                ]
+                for k, d in zip(keys, docs):
+                    if d is not None:
+                        chunk_id_to_parent[get_chunk_id(d)] = k
+                click.echo(f"{game_id}: {len(parents_by_game[game_id])} parent chunks")
+
+            await resolve_gold_parents(cases, parents_by_game)
+
+            unresolved = [
+                (c.name, e.rulebook, e.quote[:60])
+                for c in cases for e in c.evidence if not e.resolved
+            ]
+            if unresolved:
+                click.echo(f"\n{len(unresolved)} evidence entries did not resolve to any parent "
+                           f"(excluded from scoring — check for OCR drift or a bad quote):")
+                for name, rulebook, quote in unresolved[:10]:
+                    click.echo(f"   {name}: [{rulebook}] {quote}...")
+
+            # Page-number drift is worth seeing but must not gate the gold set.
+            drift = [
+                (c.name, e.cited_page, sorted(e.found_pages))
+                for c in cases for e in c.evidence
+                if e.resolved and e.cited_page and e.cited_page not in e.found_pages
+            ]
+            if drift:
+                click.echo(f"\n{len(drift)} evidence entries were found on a different page "
+                           f"than cited (diagnostic only):")
+                for name, cited, found in drift[:10]:
+                    click.echo(f"   {name}: cited p.{cited}, found p.{','.join(found)}")
+
+            # Quiet the per-query retrieval logging: useful in production, pure
+            # noise when the point is the summary table.
+            structlog.configure(
+                wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING)
+            )
+
+            configs = {
+                "vector only": {"bm25": None},
+                "bm25 only": {"bm25": svc["bm25_searcher"], "vector_top_k": 0},
+                "fused": {"bm25": svc["bm25_searcher"]},
+            }
+            per_config: dict[str, list[CaseResult]] = {}
+            for label, kwargs in configs.items():
+                search = build_chunk_search_service_2(
+                    vectorstore=svc["vector_store"],
+                    docstore=svc["docstore"],
+                    tokenizer=svc["tokenizer"],
+                    default_token_budget=token_budget,
+                    **kwargs,
+                )
+                results = []
+                for case in cases:
+                    ids, tokens = await run_case(
+                        search, manifests[case.game_id], case, token_budget,
+                        chunk_id_to_parent=chunk_id_to_parent,
+                    )
+                    results.append(CaseResult(case=case, returned_ids=ids, tokens_used=tokens))
+                per_config[label] = results
+
+            # Attribute using each arm's own single-arm run, so "found by
+            # vector" means the vector arm actually surfaced it rather than
+            # "was returned and BM25 didn't also have it".
+            for fused, vec, bm25 in zip(
+                per_config["fused"], per_config["vector only"], per_config["bm25 only"]
+            ):
+                fused.vector_ids = set(vec.returned_ids)
+                fused.bm25_ids = set(bm25.returned_ids)
+
+            # Recall is post-token-budget, so it already reflects ranking: the
+            # budget truncates in relevance order. There is deliberately no
+            # recall@k — the service re-sorts its output into document order
+            # before returning, so position in that list is not rank.
+            click.echo()
+            click.echo(f"{'config':<12} {'recall':>7} {'all gold':>9} {'chunks':>7} {'tokens':>7}")
+            for label, results in per_config.items():
+                s = summarise(results)
+                click.echo(
+                    f"{label:<12} {s['recall']:>7.1%} "
+                    f"{s['full_recall_cases']:>4}/{s['cases']:<4} "
+                    f"{s['chunks']:>7.1f} {s['tokens']:>7.0f}"
+                )
+
+            summary = summarise(per_config["fused"])
+            a = summary["attribution"]
+            click.echo(
+                f"\ngold parents found by: vector_only={a['vector_only']} "
+                f"bm25_only={a['bm25_only']} both={a['both']} neither={a['neither']}"
+            )
+            click.echo(f"scored {summary['cases']} cases, {summary['unresolved_cases']} unscorable")
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     cli()
