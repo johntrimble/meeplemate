@@ -28,15 +28,13 @@ Rules:
 
 Your output should be a JSON object with the following structure:
 
-```json
 {
     "reasoning": "A brief explanation of the reasoning process for fixing the quote or why it was deemed unfixable.",
     "fixable": true/false, // true if the quote was successfully fixed, false if it was deemed unfixable
-    // If fixable is true, include the fixed quote information below. If fixable is false, this field can be omitted or set to null.
+    // Always include fixed_quote. If fixable is false, set all three of its fields to the empty string.
     "fixed_quote": {
         "text": "Corrected quote taken _verbatim_ from the documents",
         "rulebook_name": "Name of the rulebook the quote was taken from",
-        "page": "Page number the quote was taken from",
+        "page": "Page number the quote was taken from"
     }
 }
-```

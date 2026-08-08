@@ -1,6 +1,6 @@
 from langchain.messages import ToolMessage
 from langchain_core.messages.content import ToolCall
-from langchain_core.runnables import chain
+from langchain_core.runnables import RunnableLambda, chain
 import pytest
 from meeplemate.qa_graph import (
     Chunk,
@@ -1693,3 +1693,200 @@ def test_fix_quote_citations_no_strip_by_default():
 
     assert len(result.unfixable_quotes) == 1
     assert '>' in result.fixed_text, "blockquote markers should be preserved by default"
+
+
+def _unmatchable_response() -> str:
+    return inspect.cleandoc(
+        """
+        My analysis:
+
+        > A quote that appears in no document at all.
+        >
+        > (Rulebook, p. 1)
+        """
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_and_fix_response_skips_repair_without_documents():
+    """With no evidence there is nothing to match against, so the repair chain
+    must not be called at all, every quote is unfixable by construction."""
+    from unittest.mock import MagicMock, patch
+
+    input = ValidateAndFixResponseInput(
+        response=_unmatchable_response(),
+        evidence=[],
+        messages=[],
+        validation_attempts=0,
+    )
+
+    runtime = MagicMock()
+    runtime.context.manifest = {
+        "game_id": "test_game",
+        "game_version": "1.0",
+        "rulebooks": [{"name": "Rulebook", "document_key": "rulebook"}],
+    }
+
+    with patch("meeplemate.qa_graph.build_fix_quote_chain") as build_chain:
+        result: ValidateAndFixResponseOutput = await validate_and_fix_response(
+            input, runtime=runtime, config=None
+        )
+
+    build_chain.assert_not_called()
+    assert len(result["invalid_quotes"]) == 1
+    assert result["validation_attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_and_fix_response_never_narrows_evidence():
+    """The narrowed "chunks this response cites" set goes out under
+    `referenced_evidence`, never `evidence`.
+
+    `evidence` is the working corpus that `get_evidence` hands to this node and to
+    `format_answer` on every retry. Writing the narrowed set back into it shrinks the
+    corpus each pass, and shrinks it to nothing when a response cites nothing — which
+    leaves a later retry with no document to verify or repair its quotes against.
+    """
+    from unittest.mock import MagicMock
+
+    page_content = "Some amount of text here. Some quoted text that is okay."
+    chunks: list[Chunk] = [
+        Chunk(
+            rulebook_name="Rulebook",
+            page="5",
+            start_index=0,
+            end_index=len(page_content),
+            content=page_content,
+        )
+    ]
+
+    runtime = MagicMock()
+    runtime.context.manifest = {
+        "game_id": "test_game",
+        "game_version": "1.0",
+        "rulebooks": [{"name": "Rulebook", "document_key": "rulebook"}],
+    }
+
+    # A response whose only quote is real, and one whose only quote is invented.
+    # Neither may report evidence, and the invented one must not report an empty
+    # referenced set as though it were the corpus.
+    verified = inspect.cleandoc(
+        """
+        Here is the rule:
+
+        > Some quoted text that is okay.
+        >
+        > (Rulebook, p. 5)
+        """
+    )
+
+    for response, expect_referenced in ((verified, True), (_unmatchable_response(), False)):
+        input = ValidateAndFixResponseInput(
+            response=response,
+            evidence=chunks,
+            messages=[],
+            validation_attempts=0,
+        )
+
+        result: ValidateAndFixResponseOutput = await validate_and_fix_response(
+            input, runtime=runtime, config=None
+        )
+
+        assert "evidence" not in result, (
+            "validate_and_fix_response must not write `evidence` — that is the "
+            f"working corpus the retry loop depends on. Got: {result.get('evidence')}"
+        )
+        assert "referenced_evidence" in result, (
+            "every return path must report which chunks the response cites, or "
+            "provide_response will fall back to a stale set from answer_question"
+        )
+        assert bool(result["referenced_evidence"]) is expect_referenced
+
+
+@pytest.mark.asyncio
+async def test_validate_and_fix_response_survives_repair_exception():
+    """A repair that raises (e.g. the generation hit the token limit) is a failed
+    repair, not a failed request — it must be reported, not propagated."""
+    from unittest.mock import MagicMock, patch
+
+    chunks: list[Chunk] = [
+        Chunk(
+            rulebook_name="Rulebook",
+            page="1",
+            start_index=0,
+            end_index=len("Completely unrelated content."),
+            content="Completely unrelated content.",
+        )
+    ]
+
+    input = ValidateAndFixResponseInput(
+        response=_unmatchable_response(),
+        evidence=chunks,
+        messages=[],
+        validation_attempts=0,
+    )
+
+    @chain
+    def exploding_fix_quote(input: FixQuoteInput) -> FixQuotesResult:
+        raise ValueError("Could not parse response content as the length limit was reached")
+
+    runtime = MagicMock()
+    runtime.context.manifest = {
+        "game_id": "test_game",
+        "game_version": "1.0",
+        "rulebooks": [{"name": "Rulebook", "document_key": "rulebook"}],
+    }
+
+    with patch("meeplemate.qa_graph.build_fix_quote_chain", return_value=exploding_fix_quote):
+        result: ValidateAndFixResponseOutput = await validate_and_fix_response(
+            input, runtime=runtime, config=None
+        )
+
+    assert len(result["invalid_quotes"]) == 1
+    assert result["validation_attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_and_fix_response_propagates_cancellation():
+    """RunnableSequence.abatch catches BaseException, so with return_exceptions it
+    captures cancellation too. That is not a repair failure and must not be
+    swallowed, or the request outlives the caller that asked for it."""
+    import asyncio
+    from unittest.mock import MagicMock, patch
+
+    chunks: list[Chunk] = [
+        Chunk(
+            rulebook_name="Rulebook",
+            page="1",
+            start_index=0,
+            end_index=len("Completely unrelated content."),
+            content="Completely unrelated content.",
+        )
+    ]
+
+    input = ValidateAndFixResponseInput(
+        response=_unmatchable_response(),
+        evidence=chunks,
+        messages=[],
+        validation_attempts=0,
+    )
+
+    @chain
+    def raise_cancelled(input: FixQuoteInput) -> FixQuotesResult:
+        raise asyncio.CancelledError()
+
+    # Must be a RunnableSequence to match the real chain (prompt | model). A bare
+    # RunnableLambda goes through Runnable.abatch, whose `except Exception` lets
+    # cancellation through on its own; only RunnableSequence.abatch captures it.
+    cancelled_fix_quote = RunnableLambda(lambda x: x) | raise_cancelled
+
+    runtime = MagicMock()
+    runtime.context.manifest = {
+        "game_id": "test_game",
+        "game_version": "1.0",
+        "rulebooks": [{"name": "Rulebook", "document_key": "rulebook"}],
+    }
+
+    with patch("meeplemate.qa_graph.build_fix_quote_chain", return_value=cancelled_fix_quote):
+        with pytest.raises(asyncio.CancelledError):
+            await validate_and_fix_response(input, runtime=runtime, config=None)

@@ -1098,6 +1098,15 @@ class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
     format_attempts: int
     """Track how many times we've attempted format_answer with quote validation"""
     tokens_used: NotRequired[int]
+    referenced_evidence: NotRequired[list[Chunk]]
+    """The subset of `evidence` the current response actually quotes.
+
+    Kept separate from `evidence` so that narrowing to "what the answer cited" does
+    not shrink the corpus the later nodes still need. `format_answer` and
+    `validate_and_fix_response` both read the full set via `get_evidence`; a quote
+    can only be verified or repaired against a document that is still in hand.
+    `provide_response` is the point where validation is done, so that is where the
+    narrowed set becomes the graph's `evidence` output."""
 
 
 class GetEvidenceInput(TypedDict):
@@ -1443,8 +1452,12 @@ def build_coordinating_agent_graph(
 
 
     async def ask_simple_question(state: CoordinationOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
+        # Reuse the evidence analyze_question already retrieved. Without this the
+        # game agent re-runs retrieval with near-identical queries and can come back
+        # with a different chunk set, dropping evidence the analysis stage had in hand.
         input = {
             "query": state["query"],
+            "evidence": state.get("evidence", []),
         }
 
         writer = get_stream_writer()
@@ -1641,6 +1654,21 @@ class FixQuoteInput(TypedDict):
     invalid_quote: QuoteEntry
     documents: list[Chunk]
 
+def is_usable_fix_quote_result(result: Any) -> bool:
+    """True if a fix-quote result carries everything we need to apply the fix.
+
+    The structured-output parser repairs *partial* JSON, so a generation that
+    runs away mid-object still yields a dict, just one missing its later keys.
+    Callers treat an unusable result as "not fixed" rather than indexing into it.
+    """
+    if not isinstance(result, dict) or not result.get("fixable"):
+        return False
+    fixed_quote = result.get("fixed_quote")
+    return isinstance(fixed_quote, dict) and all(
+        key in fixed_quote for key in ("text", "rulebook_name", "page")
+    )
+
+
 def build_fix_quote_chain(chat_model: BaseChatModel) -> Runnable[FixQuoteInput,FixQuotesResult]:
     system_prompt_with_documents = load_template('system_prompt_with_documents.md')
     fix_quotes = load_template('fix_invalid_quotes.md')
@@ -1653,7 +1681,11 @@ def build_fix_quote_chain(chat_model: BaseChatModel) -> Runnable[FixQuoteInput,F
         template_format="mustache"
     )
 
-    chain = prompt | chat_model.bind(max_tokens=1024).with_structured_output(FixQuotesResult)
+    # max_tokens has to go through with_structured_output, binding it on the model
+    # first is silently discarded, since with_structured_output rebinds from scratch.
+    # A repair is a short JSON object; without a cap a hopeless input (e.g. an empty
+    # document set) makes the model ramble until it hits the model-level limit.
+    chain = prompt | chat_model.with_structured_output(FixQuotesResult, max_tokens=1024)
 
     chain = chain.with_config(
         run_name="fix_quote_chain",
@@ -1677,7 +1709,7 @@ class ValidateAndFixResponseContext:
 
 class ValidateAndFixResponseOutput(TypedDict):
     response: str
-    evidence: NotRequired[list[Chunk]]
+    referenced_evidence: NotRequired[list[Chunk]]
     invalid_quotes: list[QuoteEntry]
     validation_attempts: int
 
@@ -1693,11 +1725,11 @@ def _strip_invalid_quotes(fix_result: FixQuoteCitationsResult, documents: list[C
         if isinstance(seg, QuoteSegment) and not seg.located.is_verified
     }
     cleaned = remove_quote_segments(fix_result.segments, invalid_segs)
-    # Use referenced_chunks directly — it already includes chunks recovered via hint_match
+    # Use referenced_chunks directly, it already includes chunks recovered via hint_match
     # from low-confidence (paraphrase) matches, not just verified quotes.
     return {
         "response": materialize(cleaned, wrap_verified=True),
-        "evidence": fix_result.referenced_chunks,
+        "referenced_evidence": fix_result.referenced_chunks,
         "invalid_quotes": [],
         "validation_attempts": 0,
     }
@@ -1727,12 +1759,12 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
 
     # If nothing is invalid, we are good to return
     if len(invalid_extracted) == 0:
-        # All quotes valid — build evidence from the quotes in the response
+        # All quotes valid, build evidence from the quotes in the response
         valid_quote_entries = [extracted_quote_to_quote_entry(vq) for vq in valid_extracted]
         evidence = compile_evidence_from_documents(valid_quote_entries, documents)
         return {
             "response": materialize(fix_result.segments, wrap_verified=True),
-            "evidence": list(evidence),
+            "referenced_evidence": list(evidence),
             "invalid_quotes": [],
             "validation_attempts": 0,
         }
@@ -1750,11 +1782,30 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
             return _strip_invalid_quotes(fix_result, documents)
         return {
             "response": materialize(fix_result.segments, wrap_verified=True),
+            "referenced_evidence": fix_result.referenced_chunks,
             "invalid_quotes": invalid_quote_entries,
             "validation_attempts": state.get("validation_attempts", 0) + 1,
         }
 
     # Okay, we have bad quotes, but they are all blockquotes, there is hope!
+
+    # ...unless there is nothing to match them against. The repair chain can only
+    # return a verbatim passage from the documents, so an empty set makes every
+    # quote unfixable by construction. Skipping saves an LLM call per quote, and
+    # avoids handing the model a hopeless task it tends to ramble on.
+    if not documents:
+        logger.info(
+            "Skipping quote repair, no documents to match against",
+            invalid_quote_count=len(invalid_extracted),
+        )
+        if state.get("filter_invalid_quotes", False):
+            return _strip_invalid_quotes(fix_result, documents)
+        return {
+            "response": materialize(fix_result.segments, wrap_verified=True),
+            "referenced_evidence": fix_result.referenced_chunks,
+            "invalid_quotes": invalid_quote_entries,
+            "validation_attempts": state.get("validation_attempts", 0) + 1,
+        }
 
     # Order the extracted blockquotes. This allows us to index the
     # blockquotes by order of appearance.
@@ -1788,21 +1839,55 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
         )
         inputs_to_indices.append(idx)
     
-    fix_quote_results: list[FixQuotesResult] = await chain.abatch(
+    # return_exceptions so one bad repair cannot abort the whole request. A
+    # generation that hits the token limit raises LengthFinishReasonError out of
+    # the structured-output parser rather than returning partial content; that is
+    # a failed repair, not a failed request, and is_usable_fix_quote_result already
+    # rejects anything that is not a well-formed dict.
+    fix_quote_results: list[FixQuotesResult | BaseException] = await chain.abatch(
         inputs,
-        config=config
+        config=config,
+        return_exceptions=True,
     )
+
+    # RunnableSequence.abatch catches BaseException, not Exception, so with
+    # return_exceptions it also captures cancellation, Ctrl-C and interpreter exit.
+    # None of those are repair failures: swallowing a CancelledError would keep the
+    # request running after the caller has gone away. Re-raise anything that is not
+    # a normal error and let genuine failures through as values.
+    for result in fix_quote_results:
+        if isinstance(result, BaseException) and not isinstance(result, Exception):
+            raise result
 
     for idx, result in zip(invalid_indices, fix_quote_results):
         invalid_index_to_fixed[idx] = result
 
-    # Bail if we were unable to fix all the quotes
-    all_fixed = all(result["fixable"] for result in fix_quote_results)
+    # Bail if we were unable to fix all the quotes. A result the model never
+    # finished counts as unfixed, same as one it declared unfixable, either way
+    # we can't apply it, and the caller retries.
+    all_fixed = all(is_usable_fix_quote_result(result) for result in fix_quote_results)
     if not all_fixed:
+        errors = [r for r in fix_quote_results if isinstance(r, BaseException)]
+        logger.info(
+            "Unable to fix all invalid quotes",
+            quote_count=len(fix_quote_results),
+            unfixable_count=sum(
+                1 for r in fix_quote_results if isinstance(r, dict) and r.get("fixable") is False
+            ),
+            incomplete_count=sum(
+                1 for r in fix_quote_results
+                if not is_usable_fix_quote_result(r)
+                and not isinstance(r, BaseException)
+                and not (isinstance(r, dict) and r.get("fixable") is False)
+            ),
+            error_count=len(errors),
+            errors=[repr(e) for e in errors],
+        )
         if state.get("filter_invalid_quotes", False):
             return _strip_invalid_quotes(fix_result, documents)
         return {
             "response": materialize(fix_result.segments, wrap_verified=True),
+            "referenced_evidence": fix_result.referenced_chunks,
             "invalid_quotes": invalid_quote_entries,
             "validation_attempts": state.get("validation_attempts", 0) + 1,
         }
@@ -1839,6 +1924,7 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
             logger.info("Unfixable quote", quote=iq["quote"])
         return {
             "response": materialize(fix_result2.segments, wrap_verified=True),
+            "referenced_evidence": fix_result2.referenced_chunks,
             "invalid_quotes": [
                 extracted_quote_to_quote_entry(iq) for iq in fix_result2.unfixable_quotes
             ],
@@ -1846,14 +1932,19 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
         }
 
     # Build an ordered list of blockquote segments from the second pass.
-    # This replaces re-parsing + create_chunks_for_quotes — the segment list
+    # This replaces re-parsing + create_chunks_for_quotes, the segment list
     # already carries all the metadata we need.
     ordered_bq_segs: list[QuoteSegment] = [
         s for s in fix_result2.segments
         if isinstance(s, QuoteSegment) and s.located.quote["quote_type"] == "blockquote"
     ]
 
-    assert len(ordered_bq_segs) == total_blockquotes, "We should not have changed the number of blockquotes in the response, only fixed their formatting and citations. If this assertion fails, we need to add logic to handle the case where the number of blockquotes changes, since that can affect the indices of the quotes in the response and how we apply fixes."
+    assert len(ordered_bq_segs) == total_blockquotes, (
+        "We should not have changed the number of blockquotes in the response, "
+        "only fixed their formatting and citations. If this assertion fails, we need "
+        "to add logic to handle the case where the number of blockquotes changes, "
+        "since that can affect the indices of the quotes in the response and how we apply fixes."
+    )
 
     # The LLM will often output multiple consecutive blockquotes that point
     # out essentially the same rule in multiple places in the documents.
@@ -1861,7 +1952,7 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
     # same quote adjacent to each other in the response. We can drop any
     # fixed quotes that introduce such duplication.
 
-    # Get the consecutive groups of blockquotes — purely structural check
+    # Get the consecutive groups of blockquotes, purely structural check
     # (immune to whatever text is materialised between the quotes).
     consecutive_blockquote_groups: List[List[int]] = []
     current_group: List[int] = []
@@ -1943,7 +2034,7 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
     evidence = compile_evidence_from_documents(quote_entries, documents)
     return {
         "response": response_str,
-        "evidence": list(evidence),
+        "referenced_evidence": list(evidence),
         "invalid_quotes": [],
         "validation_attempts": 0,
     }
@@ -2044,7 +2135,13 @@ def build_question_answer_graph(
         return {
             "answer": extracted["answer"],
             "reasoning": extracted["reasoning"],
-            "evidence": referenced,
+            # Deliberately not "evidence": narrowing to the cited chunks here would
+            # take the rest of the corpus away from format_answer and the validation
+            # loop, which still have to verify and repair quotes against it. If this
+            # answer's quotes were all hallucinated, `referenced` is empty, and
+            # overwriting `evidence` with it used to leave validation with nothing to
+            # match against, so the quote could never be fixed or dropped.
+            "referenced_evidence": referenced,
         }
     
     def get_quotes(fix_quote_result: FixQuoteCitationsResult) -> Tuple[list[QuoteEntry], list[QuoteEntry]]:
@@ -2083,7 +2180,10 @@ def build_question_answer_graph(
             logger.error("format_answer failed after 5 attempts, returning error response")
             return {
                 "response": "I was unable to generate a response with valid quotes. Please try again.",
-                "evidence": [],
+                # The canned response quotes nothing, so nothing is referenced. Clear
+                # the narrowed set rather than `evidence`, which the validation loop
+                # still needs, and which provide_response falls back to.
+                "referenced_evidence": [],
                 "invalid_quotes": state.get("invalid_quotes", []),
                 "format_attempts": format_attempts,
             }
@@ -2125,7 +2225,12 @@ def build_question_answer_graph(
 
 
     async def provide_response(state: GameAgentOverallState, *, runtime: Runtime[GameAgentContext], config: RunnableConfig|None = None) -> dict:
-        evidence = state.get("evidence", [])
+        # Validation is finished by the time we get here, so this is where the
+        # corpus collapses to just the chunks the response actually quotes. Fall
+        # back to the full set when nothing was cited (an answer with no quotes, or
+        # one whose quotes never verified), returning no evidence at all would
+        # leave the caller unable to show any source.
+        evidence = state.get("referenced_evidence") or state.get("evidence", [])
         if not evidence:
             evidence = get_evidence(state)
 
