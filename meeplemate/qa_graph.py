@@ -1105,8 +1105,9 @@ class GameAgentOverallState(GameAgentInputState, GameAgentOutputState):
     not shrink the corpus the later nodes still need. `format_answer` and
     `validate_and_fix_response` both read the full set via `get_evidence`; a quote
     can only be verified or repaired against a document that is still in hand.
-    `provide_response` is the point where validation is done, so that is where the
-    narrowed set becomes the graph's `evidence` output."""
+    Quote validation and repair happen in `validate_and_fix_response`. By the time
+    `provide_response` runs that loop has finished, so that is where the narrowed set
+    becomes the graph's `evidence` output."""
 
 
 class GetEvidenceInput(TypedDict):
