@@ -251,6 +251,52 @@ def count_quotes_and_quote_errors(run: Run) -> QuoteCounts:
     return {"total_quotes": quote_count, "quote_errors": quote_errors}
 
 
+class QuoteStatsCounts(TypedDict):
+    generated: int
+    first_pass_valid: int
+    repaired: int
+    lost: int
+    units: int
+    """Validation units that reported quote_stats."""
+    unit_total: int
+    """Validation units found at all. Exceeding `units` means the run predates the
+    quote_stats output, so the counts are incomplete and must not be scored."""
+
+
+def count_quote_stats(run: Run) -> QuoteStatsCounts:
+    """Aggregate the per-pass quote accounting emitted by validate_and_fix_response.
+
+    A request runs several independent validation units (one per subquestion, plus the
+    combine stage), and each unit may validate several times as the loop retries. Within
+    a unit, the *first* pass is the only one that describes what the model produced
+    unaided, since later passes score a regenerated answer, while the *last* pass is the one
+    whose repairs and losses actually reach the caller. So group by unit, then take the
+    ends. Runs predating the `quote_stats` output contribute nothing rather than zeros,
+    which would otherwise read as a perfect score.
+    """
+    by_unit: dict[str | None, list[Run]] = {}
+    all_units: set[str] = set()
+    for node in collect_runs_by_name_iter(run, "validate_and_fix_response"):
+        all_units.add(str(node.parent_run_id))
+        if not (node.outputs or {}).get("quote_stats"):
+            continue
+        by_unit.setdefault(str(node.parent_run_id), []).append(node)
+
+    totals = QuoteStatsCounts(
+        generated=0, first_pass_valid=0, repaired=0, lost=0,
+        units=len(by_unit), unit_total=len(all_units),
+    )
+    for passes in by_unit.values():
+        passes.sort(key=lambda r: r.start_time)
+        first = (passes[0].outputs or {})["quote_stats"]
+        last = (passes[-1].outputs or {})["quote_stats"]
+        totals["generated"] += first["generated"]
+        totals["first_pass_valid"] += first["first_pass_valid"]
+        totals["repaired"] += last["repaired"]
+        totals["lost"] += last["lost"]
+    return totals
+
+
 class RunawayGenerationCounts(TypedDict):
     total_generations: int
     runaway_generations: int
