@@ -25,7 +25,16 @@ from meeplemate.eval import (
     load_persisted_run,
     TestRunTracer
 )
-from meeplemate.eval.metrics import RunawayGenerationsMetric, ValidQuoteMetric, add_quote_counts, add_runaway_generation_counts, get_correctness_metric
+from meeplemate.eval.metrics import (
+    FirstPassQuoteValidityMetric,
+    QuoteRetentionMetric,
+    RunawayGenerationsMetric,
+    ValidQuoteMetric,
+    add_quote_counts,
+    add_quote_stats,
+    add_runaway_generation_counts,
+    get_correctness_metric,
+)
 from meeplemate.eval.local_model import StructuredLocalModel
 from meeplemate.game_service import GameService
 from meeplemate.qa_graph import Chunk
@@ -321,6 +330,7 @@ class E2ERunner(Runner):
             expected_output=golden.expected_output,
         )
         add_quote_counts(test_case, run)
+        add_quote_stats(test_case, run)
         add_runaway_generation_counts(test_case, run)
 
         return test_case
@@ -359,6 +369,8 @@ class E2ERunner(Runner):
     def get_evaluation_metrics(self) -> Sequence[BaseMetric]:
         return [
             get_correctness_metric(self.local_llm_model_eval),
+            FirstPassQuoteValidityMetric(threshold=0.9),
+            QuoteRetentionMetric(threshold=0.95),
             ValidQuoteMetric(threshold=0.9),
             RunawayGenerationsMetric(threshold=0.9),
         ]

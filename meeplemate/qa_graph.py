@@ -916,6 +916,10 @@ def materialize(segments: list[Segment], *, wrap_verified: bool = True) -> str:
     When wrap_verified=True, verified blockquotes are wrapped in
     <div data-quote-status="verified"> markers as the very last step before the
     string is formed, so no downstream function ever sees partially-wrapped text.
+
+    Unverified quotes are deliberately left unmarked: the frontend styles the marked
+    ones green and leaves everything else in the default grey, so absence of the marker
+    is itself the signal.
     """
     parts: list[str] = []
     for seg in segments:
@@ -1708,14 +1712,52 @@ class ValidateAndFixResponseContext:
     manifest: Manifest
 
 
+MAX_VALIDATION_ATTEMPTS = 3
+"""Validation passes allowed per unit: the first one plus two retries.
+
+Retrying is only worth it if a regenerated answer tends to fix the quote, and it
+does not: across the 2026-08-09 baseline (351 units) and fmtfix-3 (80 units), every
+unit that ever recovered did so on the *first* retry. Nothing converged later, so
+the remaining passes only added latency and tokens before shipping the bad quote
+anyway. Two retries keeps a margin over what the data needs; past that the answer
+ships as-is, with its unverified quotes badged as such.
+"""
+
+
+class QuoteStats(TypedDict):
+    """Quote accounting for a single validation pass, consumed by the eval metrics.
+
+    All four numbers are relative to *this* pass, so a pass that hands work back for
+    another attempt reports its unresolved quotes as `lost`, since from that pass's point
+    of view they did not survive. The metrics read `generated`/`first_pass_valid`
+    from a unit's first pass (what the model produced unaided) and `repaired`/`lost`
+    from its last (how the loop actually ended).
+    """
+    generated: int
+    """Quotes located in the response before any repair, valid plus invalid."""
+    first_pass_valid: int
+    """Of those, the ones that verified with no LLM repair."""
+    repaired: int
+    """Invalid quotes that this pass turned into verified ones."""
+    lost: int
+    """Invalid quotes this pass failed to deliver as usable evidence, stripped in
+    subquestion mode, or handed back still unverified. A quote that reaches the reader
+    unmarked still counts as lost: it is displayed, but it is not citable."""
+
+
 class ValidateAndFixResponseOutput(TypedDict):
     response: str
     referenced_evidence: NotRequired[list[Chunk]]
     invalid_quotes: list[QuoteEntry]
     validation_attempts: int
+    quote_stats: NotRequired[QuoteStats]
 
 
-def _strip_invalid_quotes(fix_result: FixQuoteCitationsResult, documents: list[Chunk]) -> ValidateAndFixResponseOutput:
+def _strip_invalid_quotes(
+    fix_result: FixQuoteCitationsResult,
+    documents: list[Chunk],
+    quote_stats: QuoteStats,
+) -> ValidateAndFixResponseOutput:
     """Remove unverified quote segments from the response and return a clean result.
 
     Used when filter_invalid_quotes=True (subquestion mode) so that hallucinated quotes
@@ -1733,6 +1775,7 @@ def _strip_invalid_quotes(fix_result: FixQuoteCitationsResult, documents: list[C
         "referenced_evidence": fix_result.referenced_chunks,
         "invalid_quotes": [],
         "validation_attempts": 0,
+        "quote_stats": quote_stats,
     }
 
 
@@ -1758,6 +1801,26 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
     # Get the quotes from the fixed response
     valid_extracted, invalid_extracted = fix_result.valid_quotes, fix_result.unfixable_quotes
 
+    # Snapshot the counts now, as ints: `fix_result` is rebound to a FixQuotesResult
+    # inside the repair loop below, so anything read off it later is a different object.
+    generated_count = len(valid_extracted) + len(invalid_extracted)
+    first_pass_valid_count = len(valid_extracted)
+
+    def quote_stats(*, repaired: int = 0, lost: int = 0) -> QuoteStats:
+        return QuoteStats(
+            generated=generated_count,
+            first_pass_valid=first_pass_valid_count,
+            repaired=repaired,
+            lost=lost,
+        )
+
+    # Subquestion answers drop their bad quotes on sight: a subanswer's quote becomes
+    # synthetic evidence for the next stage, so an unverified one propagates rather than
+    # merely being read. The final answer keeps its unverified quotes instead. They ship
+    # without the verified marker, so they render grey rather than green, which is more
+    # useful to the reader than a hole in the prose where a quote was introduced.
+    filtering = state.get("filter_invalid_quotes", False)
+
     # If nothing is invalid, we are good to return
     if len(invalid_extracted) == 0:
         # All quotes valid, build evidence from the quotes in the response
@@ -1768,6 +1831,7 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
             "referenced_evidence": list(evidence),
             "invalid_quotes": [],
             "validation_attempts": 0,
+            "quote_stats": quote_stats(),
         }
 
     # Okay, something is still busted with the response
@@ -1779,13 +1843,16 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
     # Formatting inline quotes correctly can be tricky, so we'll only
     # attempt to repair blockquotes for now
     if any(q["quote_type"] not in ["blockquote"] for q in invalid_extracted):
-        if state.get("filter_invalid_quotes", False):
-            return _strip_invalid_quotes(fix_result, documents)
+        if filtering:
+            return _strip_invalid_quotes(
+                fix_result, documents, quote_stats(lost=len(invalid_extracted))
+            )
         return {
             "response": materialize(fix_result.segments, wrap_verified=True),
             "referenced_evidence": fix_result.referenced_chunks,
             "invalid_quotes": invalid_quote_entries,
             "validation_attempts": state.get("validation_attempts", 0) + 1,
+            "quote_stats": quote_stats(lost=len(invalid_extracted)),
         }
 
     # Okay, we have bad quotes, but they are all blockquotes, there is hope!
@@ -1799,13 +1866,16 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
             "Skipping quote repair, no documents to match against",
             invalid_quote_count=len(invalid_extracted),
         )
-        if state.get("filter_invalid_quotes", False):
-            return _strip_invalid_quotes(fix_result, documents)
+        if filtering:
+            return _strip_invalid_quotes(
+                fix_result, documents, quote_stats(lost=len(invalid_extracted))
+            )
         return {
             "response": materialize(fix_result.segments, wrap_verified=True),
             "referenced_evidence": fix_result.referenced_chunks,
             "invalid_quotes": invalid_quote_entries,
             "validation_attempts": state.get("validation_attempts", 0) + 1,
+            "quote_stats": quote_stats(lost=len(invalid_extracted)),
         }
 
     # Order the extracted blockquotes. This allows us to index the
@@ -1884,13 +1954,16 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
             error_count=len(errors),
             errors=[repr(e) for e in errors],
         )
-        if state.get("filter_invalid_quotes", False):
-            return _strip_invalid_quotes(fix_result, documents)
+        if filtering:
+            return _strip_invalid_quotes(
+                fix_result, documents, quote_stats(lost=len(invalid_extracted))
+            )
         return {
             "response": materialize(fix_result.segments, wrap_verified=True),
             "referenced_evidence": fix_result.referenced_chunks,
             "invalid_quotes": invalid_quote_entries,
             "validation_attempts": state.get("validation_attempts", 0) + 1,
+            "quote_stats": quote_stats(lost=len(invalid_extracted)),
         }
 
     # Okay, let's apply the fixes to the response
@@ -1923,13 +1996,28 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
         logger.info("Response still invalid after attempting fixes")
         for iq in fix_result2.unfixable_quotes:
             logger.info("Unfixable quote", quote=iq["quote"])
+        # Strip from the second-pass result, not the first: the applied repairs are
+        # real and should survive, only the quotes that stayed broken get removed.
+        if filtering:
+            return _strip_invalid_quotes(
+                fix_result2,
+                documents,
+                quote_stats(
+                    repaired=len(invalid_extracted) - len(fix_result2.unfixable_quotes),
+                    lost=len(fix_result2.unfixable_quotes),
+                ),
+            )
         return {
             "response": materialize(fix_result2.segments, wrap_verified=True),
             "referenced_evidence": fix_result2.referenced_chunks,
             "invalid_quotes": [
                 extracted_quote_to_quote_entry(iq) for iq in fix_result2.unfixable_quotes
             ],
-            "validation_attempts": state.get("validation_attempts", 0) + 1
+            "validation_attempts": state.get("validation_attempts", 0) + 1,
+            "quote_stats": quote_stats(
+                repaired=len(invalid_extracted) - len(fix_result2.unfixable_quotes),
+                lost=len(fix_result2.unfixable_quotes),
+            ),
         }
 
     # Build an ordered list of blockquote segments from the second pass.
@@ -2038,6 +2126,7 @@ async def validate_and_fix_response(state: ValidateAndFixResponseInput, *, runti
         "referenced_evidence": list(evidence),
         "invalid_quotes": [],
         "validation_attempts": 0,
+        "quote_stats": quote_stats(repaired=len(invalid_extracted)),
     }
 
 
@@ -2250,7 +2339,7 @@ def build_question_answer_graph(
             # This node re-runs up to 5 times per request, so the evidence set and the
             # full response are DEBUG-only — at INFO they dominate the log volume.
             logger.debug("Invalid quote context", invalid_quotes=invalid_quotes, documents=documents, response=state["response"])
-        if invalid_quotes and validation_attempts < 5:
+        if invalid_quotes and validation_attempts < MAX_VALIDATION_ATTEMPTS:
             return "format_answer"
         return "provide_response"
     
