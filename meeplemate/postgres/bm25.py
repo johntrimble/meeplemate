@@ -106,9 +106,12 @@ class Bm25IndexBuilder:
                     {"gv": game_version},
                 )
 
-            # Parent chunks, tokenised once. `value` is bytea holding UTF-8
-            # JSON (PostgresJSONStore._encode does json.dumps(...).encode()),
-            # hence convert_from before the jsonb cast.
+            # _bm25_parent(did, langchain_id, rulebook_name, tsv) -- one row per
+            # parent chunk, tokenised once. `did` is the per-version document
+            # surrogate every later table is keyed by.
+            #
+            # `value` is bytea holding UTF-8 JSON (PostgresJSONStore._encode does
+            # json.dumps(...).encode()), hence convert_from before the jsonb cast.
             #
             # starts_with, not LIKE: every game_id contains '_', which LIKE
             # treats as a single-character wildcard, so 'munchkin#...' would
@@ -138,8 +141,10 @@ class Bm25IndexBuilder:
                 {"ns": self.namespace, "prefix": prefix},
             )
 
-            # unnest(tsvector) yields one row per (document, lexeme), so df
-            # downstream is count(*) rather than count(DISTINCT did).
+            # _bm25_tok(did, rulebook_name, lexeme, tf) -- one row per (parent,
+            # lexeme), tf being that lexeme's count in that parent. That grain is
+            # what unnest(tsvector) yields, so df downstream is count(*) rather
+            # than count(DISTINCT did).
             await conn.execute(text("""
                 CREATE TEMP TABLE _bm25_tok ON COMMIT DROP AS
                 SELECT p.did,
@@ -152,7 +157,8 @@ class Bm25IndexBuilder:
             await conn.execute(text("CREATE INDEX ON _bm25_tok (lexeme);"))
             await conn.execute(text("CREATE INDEX ON _bm25_tok (did);"))
 
-            # Rulebook surrogate ids.
+            # _bm25_book(rulebook_id, rulebook_name) -- surrogate id per distinct
+            # rulebook.
             await conn.execute(text("""
                 CREATE TEMP TABLE _bm25_book ON COMMIT DROP AS
                 SELECT (row_number() OVER (ORDER BY rulebook_name))::smallint AS rulebook_id,

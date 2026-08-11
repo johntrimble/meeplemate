@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from operator import itemgetter
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, Optional, Sequence, TypedDict, List, cast
 from langchain.messages import AIMessage
@@ -545,14 +546,23 @@ def rrf_fuse(ranked_lists: Sequence[Sequence[str]], rrf_k: float = 60.0) -> list
     the same fused score as every other single-arm id at rank *r*, so without
     one the output order would come from dict insertion and evals would not
     reproduce.
+
+    An id repeated *within* one list contributes once, at its best rank. Both
+    callers currently pass deduped lists, but scoring it twice would inflate it
+    exactly as though a second arm had independently found it, which is the one
+    thing this function is supposed to mean.
     """
     scores: dict[str, float] = {}
     best_rank: dict[str, int] = {}
     first_seen: dict[str, int] = {}
     for ranked in ranked_lists:
+        seen_in_list: set[str] = set()
         for rank, doc_id in enumerate(ranked):
+            if doc_id in seen_in_list:
+                continue
+            seen_in_list.add(doc_id)
             scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank + 1)
-            if rank < best_rank.get(doc_id, len(scores) + len(ranked) + 1):
+            if rank < best_rank.get(doc_id, math.inf):
                 best_rank[doc_id] = rank
             first_seen.setdefault(doc_id, len(first_seen))
     return sorted(scores, key=lambda d: (-scores[d], best_rank[d], first_seen[d]))
