@@ -10,6 +10,7 @@ from langchain_core.vectorstores import VectorStore
 
 from structlog import get_logger
 
+from meeplemate.postgres.bm25 import Bm25IndexBuilder
 from meeplemate.util import sem_guard
 
 logger = get_logger(__name__)
@@ -21,6 +22,9 @@ class ClearOldDataJob:
     full_page_store: BaseStore
     vector_store: VectorStore
     docstore: BaseStore
+    # Declared before concurrency_semaphore: dataclasses forbid a field without
+    # a default after one that has one.
+    bm25_index: Bm25IndexBuilder
 
     concurrency_semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(10))
 
@@ -86,6 +90,15 @@ class ClearOldDataJob:
 
 
     async def clear_old_version_data(self, game_key_with_version: str):
+        game_version = game_key_with_version.split("#", 1)[1]
+
+        # Drop the lexical index first. It is keyed only on game_version, so it
+        # can always be removed cleanly; if the chunk deletion below fails
+        # partway, a version with no index degrades to vector-only, which is
+        # safe. The reverse order would leave postings pointing at parents that
+        # no longer exist.
+        await self.bm25_index.apurge(game_version)
+
         # All the chunks to delete will be prefixed by game_key_with_version
         await self.clear_old_chunks(game_key_with_version)
         await self.clear_data_with_prefix(self.full_page_store, f"{game_key_with_version}#")
@@ -94,7 +107,6 @@ class ClearOldDataJob:
         # Drop the vector store partition for this version if supported
         delete_partition = getattr(self.vector_store, "delete_partition", None)
         if callable(delete_partition):
-            game_version = game_key_with_version.split("#", 1)[1]
             await delete_partition(game_version)  # type: ignore[misc]
 
     async def clear_old_game_data(self, game_id: str):
