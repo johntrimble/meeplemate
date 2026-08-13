@@ -24,11 +24,23 @@ FIXTURE_NO_INGEST = FIXTURES / "ingest_absent.yaml"
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    """Config reads ambient MM_* variables; drop them so tests are hermetic."""
+    """Strip ambient MM_* variables so a developer's shell cannot skew results."""
     for key in list(os.environ):
         if key.startswith("MM_"):
             monkeypatch.delenv(key, raising=False)
     return monkeypatch
+
+
+def build_config() -> Config:
+    """Build a Config from the fixture file alone.
+
+    `_env_file=None` disables the dotenv source. Clearing MM_* environment
+    variables is not enough on its own: pydantic-settings reads `.env` through a
+    separate source, so a checked-out `.env` would quietly supply fields the
+    fixture omits — which is exactly how these tests came to pass on a machine
+    that had one and fail on a machine that did not.
+    """
+    return Config(_env_file=None)
 
 
 def test_defaults_match_the_previously_hardcoded_values():
@@ -60,7 +72,7 @@ def test_defaults_match_the_previously_hardcoded_values():
 
 def test_config_file_overrides_reach_the_nested_models(clean_env):
     clean_env.setenv("MM_CONFIG_FILE", str(FIXTURE))
-    ingest = Config().ingest
+    ingest = build_config().ingest
 
     assert (ingest.chunk_size, ingest.chunk_overlap) == (321, 21)
     assert (ingest.child_chunk_size, ingest.child_chunk_overlap) == (87, 7)
@@ -81,7 +93,7 @@ def test_config_file_overrides_reach_the_nested_models(clean_env):
 def test_unspecified_values_fall_back_to_defaults(clean_env):
     """The fixture omits ocr.api_key and ocr.timeout."""
     clean_env.setenv("MM_CONFIG_FILE", str(FIXTURE))
-    ingest = Config().ingest
+    ingest = build_config().ingest
     assert ingest.ocr.api_key == "EMPTY"
     assert ingest.ocr.timeout == 3600
 
@@ -93,7 +105,7 @@ def test_environment_beats_the_config_file(clean_env):
     clean_env.setenv("MM_INGEST__OCR__MODEL", "test/env-wins")
     clean_env.setenv("MM_INGEST__RENDER__DPI", "72")
 
-    ingest = Config().ingest
+    ingest = build_config().ingest
     assert ingest.ocr.model == "test/env-wins"
     assert ingest.render.dpi == 72
     # Untouched keys still come from the file.
@@ -103,4 +115,4 @@ def test_environment_beats_the_config_file(clean_env):
 def test_config_without_an_ingest_key_yields_the_defaults(clean_env):
     """config-dev.yaml has no `ingest:` block, so this is the live dev path."""
     clean_env.setenv("MM_CONFIG_FILE", str(FIXTURE_NO_INGEST))
-    assert Config().ingest == IngestConfig()
+    assert build_config().ingest == IngestConfig()
