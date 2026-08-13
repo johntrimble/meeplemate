@@ -4,6 +4,8 @@ from typing import AsyncIterator, Literal, NotRequired, Sequence, TypedDict
 
 import yaml
 
+from meeplemate.ingest.errors import MissingStepInput
+from meeplemate.ingest.layout import PackageLayout
 from meeplemate.util import amap, aslurp, aslurp_json, spit_yaml
 from langchain_core.documents.base import Document
 
@@ -54,30 +56,71 @@ def document_keys(manifest: Manifest) -> Sequence[str]:
     return document_keys
 
 
+def layout_for(gp: GamePackage) -> PackageLayout:
+    return PackageLayout(gp["path"])
+
+
 def load_manifest(target_dir: Path) -> Manifest:
-    manifest_path = target_dir / "rulebooks.yaml"
+    manifest_path = PackageLayout(target_dir).manifest()
     manifest = yaml.safe_load(manifest_path.read_text())
     return manifest
 
  
-def load_game_package(target_dir: Path) -> GamePackage:
+def _read_if_exists(path: Path) -> str | None:
+    return path.read_text() if path.exists() else None
+
+
+def load_game_package(target_dir: Path, *, require_version: bool = False) -> GamePackage:
+    """Assemble the in-memory game package from its on-disk parts.
+
+    The manifest holds only facts derived from the source rulebooks. The version
+    and the generated summaries live in their own files, written by the steps
+    that own them, and are folded back in here.
+
+    Everything downstream — `import_game_data`, and through it `chatloop`,
+    `search` and `qa_graph` — sees exactly the shape it saw when all of this was
+    one YAML file.
+    """
     manifest = load_manifest(target_dir)
     if "path" in manifest:
         del manifest["path"]
     gp: GamePackage = GamePackage(**manifest, path=target_dir)
+    layout = PackageLayout(target_dir)
+
+    version = _read_if_exists(layout.version())
+    if version is None and require_version:
+        raise MissingStepInput(
+            what=f"No game version at {layout.version()}",
+            run_step=f"update-version {target_dir}",
+        )
+    if version is not None:
+        gp["game_version"] = version.strip()
+
+    game_summary = _read_if_exists(layout.game_reference())
+    if game_summary is not None:
+        gp["summary"] = game_summary
+
+    for rulebook in gp["rulebooks"]:
+        short = _read_if_exists(layout.rulebook_reference_short(rulebook["document_key"]))
+        if short is not None:
+            rulebook["summary"] = short
+
     return gp
 
 
-def save_manifest(gp: GamePackage) -> None:
-    manifest_path = gp["path"] / "rulebooks.yaml"
-    manifest_dict = dict(gp)
-    del manifest_dict["path"]
-    spit_yaml(manifest_dict, manifest_path)
+def write_manifest(manifest: Manifest, target_dir: Path) -> None:
+    """Write the package manifest. `init-game-package` is its only caller.
+
+    Keeping one writer is what lets the manifest be a stage output. The version
+    and summaries that used to be merged in here are written by their own steps
+    to their own files.
+    """
+    manifest_dict = dict(manifest)
+    manifest_dict.pop("path", None)
+    spit_yaml(manifest_dict, PackageLayout(target_dir).manifest())
 
 
 def get_page(gp:GamePackage, document_key: str, page_num: int) -> Page:
-    page_base = (gp["path"] / document_key / f"{page_num:04d}")
-    page_num = int(page_base.stem)
     page = Page(
         gp=gp,
         document_key=document_key,
@@ -87,59 +130,43 @@ def get_page(gp:GamePackage, document_key: str, page_num: int) -> Page:
 
 
 def get_raw_documents_directory_path(gp: GamePackage) -> Path:
-    raw_docs_path = gp["path"] / "raw_documents"
-    return raw_docs_path
+    return layout_for(gp).raw_documents()
 
 
 def get_game_setting_summary_path(gp: GamePackage) -> Path:
-    summary_path = gp["path"] / "game_setting_summary.md"
-    return summary_path
+    return layout_for(gp).game_setting()
 
 
 def get_game_presentation_path(gp: GamePackage) -> Path:
-    presentation_path = gp["path"] / "presentation.yaml"
-    return presentation_path
+    return layout_for(gp).presentation()
 
 
 def get_game_example_questions_path(gp: GamePackage) -> Path:
-    example_questions_path = gp["path"] / "example_questions.yaml"
-    return example_questions_path
+    return layout_for(gp).example_questions()
 
 
 def page_md_path(page: Page) -> Path:
-    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
-    markdown_path = page_base.with_suffix(".md")
-    return markdown_path
+    return layout_for(page.gp).page_md(page.document_key, page.page_num)
 
 
 def page_raw_md_path(page: Page) -> Path:
-    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
-    raw_markdown_path = page_base.with_suffix(".raw.md")
-    return raw_markdown_path
+    return layout_for(page.gp).page_raw_md(page.document_key, page.page_num)
 
 
 def page_structured_path(page: Page) -> Path:
-    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
-    structured_path = page_base.with_suffix(".structured.json")
-    return structured_path
+    return layout_for(page.gp).page_structured(page.document_key, page.page_num)
 
 
 def page_structured_fixed_path(page: Page) -> Path:
-    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
-    structured_path = page_base.with_suffix(".structured.fixed.json")
-    return structured_path
+    return layout_for(page.gp).page_structured_fixed(page.document_key, page.page_num)
 
 
 def page_number_raw_path(page: Page) -> Path:
-    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
-    page_number_path = page_base.with_suffix(".page_number.raw.txt")
-    return page_number_path
+    return layout_for(page.gp).page_number_raw(page.document_key, page.page_num)
 
 
 def page_number_path(page: Page) -> Path:
-    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
-    page_number_path = page_base.with_suffix(".page_number.txt")
-    return page_number_path
+    return layout_for(page.gp).page_number(page.document_key, page.page_num)
 
 
 async def page_md(page: Page) -> str:
@@ -172,9 +199,7 @@ async def get_pages_iter(gp: GamePackage, document_key: str|None = None) -> Asyn
 
 
 def get_page_metadata_path(page: Page) -> Path:
-    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
-    metadata_path = page_base.with_suffix(".metadata.yaml")
-    return metadata_path
+    return layout_for(page.gp).page_metadata(page.document_key, page.page_num)
 
 
 def load_page_metadata(page: Page) -> dict:
@@ -196,12 +221,19 @@ def page_num_from_offset(page_num: int, page_one_offset: int) -> str:
 
 
 def get_page_metadata(page: Page) -> dict:
+    """Per-page metadata baked into chunk JSON.
+
+    Deliberately excludes `game_version`. It used to be written here, which made
+    every chunk file depend on `update-version` and forced a full rebuild after
+    each version bump. `add_game_metadata_to_document` in dataimport already
+    stamps the current version onto metadata, `doc_id` and the document id at
+    import time, so recording it here bought nothing.
+    """
     rulebook = get_rulebook(page.gp, page.document_key)
     game_id = page.gp["game_id"]
     metadata = {
         "game_name": page.gp["name"],
         "game_id": game_id,
-        "game_version": page.gp.get("game_version", ""),
         "rulebook_name": rulebook["name"],
         "document_key": page.document_key,
         "page_ordinal": page.page_num,
@@ -220,11 +252,12 @@ def get_page_chunk_id(game_id: str, game_version: str, document_key: str, page_o
 
 async def page_to_document(page: Page) -> Document:
     game_id = page.gp["game_id"]
-    game_version = page.gp.get("game_version", "")
     metadata = get_page_metadata(page)
     addl_metadata = load_page_metadata(page)
     metadata.update(addl_metadata)
-    page_key = get_page_id(game_id, game_version, page.document_key, page.page_num)
+    # Built with an empty version slot; import fills it in. Keeps chunk JSON
+    # identical across version bumps. See get_page_metadata.
+    page_key = get_page_id(game_id, "", page.document_key, page.page_num)
     markdown = await page_md(page)
     return Document(id=page_key, page_content=markdown, metadata=metadata)
 

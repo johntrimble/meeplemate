@@ -2,10 +2,8 @@
 import asyncio
 import copy
 from dataclasses import dataclass
-from glob import glob
 from pathlib import Path
-import re
-from typing import Any, AsyncIterator, Coroutine, Tuple, TypedDict
+from typing import Any, AsyncIterator, Coroutine, TypedDict
 
 from langchain_core.documents.base import Document
 from langchain_core.load import dumps, loads
@@ -33,27 +31,6 @@ class ImportDocumentsJob:
     bm25_builder: Bm25IndexBuilder
     path: Path
     concurrency: int
-
-
-def get_page_path_bases(gp: GamePackage, doc_key: str|None=None) -> list[Tuple[str, int, Path]]:
-    page_paths: list[Tuple[str, int, Path]] = []
-    for rulebook in gp["rulebooks"]:
-        if doc_key is not None and doc_key != rulebook["document_key"]:
-            continue
-
-        directory = (gp["path"] / rulebook["document_key"]).resolve()
-        page_pattern = re.compile(r"^(\d+)(\..*)?$")
-        paths = glob("*.md", root_dir=directory)
-        
-        for path in paths:
-            match = page_pattern.match(Path(path).stem)
-            if match:
-                page_num = int(match.group(1))
-                path = directory / path
-                page_paths.append((rulebook["document_key"], page_num, path.with_suffix("")))
-
-    page_paths.sort(key=lambda x: (x[0], x[1]))
-    return page_paths
 
 
 async def import_game_data(job: ImportDocumentsJob) -> None:

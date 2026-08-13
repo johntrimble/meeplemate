@@ -16,7 +16,7 @@ from langchain_core.prompts.prompt import PromptTemplate
 
 from langchain_classic.output_parsers.regex import RegexParser
 
-from meeplemate.ingest.gamepackage import amap, get_document_page_aiter, get_game_example_questions_path, get_game_presentation_path, get_game_setting_summary_path, save_manifest, document_keys
+from meeplemate.ingest.gamepackage import amap, layout_for, get_document_page_aiter, get_game_example_questions_path, get_game_presentation_path, get_game_setting_summary_path, document_keys
 from meeplemate.ingest.ocr import GamePackage, aspit
 from meeplemate.util import achain, aenumerate, apairwise, arepeat, aslurp, aspit_yaml, atakewhile, compose, queue_to_async_iter, sink_into_queue, pipeline, to_async_iter, xf_amap
 
@@ -207,15 +207,15 @@ SETTING_SUMMARY_OF_SUMMARIES_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 def game_summary_path(gp: GamePackage) -> Path:
-    return gp["path"] / "summary.md"
+    return layout_for(gp).game_reference()
 
 
 def rulebook_summary_path(gp: GamePackage, document_key: str) -> Path:
-    return gp["path"] / document_key / "summary.md"
+    return layout_for(gp).rulebook_reference(document_key)
 
 
 def rulebook_short_summary_path(gp: GamePackage, document_key: str) -> Path:
-    return gp["path"] / document_key / "summary.short.md"
+    return layout_for(gp).rulebook_reference_short(document_key)
 
 
 async def generate_summary_with_refinement(
@@ -413,13 +413,13 @@ class GenerateGameReferenceJob:
             else:
                 path = rulebook_summary_path(self.gp, document_key)
             logger.info(f"Writing summary to path", path=path)
-            path.parent.mkdir(exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             await aspit(summary, path)
 
             if document_key is not None:
                 short_path = rulebook_short_summary_path(self.gp, document_key)
                 logger.info(f"Writing short summary to path", path=short_path)
-                short_path.parent.mkdir(exist_ok=True)
+                short_path.parent.mkdir(parents=True, exist_ok=True)
                 await aspit(short_summary, short_path)
             else:
                 short_path = None
@@ -454,33 +454,21 @@ class GenerateGameReferenceJob:
             )
         )
 
-        # Update the manifest with summaries
-        gp = self.gp
+        # Drain the queue so failures surface. The summaries themselves are
+        # already on disk under reference/ — written by write_summaries — and
+        # load_game_package folds them back into the manifest shape at read
+        # time, so this step does not touch the manifest.
         summary_items_iter = queue_to_async_iter(done_queue)
         async for item in summary_items_iter:
             if isinstance(item, Exception):
                 raise item
             if not isinstance(item, (tuple, list)) or len(item) != 3:
                 raise ValueError(f"Invalid summary item received: {item}")
-            document_key, summary, short_summary = item
-            # Update the game summary
-            if document_key is None:
-                gp["summary"] = summary
-            else:
-                # Update the rulebook summary
-                for rulebook in gp["rulebooks"]:
-                    if rulebook["document_key"] == document_key:
-                        rulebook["summary"] = short_summary
-                        break
 
         # Double check all tasks are complete
         logger.info("Waiting for summary tasks to complete")
         await process_task
         await producer_task
-
-        # Write updated manifest
-        logger.info("Writing updated manifest with summaries")
-        save_manifest(gp)
 
 
 @dataclass
@@ -504,9 +492,9 @@ class SettingSummaryJob:
             if document_key == "":
                 path = get_game_setting_summary_path(self.gp)
             else:
-                path = self.path / document_key / "setting_summary.md"
+                path = layout_for(self.gp).rulebook_setting(document_key)
             logger.info(f"Writing summary to path", path=path)
-            path.parent.mkdir(exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             await aspit(summary, path)
 
 

@@ -10,10 +10,12 @@ from meeplemate.ingest.chunkbuild import BuildChunksJob
 from meeplemate.ingest.cleardata import ClearOldDataJob
 from meeplemate.ingest.dataimport import ImportDocumentsJob, import_example_questions, run_import_documents
 from meeplemate.ingest.gamepackage import load_game_package
+from meeplemate.ingest.layout import PackageLayout
 from meeplemate.ingest.initgp import InitGamePackageJob
-from meeplemate.ingest.ocr import OcrJob, PageNumberFixUpJob, PageNumberOcrJob
+from meeplemate.ingest.ocr import BuildTextJob, OcrJob, PageNumberFixUpJob, PageNumberOcrJob
+from meeplemate.ingest.render import RenderJob
 from meeplemate.ingest.documentmetadata import DocumentMetadataJobJob
-from meeplemate.ingest.summary import ExampleQuestionsJob, GenerateGameReferenceJob, PresentationJob, SettingSummaryJob, save_manifest
+from meeplemate.ingest.summary import ExampleQuestionsJob, GenerateGameReferenceJob, PresentationJob, SettingSummaryJob
 
 logger = structlog.get_logger(__name__)
 
@@ -55,6 +57,36 @@ def init_game_package(input: Path, output: Path):
 
 @cli.command()
 @click.argument("path", type=Path)
+def render(path: Path):
+    """Render every rulebook page to a PNG. Deterministic; no model required."""
+    settings: Config = Config() # type: ignore
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "render_job": (
+                afactory(
+                    RenderJob,
+                    astart=RenderJob.run,
+                )(
+                    path=path,
+                    max_size=settings.ingest.render.max_image_size,
+                    pdf_page_chunk=settings.ingest.render.pdf_page_chunk,
+                    dpi=settings.ingest.render.dpi,
+                ),
+                []
+            )
+        }
+    )
+    async def _run():
+        async with system.astart() as services:
+            pass
+
+    asyncio.run(_run())
+
+
+@cli.command()
+@click.argument("path", type=Path)
 def ocr(path: Path):
     settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
@@ -63,9 +95,9 @@ def ocr(path: Path):
         extra_components={
             "ocr_client": (
                 factory(AsyncOpenAI)(
-                    api_key="EMPTY",
-                    base_url="http://vllm-deepseek-ocr:8000/v1",
-                    timeout=3600
+                    api_key=settings.ingest.ocr.api_key,
+                    base_url=settings.ingest.ocr.base_url,
+                    timeout=settings.ingest.ocr.timeout,
                 ),
                 []
             ),
@@ -75,11 +107,8 @@ def ocr(path: Path):
                     astart=OcrJob.run
                 )(
                     path=path,
-                    max_size=2_000,
-                    chunk_size=settings.ingest.chunk_size,
-                    chunk_overlap=settings.ingest.chunk_overlap,
-                    child_chunk_size=settings.ingest.child_chunk_size,
-                    child_chunk_overlap=settings.ingest.child_chunk_overlap,
+                    model_config=settings.ingest.ocr,
+                    max_ocr_workers=settings.ingest.max_ocr_workers,
                 ),
                 {
                     "ocr_client": "ocr_client"
@@ -96,6 +125,33 @@ def ocr(path: Path):
 
 @cli.command()
 @click.argument("path", type=Path)
+def build_text(path: Path):
+    """Merge OCR output into per-page and per-document markdown."""
+    settings: Config = Config() # type: ignore
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "build_text_job": (
+                afactory(
+                    BuildTextJob,
+                    astart=BuildTextJob.run,
+                )(
+                    path=path,
+                ),
+                []
+            )
+        }
+    )
+    async def _run():
+        async with system.astart() as services:
+            pass
+
+    asyncio.run(_run())
+
+
+@cli.command()
+@click.argument("path", type=Path)
 def page_number_ocr(path: Path):
     settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
@@ -104,9 +160,9 @@ def page_number_ocr(path: Path):
         extra_components={
             "ocr_client": (
                 factory(AsyncOpenAI)(
-                    api_key="EMPTY",
-                    base_url="http://vllm-glm-ocr:8080/v1",
-                    timeout=3600
+                    api_key=settings.ingest.page_number_ocr.api_key,
+                    base_url=settings.ingest.page_number_ocr.base_url,
+                    timeout=settings.ingest.page_number_ocr.timeout,
                 ),
                 []
             ),
@@ -116,6 +172,8 @@ def page_number_ocr(path: Path):
                     astart=PageNumberOcrJob.run
                 )(
                     path=path,
+                    model_config=settings.ingest.page_number_ocr,
+                    max_ocr_workers=settings.ingest.max_ocr_workers,
                 ),
                 {
                     "ocr_client": "ocr_client"
@@ -196,10 +254,10 @@ def build_chunks(path: Path):
                     astart=BuildChunksJob.run,
                 )(
                     path=path,
-                    parent_chunk_size=500,
-                    parent_chunk_overlap=50,
-                    child_chunk_size=125,
-                    child_chunk_overlap=12,
+                    parent_chunk_size=settings.ingest.chunk_size,
+                    parent_chunk_overlap=settings.ingest.chunk_overlap,
+                    child_chunk_size=settings.ingest.child_chunk_size,
+                    child_chunk_overlap=settings.ingest.child_chunk_overlap,
                 ),
                 {
                     "tokenizer": "tokenizer"
@@ -306,11 +364,77 @@ def rebuild_bm25(path: Path, version_override: str | None):
 @cli.command()
 @click.argument("path", type=Path)
 def update_version(path: Path):
+    """Stamp a new game version.
+
+    The version lives in its own file rather than the manifest: it changes on
+    every re-import, while the manifest only changes when the source rulebooks
+    do, and a step that owns one small file is easier to reason about than a
+    third writer of a shared one.
+    """
     from uuid_utils import uuid7
-    manifest = load_game_package(path)
     new_version = str(uuid7())
-    manifest["game_version"] = new_version
-    save_manifest(manifest)
+    version_path = PackageLayout(path).version()
+    version_path.parent.mkdir(parents=True, exist_ok=True)
+    version_path.write_text(new_version)
+    logger.info("Stamped game version", path=str(version_path), game_version=new_version)
+
+
+@cli.command("migrate-layout")
+@click.argument("path", type=Path)
+@click.option("--apply", "apply_changes", is_flag=True, help="Perform the moves. Without this, only report them.")
+@click.option("--verify", is_flag=True, help="After migrating, check every artifact the manifest implies exists.")
+@click.option("--source-dir", type=Path, default=Path("data/rules"), show_default=True,
+              help="Where to find source PDFs when backfilling raw_documents/.")
+def migrate_layout_command(path: Path, apply_changes: bool, verify: bool, source_dir: Path):
+    """Move a package from the flat layout to the per-step layout."""
+    from meeplemate.ingest.migrate_layout import (
+        apply_plan,
+        backfill_raw_documents,
+        plan_migration,
+        rewrite_manifest,
+        verify_package,
+    )
+
+    plan = plan_migration(path)
+    if plan.already_migrated:
+        click.echo(f"{path}: already on the new layout")
+    else:
+        if not plan.ok:
+            click.echo(f"{path}: {len(plan.unclassified)} unrecognised path(s); refusing to migrate:")
+            for unknown in plan.unclassified[:20]:
+                click.echo(f"  {unknown}")
+            raise click.ClickException(
+                "Unrecognised files would be left behind. Classify them before migrating."
+            )
+
+        click.echo(f"{path}: {len(plan.moves)} file(s) to move")
+        if not apply_changes:
+            for move in plan.moves[:15]:
+                click.echo(f"  {move.src.relative_to(path)} -> {move.dst.relative_to(path)}")
+            if len(plan.moves) > 15:
+                click.echo(f"  ... and {len(plan.moves) - 15} more")
+
+        moved = apply_plan(plan) if apply_changes else 0
+        version = rewrite_manifest(path, apply=apply_changes)
+        backfilled = backfill_raw_documents(path, source_dir, apply=apply_changes)
+
+        if apply_changes:
+            click.echo(f"{path}: moved {moved} file(s); version {version or '(none)'}")
+            if backfilled:
+                click.echo(f"{path}: backfilled {len(backfilled)} source PDF(s)")
+        else:
+            click.echo(f"{path}: dry run, nothing changed. Pass --apply to migrate.")
+            if backfilled:
+                click.echo(f"{path}: would backfill {len(backfilled)} source PDF(s)")
+
+    if verify:
+        problems = verify_package(path)
+        if problems:
+            click.echo(f"{path}: {len(problems)} missing artifact(s)")
+            for problem in problems[:20]:
+                click.echo(f"  {problem}")
+            raise click.ClickException("Verification failed")
+        click.echo(f"{path}: verified")
 
 
 @cli.command()

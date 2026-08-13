@@ -1,11 +1,10 @@
 from pathlib import Path
 import base64
 
-from uuid_utils import uuid7
 import yaml
 
-from meeplemate.ingest.gamepackage import Manifest, document_keys, load_manifest
-from meeplemate.util import aspit_yaml, spit_yaml
+from meeplemate.ingest.gamepackage import Manifest, write_manifest
+from meeplemate.ingest.layout import PackageLayout
 
 def get_page_count(pdf_path: Path) -> int:
     from pdf2image import pdfinfo_from_path
@@ -18,10 +17,11 @@ class InitGamePackageJob:
     def __init__(self, input_dir: Path, output_dir: Path):
         self.input_dir = input_dir
         self.output_dir = output_dir
+        self.layout = PackageLayout(output_dir)
     
     def copy_over_documents(self, manifest: Manifest) -> None:
-        raw_documents_dir = self.output_dir / "raw_documents"
-        raw_documents_dir.mkdir(exist_ok=True)
+        raw_documents_dir = self.layout.raw_documents()
+        raw_documents_dir.mkdir(parents=True, exist_ok=True)
         for rulebook in manifest["rulebooks"]:
             relative_path = Path(rulebook["path"])
             source_path = (self.input_dir / relative_path).resolve()
@@ -34,6 +34,9 @@ class InitGamePackageJob:
             target_path.write_bytes(source_path.read_bytes())
 
     def load_manifest_from_source(self) -> Manifest:
+        # The source manifest is part of the *source* directory layout
+        # (data/rules/<game>/), which is hand-written and independent of the
+        # package layout, so it is not a PackageLayout accessor.
         rulebooks_yaml_path = self.input_dir / "rulebooks.yaml"
         return yaml.safe_load(rulebooks_yaml_path.read_text())
         # target_path = self.output_dir / "rulebooks.yaml"
@@ -47,25 +50,13 @@ class InitGamePackageJob:
                 document_key = base64.b64encode(path.encode()).decode()
                 rulebook["document_key"] = document_key
 
-    def create_document_directories(self, manifest: Manifest) -> None:
-        # Ensure all document directories exist
-        for document_key in document_keys(manifest):
-            document_dir = self.output_dir / document_key
-            if not document_dir.exists():
-                document_dir.mkdir()
-    
     def update_page_counts(self, manifest: Manifest) -> None:
         rulebooks = manifest["rulebooks"]
         for rulebook in rulebooks:
             relative_path = Path(rulebook["path"])
-            pdf_path = (self.output_dir / "raw_documents" / relative_path).resolve()
+            pdf_path = self.layout.raw_document(str(relative_path)).resolve()
             rulebook["page_count"] = get_page_count(pdf_path)
     
-    def maybe_add_game_version(self, manifest: Manifest) -> None:
-        if "game_version" not in manifest:
-            game_version = str(uuid7())
-            manifest["game_version"] = game_version
-
     def maybe_add_game_id(self, manifest: Manifest) -> None:
         if "game_id" in manifest and manifest["game_id"]:
             return
@@ -76,7 +67,7 @@ class InitGamePackageJob:
         
     async def run(self):
         # Make sure the output directory exists
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Load the manifest
         manifest = self.load_manifest_from_source()
@@ -87,18 +78,12 @@ class InitGamePackageJob:
         # Add document keys if needed
         self.update_manifest_document_keys(manifest)
 
-        # Ensure document directories exist
-        self.create_document_directories(manifest)
-
         # Add page counts
         self.update_page_counts(manifest)
-
-        # Add game_version if missing
-        self.maybe_add_game_version(manifest)
 
         # Add game_id
         self.maybe_add_game_id(manifest)
 
-        # Write out the updated manifest
-        manifest_path = self.output_dir / "rulebooks.yaml"
-        await aspit_yaml(manifest, manifest_path)
+        # Write out the manifest. This step is its only writer: the version and
+        # the generated summaries live in files owned by their own steps.
+        write_manifest(manifest, self.output_dir)

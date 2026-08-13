@@ -1,22 +1,25 @@
 
 import asyncio
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
-from typing import AsyncIterator, Sequence, Tuple
+from typing import Sequence
 
-from PIL import Image
 from openai import AsyncOpenAI
-import yaml
 
+from meeplemate.config import VisionModelConfig, default_ocr_model, default_page_number_model
+from meeplemate.ingest.errors import MissingStepInput
+from meeplemate.ingest.layout import PackageLayout
 from meeplemate.ingest.gamepackage import (
     GamePackage,
+    layout_for,
     Page,
     document_keys,
     get_page,
     get_page_one_offset,
+    page_num_from_offset,
     get_pages_iter,
     get_rulebook,
     load_game_package,
@@ -29,16 +32,11 @@ from meeplemate.ingest.gamepackage import (
     page_number_path,
 )
 from meeplemate.util import (
-    achain,
     amap,
     aslurp,
     aspit,
     aspit_json,
-    aspit_yaml,
-    pipeline,
-    sink_into_queue,
     to_async_iter,
-    xf_amap
 )
 
 from structlog import get_logger
@@ -54,63 +52,9 @@ class PageResult:
     structured: Sequence[dict]
 
 
-def get_page_count(pdf_path: Path) -> int:
-    from pdf2image import pdfinfo_from_path
-
-    info = pdfinfo_from_path(str(pdf_path))
-    return int(info.get("Pages", 0))
-
-
-def maybe_resize_image(image, max_size: int | None):
-    if max_size is None:
-        return image
-    size = image.size
-    if max(size) < max_size:
-        return image
-    ratio = max_size / max(size)
-    new_width = int(image.width * ratio)
-    new_height = int(image.height * ratio)
-    resized_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-    return resized_image
-
-
-def postprocess_and_save(image, output_path: Path, max_size: int | None) -> Path:
-    image = image.convert("RGB")
-    image = maybe_resize_image(image, max_size)
-    image.save(output_path, format="PNG")
-    return output_path
-
-
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode("utf-8")
-
-
-async def pdf_page_images_iter(pdf_path: Path, chunk_size: int = 4, dpi: int = 300) -> AsyncIterator[Tuple[int, Image.Image]]:
-    """
-    Yield (page_num, image) in order, loading the PDF in small chunks to keep memory bounded.
-    """
-    from pdf2image import convert_from_path
-
-    page_count = get_page_count(pdf_path)
-    for start in range(1, page_count + 1, chunk_size):
-        end = min(start + chunk_size - 1, page_count)
-        images = await asyncio.to_thread(
-            convert_from_path,
-            str(pdf_path),
-            dpi=dpi,
-            first_page=start,
-            last_page=end,
-        )
-        for idx, image in enumerate(images):
-            # Use zero-based page numbering for stable filenames/order
-            yield start + idx - 1, image
-
-
-async def page_and_image_iter(gp: GamePackage, document_key: str, pdf_path: Path, chunk_size: int = 10, dpi: int = 300) -> AsyncIterator[Tuple[Page, Image.Image]]:
-    async for page_num, image in pdf_page_images_iter(pdf_path, chunk_size=chunk_size, dpi=dpi):
-        page = get_page(gp, document_key, page_num)
-        yield (page, image)
 
 
 def re_match(text):
@@ -283,7 +227,10 @@ def merge_page_boundaries(pages: list[Sequence[dict]]) -> list[Sequence[dict]]:
     return merged
 
 
-async def image_to_deepseek_ocr(ocr_client, image_path: Path) -> str:
+async def image_to_deepseek_ocr(
+    ocr_client, image_path: Path, model_config: VisionModelConfig | None = None
+) -> str:
+    model_config = model_config or default_ocr_model()
     encoded_image = encode_image(image_path)
     image_url = f"data:image/png;base64,{encoded_image}"
 
@@ -306,28 +253,17 @@ async def image_to_deepseek_ocr(ocr_client, image_path: Path) -> str:
     ]
 
     response = await ocr_client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-OCR-2",
+        model=model_config.model,
         messages=messages,
-        max_tokens=2048,
-        temperature=0.0,
-        extra_body={
-            "skip_special_tokens": False,
-            # args used to control custom logits processor
-            "vllm_xargs": {
-                "ngram_size": 30,
-                "window_size": 90,
-                # whitelist: <td>, </td>
-                "whitelist_token_ids": [128821, 128822],
-            },
-        },
+        max_tokens=model_config.max_tokens,
+        temperature=model_config.temperature,
+        extra_body=model_config.extra_body,
     )
     return response.choices[0].message.content
 
 
 def page_image_path(page: Page):
-    page_base = (page.gp["path"] / page.document_key / f"{page.page_num:04d}")
-    image_path = page_base.with_suffix(".png")
-    return image_path
+    return layout_for(page.gp).page_image(page.document_key, page.page_num)
 
 
 async def write_fixed_structure_and_page_markdown(gp: GamePackage, document_key: str) -> None:
@@ -364,14 +300,16 @@ async def write_fixed_structure_and_page_markdown(gp: GamePackage, document_key:
         )
 
 
-    output_subdir = gp["path"] / document_key
-    output_path = output_subdir / "document.md"
+    output_path = PackageLayout(gp["path"]).document_md(document_key)
     merged_markdown = "\n\n".join(page_markdown_strings).strip()
     write_tasks.append(aspit(merged_markdown, output_path))
     await asyncio.gather(*write_tasks)
 
 
-async def image_to_page_number(ocr_client: AsyncOpenAI, image_path: Path) -> str | None:
+async def image_to_page_number(
+    ocr_client: AsyncOpenAI, image_path: Path, model_config: VisionModelConfig | None = None
+) -> str | None:
+    model_config = model_config or default_page_number_model()
     encoded_image = encode_image(image_path)
     image_url = f"data:image/png;base64,{encoded_image}"
 
@@ -397,10 +335,10 @@ async def image_to_page_number(ocr_client: AsyncOpenAI, image_path: Path) -> str
     ]
 
     response = await ocr_client.chat.completions.create(
-        model="glm-ocr",
+        model=model_config.model,
         messages=messages,
-        max_tokens=2048,
-        temperature=0.0,
+        max_tokens=model_config.max_tokens,
+        temperature=model_config.temperature,
     )
     text = response.choices[0].message.content
 
@@ -622,12 +560,28 @@ class PageNumberFixUpJob:
                 write_tasks.append(aspit(fixed, path))
             await asyncio.gather(*write_tasks)
 
+        async def page_numbers_from_offset(document_key: str, page_one_offset: int):
+            """A rulebook with a known offset needs no OCR — but it still needs
+            page-number files, so downstream steps can read one directory
+            unconditionally and the step's output is never an empty directory."""
+            write_tasks = []
+            async for page in get_pages_iter(self.gp, document_key):
+                write_tasks.append(
+                    aspit(
+                        page_num_from_offset(page.page_num, page_one_offset),
+                        page_number_path(page),
+                    )
+                )
+            await asyncio.gather(*write_tasks)
+
         tasks = []
         for document_key in document_keys(self.gp):
             rulebook = get_rulebook(self.gp, document_key)
-            if get_page_one_offset(rulebook) != "auto":
-                continue
-            tasks.append(fixup_page_numbers_for_document(document_key))
+            page_one_offset = get_page_one_offset(rulebook)
+            if page_one_offset == "auto":
+                tasks.append(fixup_page_numbers_for_document(document_key))
+            else:
+                tasks.append(page_numbers_from_offset(document_key, page_one_offset))
         await asyncio.gather(*tasks)
 
 
@@ -637,6 +591,7 @@ class PageNumberOcrJob:
     ocr_client: AsyncOpenAI
     max_ocr_workers: int = 2
     _gp: GamePackage | None = None
+    model_config: VisionModelConfig = field(default_factory=default_page_number_model)
 
     @property
     def gp(self) -> GamePackage:
@@ -652,8 +607,9 @@ class PageNumberOcrJob:
         async def ocr_and_write_page_number(page: Page):
             async with sem:
                 page_number_text = await image_to_page_number(
-                    self.ocr_client, 
-                    page_image_path(page)
+                    self.ocr_client,
+                    page_image_path(page),
+                    self.model_config,
                 )
 
                 if page_number_text is None:
@@ -662,80 +618,71 @@ class PageNumberOcrJob:
 
         for document_key in document_keys(self.gp):
             rulebook = get_rulebook(self.gp, document_key)
-            if get_page_one_offset(rulebook) != "auto":
-                continue
+            needs_ocr = get_page_one_offset(rulebook) == "auto"
             async for page in get_pages_iter(self.gp, document_key):
-                tasks.append(
-                    asyncio.create_task(ocr_and_write_page_number(page))
-                )
+                if needs_ocr:
+                    tasks.append(
+                        asyncio.create_task(ocr_and_write_page_number(page))
+                    )
+                else:
+                    # A known offset needs no model call, but the file is still
+                    # written so this step's output covers every page.
+                    tasks.append(
+                        asyncio.create_task(aspit("", page_number_raw_path(page)))
+                    )
 
         await asyncio.gather(*tasks)
 
 
 @dataclass
 class OcrJob:
+    """Run the OCR model over already-rendered page images.
+
+    Reads `images/`, writes `ocr/`. Rendering happens in `RenderJob` and the
+    cross-page text merge in `BuildTextJob`, so re-running OCR touches neither.
+    """
+
     path: Path
     ocr_client: AsyncOpenAI
     _gp: GamePackage | None = None
-    max_size: int | None = 2000
     max_ocr_workers: int = 2
-    max_image_workers: int = 4
-    page_queue_size: int = 4
-    pdf_page_chunk: int = 4
-    rulebook_concurrency: int = 2
-    chunk_size: int = 500
-    chunk_overlap: int = 50
-    child_chunk_size: int = 125
-    child_chunk_overlap: int = 12
+    model_config: VisionModelConfig = field(default_factory=default_ocr_model)
 
     @property
     def gp(self) -> GamePackage:
-        # We lazy load this as it may not exist until init_game_pacakge
+        # We lazy load this as it may not exist until init_game_package
         # is called
         if self._gp is None:
             self._gp = load_game_package(self.path)
         return self._gp
 
     async def run(self):
-        # Load PDF images
-        pages_and_images = self.all_page_and_pdf_images_iter()
+        sem = asyncio.Semaphore(self.max_ocr_workers)
 
-        # Resize images and save
-        pages_and_images = amap(self.postprocess_and_save, pages_and_images)
+        async def ocr_page(page: Page):
+            async with sem:
+                await self.process_pdf_image(page)
 
-        # Enqueue pages as they are saved
-        page_image_ready_queue: asyncio.Queue = asyncio.Queue(maxsize=self.page_queue_size)    
-        loader_task = asyncio.create_task(
-            sink_into_queue(page_image_ready_queue, pages_and_images)
-        )
-
-        # Run OCR on the images. Some of the pages may take longer to generate
-        # output for than others, so we don't process them strictly in order.
-        await pipeline(
-            sink=None,
-            xf=xf_amap(self.process_pdf_image),
-            source=page_image_ready_queue,
-            concurrency=self.max_ocr_workers,
-        )
-        await loader_task
-
-        # Now we cleanup any dangling sentences across page boundaries and dump the
-        # the fixed structured JSON files. This needs to be done in order.
         tasks = []
         for document_key in document_keys(self.gp):
-            tasks.append(
-                asyncio.create_task(
-                    write_fixed_structure_and_page_markdown(self.gp, document_key)
-                )
-            )
+            async for page in get_pages_iter(self.gp, document_key):
+                image_path = page_image_path(page)
+                if not image_path.exists():
+                    raise MissingStepInput(
+                        what=f"No page image at {image_path}",
+                        run_step=f"render {self.path}",
+                    )
+                tasks.append(asyncio.create_task(ocr_page(page)))
         await asyncio.gather(*tasks)
-
 
     async def process_pdf_image(self, page: Page):
         image_path = page_image_path(page)
-        markdown_text = await image_to_deepseek_ocr(self.ocr_client, image_path)
+        markdown_text = await image_to_deepseek_ocr(
+            self.ocr_client, image_path, self.model_config
+        )
         structured = markdown_text_to_structured_metadata(markdown_text)
         structured = drop_empty_blocks(structured)
+        page_raw_md_path(page).parent.mkdir(parents=True, exist_ok=True)
         await asyncio.gather(
             aspit(markdown_text, page_raw_md_path(page)),
             aspit_json(structured, page_structured_path(page)),
@@ -743,23 +690,37 @@ class OcrJob:
         return page
 
 
-    def all_page_and_pdf_images_iter(self) -> AsyncIterator[Tuple[Page, Image.Image]]:
-        pdf_image_iterables = []
-        for rulebook in self.gp["rulebooks"]:
-            pdf_path = (self.gp["path"] / "raw_documents" / rulebook["path"])
+@dataclass
+class BuildTextJob:
+    """Merge OCR output into per-page and per-document markdown.
 
-            # Save the pdf images
-            pages_and_images = page_and_image_iter(self.gp, rulebook["document_key"], pdf_path)
-            pdf_image_iterables.append(pages_and_images)
-        pdf_images = achain(*pdf_image_iterables)
-        return pdf_images
+    Reads `ocr/`, writes `text/`. Deterministic: given the same structured OCR
+    output it produces the same text, so it is cheap to re-run and safe to
+    re-run after a chunking change.
+    """
 
+    path: Path
+    _gp: GamePackage | None = None
 
-    async def postprocess_and_save(self, page_and_image) -> Page:
-        page, image = page_and_image
-        image_path = page_image_path(page)
-        logger.info("Saving page image", image_path=image_path, document_key=page.document_key)
-        await asyncio.to_thread(
-            postprocess_and_save, image, image_path, self.max_size
-        )
-        return page
+    @property
+    def gp(self) -> GamePackage:
+        if self._gp is None:
+            self._gp = load_game_package(self.path)
+        return self._gp
+
+    async def run(self):
+        tasks = []
+        for document_key in document_keys(self.gp):
+            first_page = get_page(self.gp, document_key, 0)
+            structured_path = page_structured_path(first_page)
+            if not structured_path.exists():
+                raise MissingStepInput(
+                    what=f"No OCR output at {structured_path}",
+                    run_step=f"ocr {self.path}",
+                )
+            tasks.append(
+                asyncio.create_task(
+                    write_fixed_structure_and_page_markdown(self.gp, document_key)
+                )
+            )
+        await asyncio.gather(*tasks)
