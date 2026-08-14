@@ -1,9 +1,6 @@
 """The on-disk layout of a game package, in one place.
 
 Every path inside `data/ingested/<game>/` is constructed here and nowhere else.
-Before this module the layout was spread across `gamepackage.py`, `ocr.py`,
-`chunkbuild.py`, `summary.py` and `documentmetadata.py`, which is why moving a
-file meant touching five modules.
 
 The organising rule, enforced by `tests/ingest/test_layout.py`:
 
@@ -14,10 +11,6 @@ Directories are grouped by *step* first and rulebook second — `images/<dk>/`
 rather than `<dk>/images/` — so a step's entire output is one path that can be
 named without knowing the document keys, which are not assigned until
 `init-game-package` has run.
-
-`PackageLayout` needs only the package root, not a loaded `GamePackage`. That
-matters for `init-game-package` and for the layout migration, both of which have
-to build paths before a manifest exists.
 
 This module deliberately imports nothing from `gamepackage`, so the type surface
 that non-ingest modules depend on stays independent of the layout.
