@@ -53,6 +53,7 @@ dev = [
     "jupyter",
     "ipykernel",
     "pandas",
+    "dvc[s3]>=3.67.1",
 ]
 
 [tool.pytest.ini_options]
