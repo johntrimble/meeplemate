@@ -286,7 +286,7 @@ def import_documents(path: Path, overwrite: bool):
             "import_job": (
                 factory(ImportDocumentsJob)(
                     path=path,
-                    gp=load_game_package(path),
+                    gp=load_game_package(path, require_version=True),
                     concurrency=5,
                 ),
                 {
