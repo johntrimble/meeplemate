@@ -74,12 +74,63 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
         return self._data
 
 
+class VisionModelConfig(BaseModel):
+    """An OpenAI-compatible vision endpoint used by an ingest step.
+
+    Keeping the model name and sampling settings here rather than in the source
+    means a package records which model produced it, and that swapping models is
+    a config change rather than a code change.
+    """
+    base_url: str = Field(description="OpenAI-compatible endpoint")
+    model: str = Field(description="Model name to request")
+    api_key: str = Field(default="EMPTY", description="API key; vLLM ignores the value")
+    timeout: int = Field(default=3600, ge=1, description="Per-request timeout in seconds")
+    temperature: float = Field(default=0.0, ge=0.0, description="Sampling temperature")
+    max_tokens: int = Field(default=2048, ge=1, description="Max tokens per page")
+    extra_body: dict[str, Any] = Field(default_factory=dict, description="Passed through to the endpoint")
+
+
+class RenderConfig(BaseModel):
+    """Settings for rasterising rulebook PDFs to page images."""
+    dpi: int = Field(default=300, ge=1, description="Render resolution")
+    max_image_size: int | None = Field(default=2000, description="Longest edge in px; None to disable resizing")
+    pdf_page_chunk: int = Field(default=10, ge=1, description="Pages rasterised per batch; bounds memory")
+
+
+def default_ocr_model() -> VisionModelConfig:
+    return VisionModelConfig(
+        base_url="http://vllm-deepseek-ocr:8000/v1",
+        model="deepseek-ai/DeepSeek-OCR-2",
+        extra_body={
+            "skip_special_tokens": False,
+            # args used to control custom logits processor
+            "vllm_xargs": {
+                "ngram_size": 30,
+                "window_size": 90,
+                # whitelist: <td>, </td>
+                "whitelist_token_ids": [128821, 128822],
+            },
+        },
+    )
+
+
+def default_page_number_model() -> VisionModelConfig:
+    return VisionModelConfig(
+        base_url="http://vllm-glm-ocr:8080/v1",
+        model="glm-ocr",
+    )
+
+
 class IngestConfig(BaseModel):
     """Configuration for document ingestion."""
     chunk_size: int = Field(default=500, ge=1, description="Chunk size for document splitting")
     chunk_overlap: int = Field(default=50, ge=0, description="Chunk overlap for document splitting")
     child_chunk_size: int = Field(default=125, ge=0, description="Child chunk size for finer splitting (0 to disable)")
     child_chunk_overlap: int = Field(default=12, ge=0, description="Child chunk overlap for finer splitting")
+    render: RenderConfig = Field(default_factory=RenderConfig)
+    ocr: VisionModelConfig = Field(default_factory=default_ocr_model)
+    page_number_ocr: VisionModelConfig = Field(default_factory=default_page_number_model)
+    max_ocr_workers: int = Field(default=2, ge=1, description="Concurrent OCR requests")
 
 
 class PGConfig(BaseModel):

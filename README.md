@@ -198,12 +198,13 @@ Rulebooks are image-heavy PDFs, so getting good text out of them is its own pipe
 
 ```mermaid
 flowchart LR
-    pdf["Rulebook PDF"] --> img["Page images<br/>poppler · 300 dpi"]
-    img --> ocr["DeepSeek-OCR (vLLM)<br/>→ grounded markdown"]
-    img --> pnum["GLM-OCR (vLLM)<br/>→ printed page numbers"]
-    ocr --> meta["Clean · fix boundaries · add metadata"]
+    pdf["Rulebook PDF"] --> img["render<br/>poppler · 300 dpi"]
+    img --> ocr["ocr<br/>DeepSeek-OCR (vLLM)<br/>→ grounded markdown"]
+    img --> pnum["page-number-ocr<br/>GLM-OCR (vLLM)<br/>→ printed page numbers"]
+    ocr --> text["build-text<br/>fix boundaries · annotate headers"]
+    text --> meta["add-metadata<br/>page numbers · offsets"]
     pnum --> meta
-    meta --> chunk["Parent / child chunking"]
+    meta --> chunk["build-chunks<br/>parent / child hierarchy"]
     chunk --> emb["Embed child chunks<br/>FastEmbed · BGE-small"]
     emb --> vec["pgvector rules_vectors<br/>(partition per game_version)"]
     chunk --> doc["Parent chunks → docstore"]

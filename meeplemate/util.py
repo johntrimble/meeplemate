@@ -4,6 +4,8 @@ import asyncio
 import contextlib
 import itertools
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Generator, Iterable, TextIO, Type, cast
 
@@ -110,11 +112,32 @@ async def aslurp(path: Path | str) -> str:
     return await loop.run_in_executor(None, _read_file)
 
 
+def atomic_write_text(path: Path | str, write: Callable[[TextIO], Any]) -> None:
+    """Write via a temp file in the same directory, then rename into place.
+
+    Ingest steps can die partway through a long run — an OCR request times out,
+    a GPU OOMs. A truncated file left behind by a plain `open(path, "w")` has a
+    plausible size and mtime, so nothing downstream notices until the data is
+    wrong. `os.replace` is atomic within a filesystem, so a reader sees either
+    the old file or the complete new one.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as fp:
+            write(fp)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 async def aspit(text: str, path: Path | str) -> None:
     loop = asyncio.get_event_loop()
     def _write_file():
-        with open(path, "w") as f:
-            f.write(text)
+        atomic_write_text(path, lambda fp: fp.write(text))
     return await loop.run_in_executor(None, _write_file)
 
 
@@ -129,14 +152,10 @@ def spit_yaml(obj: Any, f: Path | str | TextIO) -> None:
     else:
         # f is a path (str or Path)
         assert isinstance(f, (str, Path))
-        fp = open(f, "w")
-        opened_file = True
+        atomic_write_text(f, lambda stream: yaml.safe_dump(obj, stream))
+        return
 
-    try:
-        yaml.safe_dump(obj, fp)
-    finally:
-        if opened_file:
-            fp.close()
+    yaml.safe_dump(obj, fp)
 
 
 async def aspit_yaml(obj: Any, path: Path | str) -> None:
@@ -145,25 +164,15 @@ async def aspit_yaml(obj: Any, path: Path | str) -> None:
 
 
 def spit_json(obj, f):
-    opened_file = False
     if hasattr(f, "write"):
-        fp = f
-    else:
-        fp = open(f, "w")
-        opened_file = True
-    
-    try:
-        return json.dump(obj, fp)
-    finally:
-        if opened_file:
-            fp.close()
+        return json.dump(obj, f)
+    atomic_write_text(f, lambda stream: json.dump(obj, stream))
 
 
 async def aspit_json(obj: Any, path: Path | str) -> None:
     loop = asyncio.get_event_loop()
     def _write_file():
-        with open(path, "w") as f:
-            json.dump(obj, f)
+        atomic_write_text(path, lambda fp: json.dump(obj, fp))
     await loop.run_in_executor(None, _write_file)
 
 

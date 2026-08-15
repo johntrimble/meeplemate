@@ -1,0 +1,11 @@
+# A valid config with no `ingest:` key at all — the situation config-dev.yaml is
+# in. The ingest pipeline must fall back to the code defaults.
+model_name: test-model
+embedding:
+  model: BAAI/bge-small-en-v1.5
+  api_key: dummy-key
+chat:
+  models:
+  - model_name: test-model
+    endpoint_type: openai
+    endpoint: http://localhost:9/v1

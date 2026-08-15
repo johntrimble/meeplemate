@@ -9,7 +9,7 @@ from langchain_core.documents import Document
 from langchain_core.load import dumps, loads
 from langchain_text_splitters import TextSplitter
 
-from meeplemate.ingest.gamepackage import GamePackage, Page, get_pages_iter, load_game_package, load_page_metadata, page_md, page_to_document, get_page_chunk_id
+from meeplemate.ingest.gamepackage import GamePackage, Page, layout_for, get_pages_iter, load_game_package, load_page_metadata, page_md, page_to_document, get_page_chunk_id
 from meeplemate.text_splitters import FixedRecursiveCharacterTextSplitter
 from meeplemate.util import amap, aslurp, aspit
 
@@ -24,24 +24,20 @@ class ChildChunkDescriptor(ChunkDescriptor):
     child_idx: int
 
 
-def get_chunks_directory_path(gp: GamePackage, document_key: str) -> Path:
-    return gp["path"] / document_key / "chunks"
-
-
 def get_chunk_path_for_index(page: Page, chunk_idx: int) -> Path:
-    return get_chunks_directory_path(page.gp, page.document_key) / f"{page.page_num:04d}_chunk_{chunk_idx:04d}.json"
+    return layout_for(page.gp).parent_chunk(page.document_key, page.page_num, chunk_idx)
 
 
 def get_chunk_path(chunk: ChunkDescriptor) -> Path:
-    return get_chunks_directory_path(chunk.gp, chunk.document_key) / f"{chunk.page_num:04d}_chunk_{chunk.chunk_idx:04d}.json"
+    return layout_for(chunk.gp).parent_chunk(chunk.document_key, chunk.page_num, chunk.chunk_idx)
 
 
 def get_child_chunk_path_for_index(page: Page, chunk_idx: int, child_idx: int) -> Path:
-    return get_chunks_directory_path(page.gp, page.document_key) / f"{page.page_num:04d}_chunk_{chunk_idx:04d}_child_{child_idx:04d}.json"
+    return layout_for(page.gp).child_chunk(page.document_key, page.page_num, chunk_idx, child_idx)
 
 
 def get_child_chunk_path(chunk: ChildChunkDescriptor) -> Path:
-    return get_chunks_directory_path(chunk.gp, chunk.document_key) / f"{chunk.page_num:04d}_chunk_{chunk.chunk_idx:04d}_child_{chunk.child_idx:04d}.json"
+    return layout_for(chunk.gp).child_chunk(chunk.document_key, chunk.page_num, chunk.chunk_idx, chunk.child_idx)
 
 
 def get_child_chunk_id(game_id: str, game_version:str, document_key: str, page_ordinal: int, chunk_idx: int, child_idx: int) -> str:
@@ -50,10 +46,11 @@ def get_child_chunk_id(game_id: str, game_version:str, document_key: str, page_o
 
 
 def chunks_for_page_iter(page: Page) -> Iterator[ChunkDescriptor]:
-    chunks_path = get_chunks_directory_path(page.gp, page.document_key)
-    # Use glob to find all chunk files for this page
-    chunk_pattern = re.compile(rf"^{page.page_num:04d}_chunk_(\d+)\.json$")
-    for path in chunks_path.glob(f"{page.page_num:04d}_chunk_*.json"):
+    # Parent and child chunks live in separate directories, so a page's parents
+    # can be listed without a pattern that has to exclude its children.
+    chunks_path = layout_for(page.gp).parent_chunks_dir(page.document_key)
+    chunk_pattern = re.compile(rf"^{page.page_num:04d}_(\d+)\.json$")
+    for path in chunks_path.glob(f"{page.page_num:04d}_*.json"):
         match = chunk_pattern.match(path.name)
         if match:
             chunk_idx = int(match.group(1))
@@ -66,10 +63,9 @@ def chunks_for_page_iter(page: Page) -> Iterator[ChunkDescriptor]:
 
 
 def child_chunks_for_chunk_iter(chunk: ChunkDescriptor) -> Iterator[ChildChunkDescriptor]:
-    chunks_path = get_chunks_directory_path(chunk.gp, chunk.document_key)
-    # Use glob to find all child chunk files for this chunk
-    child_chunk_pattern = re.compile(rf"^{chunk.page_num:04d}_chunk_{chunk.chunk_idx:04d}_child_(\d+)\.json$")
-    for path in chunks_path.glob(f"{chunk.page_num:04d}_chunk_{chunk.chunk_idx:04d}_child_*.json"):
+    chunks_path = layout_for(chunk.gp).child_chunks_dir(chunk.document_key)
+    child_chunk_pattern = re.compile(rf"^{chunk.page_num:04d}_{chunk.chunk_idx:04d}_(\d+)\.json$")
+    for path in chunks_path.glob(f"{chunk.page_num:04d}_{chunk.chunk_idx:04d}_*.json"):
         match = child_chunk_pattern.match(path.name)
         if match:
             child_idx = int(match.group(1))
@@ -163,11 +159,12 @@ class BuildChunksJob:
         write_tasks = []
         for rulebook in self.gp["rulebooks"]:
             document_key = rulebook["document_key"]
-            chunks_path = get_chunks_directory_path(self.gp, document_key)
-            chunks_path.mkdir(exist_ok=True)
+            document_layout = layout_for(self.gp)
+            document_layout.parent_chunks_dir(document_key).mkdir(parents=True, exist_ok=True)
+            document_layout.child_chunks_dir(document_key).mkdir(parents=True, exist_ok=True)
 
             # Read full document.md
-            full_document_markdown = await aslurp(self.gp["path"] / document_key / "document.md")
+            full_document_markdown = await aslurp(layout_for(self.gp).document_md(document_key))
 
             # Phase 1: split all pages to determine document-level chunk count
             page_splits: list[Tuple[Page, int, Sequence[Tuple[Document, Sequence[Document]]]]] = []

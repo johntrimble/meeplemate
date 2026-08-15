@@ -5,13 +5,12 @@ from pathlib import Path
 
 from meeplemate.ingest.gamepackage import (
     GamePackage,
+    layout_for,
     get_page_metadata,
     get_page_metadata_path,
-    get_page_one_offset,
     get_pages_iter,
     load_game_package,
     page_md,
-    page_num_from_offset,
     page_number_path,
 )
 from meeplemate.util import aslurp, aspit_yaml
@@ -32,9 +31,8 @@ class DocumentMetadataJobJob:
     async def run(self) -> None:
         for rulebook in self.gp["rulebooks"]:
             document_key = rulebook["document_key"]
-            document_path = self.gp["path"] / document_key / "document.md"
+            document_path = layout_for(self.gp).document_md(document_key)
             document_text = await aslurp(document_path)
-            page_one_offset = get_page_one_offset(rulebook)
 
             search_offset = 0
             async for page in get_pages_iter(self.gp, document_key):
@@ -53,11 +51,10 @@ class DocumentMetadataJobJob:
                 metadata["start_index"] = start_index
                 metadata["end_index"] = end_index
 
-                if page_one_offset == "auto":
-                    pg_number_path = page_number_path(page)
-                    metadata["page_num"] = (await aslurp(pg_number_path)).strip()
-                else:
-                    metadata["page_num"] = page_num_from_offset(page.page_num, page_one_offset)
+                # page-number-fixup writes a file for every page, including
+                # rulebooks with an explicit page_one_offset, so there is no
+                # offset branch to take here any more.
+                metadata["page_num"] = (await aslurp(page_number_path(page))).strip()
 
                 await aspit_yaml(metadata, get_page_metadata_path(page))
                 logger.info(
