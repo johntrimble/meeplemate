@@ -12,6 +12,6 @@ coverage:
       default:
         informational: true
 
-comment:
-  layout: "reach, diff, flags, files"
-  require_changes: true
+# Do not post coverage comments on pull requests. Coverage is still uploaded
+# and visible in the Codecov UI and in the commit status checks.
+comment: false
