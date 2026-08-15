@@ -18,8 +18,9 @@ Both logging stacks are routed through stdlib logging::
 
 Going through stdlib is what makes uvicorn, langchain, httpx and sqlalchemy records
 come out in the same JSON shape as ours, instead of a second, differently-formatted
-stream. (``eval_logging.py`` uses the same bridging pattern for the eval CLI; the two
-are deliberately kept separate, since that one renders to a file plus a console.)
+stream. (:mod:`meeplemate.eval_logging` uses the same bridging pattern for the eval
+CLI; the two are deliberately kept separate, since that one renders to a file plus a
+console.)
 
 This module must not import ``meeplemate.config`` — that module pulls in the whole
 component graph (``qa_graph``, ``chatloop``, ...), and logging has to be configured

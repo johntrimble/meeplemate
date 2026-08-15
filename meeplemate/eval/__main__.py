@@ -1,4 +1,4 @@
-import eval_logging
+from meeplemate import eval_logging
 
 eval_logging.configure_logging()
 
