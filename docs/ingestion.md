@@ -129,9 +129,3 @@ environment variable (`MM_INGEST__OCR__MODEL=... mm-ingest ocr $PKG`) or an
 Neither [config-dev.yaml](../config-dev.yaml) nor [config.yaml](../config.yaml)
 sets `ingest:` today, so the defaults above are what runs.
 
-## Pushing to production
-
-The steps above populate the **local** database. To load an already-ingested
-package into prod, see the [Ingest Data into Prod](../DEVELOPMENT.md) section of
-DEVELOPMENT.md — same `import-documents` command, prod credentials from
-`.env.ingest.prod`.
