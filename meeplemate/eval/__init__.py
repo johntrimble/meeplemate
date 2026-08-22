@@ -332,43 +332,6 @@ def get_llm_calls(run: Run) -> list[Run]:
     return collect_runs_by_type(run, "llm")
 
 
-def extract_token_usage_from_run(run: Run) -> dict[str, dict[str, int]]:
-    """Sum token usage per model for a run, deduplicating by LLM run ID.
-
-    Returns:
-        Dict mapping model_name -> {"input_tokens": N, "output_tokens": N}
-    """
-    llm_runs = get_llm_calls(run)
-    seen_ids: set[str] = set()
-    usage_by_model: dict[str, dict[str, int]] = {}
-
-    for llm_run in llm_runs:
-        run_id = str(llm_run.id)
-        if run_id in seen_ids:
-            continue
-        seen_ids.add(run_id)
-
-        try:
-            generations = (llm_run.outputs or {}).get("generations", [])
-            if not generations or not generations[0]:
-                continue
-            gen = generations[0][0]
-            msg = gen.get("message", {}) if isinstance(gen, dict) else {}
-            kwargs = msg.get("kwargs", {}) if isinstance(msg, dict) else {}
-            usage = kwargs.get("usage_metadata")
-            if not usage:
-                continue
-            model_name = kwargs.get("response_metadata", {}).get("model_name", "unknown")
-            if model_name not in usage_by_model:
-                usage_by_model[model_name] = {"input_tokens": 0, "output_tokens": 0}
-            usage_by_model[model_name]["input_tokens"] += usage.get("input_tokens", 0) or 0
-            usage_by_model[model_name]["output_tokens"] += usage.get("output_tokens", 0) or 0
-        except Exception:
-            continue
-
-    return usage_by_model
-
-
 def get_run_summary(run: Run) -> dict:
     """Get a summary of a run including timing and statistics.
 

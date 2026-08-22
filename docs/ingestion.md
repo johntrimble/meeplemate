@@ -38,8 +38,9 @@ mm-ingest import-documents $PKG            # → Postgres; publishes the new gam
 mm-ingest import-example-questions $PKG    # → Postgres, keyed by game_id (separate step)
 ```
 
-After `import-documents` the game is searchable by the local backend.
-[ingest-rulebooks.sh](../ingest-rulebooks.sh) runs this loop over several games.
+After `import-documents` the game is searchable by the local backend. The steps
+are independent commands by design, so a shell loop over several games is just
+this block with `$PKG` varied.
 
 ## The source package
 
@@ -48,7 +49,8 @@ PDFs plus `rulebooks.yaml`) and writes an **ingested package**
 (`data/ingested/<game>/`, whose derived manifest is `manifest.yaml`).
 `rulebooks.yaml` needs `name`, `game_id`, and a `rulebooks` list whose entries
 each have a `name` and a `path` relative to the source directory (`url` and
-`strategy` optional) — [full example](../data/rules/munchkin_rules/rulebooks.yaml):
+`strategy` optional). `data/rules/` is gitignored, so the repo ships no example —
+this is the whole file:
 
 ```yaml
 name: Munchkin
@@ -102,11 +104,36 @@ data/ingested/<game>/
   command has no version check — it's also how you refresh questions for a game
   that is already imported.
 
+## Publishing to prod
+
+The steps above import into whatever database `MM_PG__URL` points at — locally,
+the `postgres` compose service. Pushing an already-ingested package to the prod
+database is the same `import-documents` command against a different URL.
+
+Get the database URL from the `meeplemate-infra` repo:
+
+```bash
+terraform output database_url
+```
+
+Put it in `.env.ingest.prod` as `MM_PG__URL` — `.gitignore` covers `.env.*`, so
+it stays out of commits — then run the import with that environment loaded:
+
+```bash
+env $(grep -v '^\s*#' .env.ingest.prod | grep -v '^\s*$' | xargs) \
+  mm-ingest import-documents data/ingested/some-game
+```
+
+The same gotchas apply, and they bite harder here: `import-documents` refuses a
+`game_version` already in the database unless you pass `--overwrite`, and
+`--overwrite` against prod rewrites the live version in place. Bumping the
+version with `update-version` and importing alongside is the safer route —
+the old version keeps serving until the new one is published.
+
 ## Re-ingesting
 
 - **Chunking settings changed:** `build-chunks` then
-  `import-documents --overwrite` — no render, no OCR. This is what
-  [update_munchkin.sh](../update_munchkin.sh) does.
+  `import-documents --overwrite` — no render, no OCR.
 - **Text changed (re-OCR):** `ocr` then `build-text` and everything downstream.
   `render` does not need re-running; the images are unchanged.
 - **New content version:** `update-version` then `import-documents`.

@@ -389,7 +389,7 @@ class TraceConfig(BaseModel):
         description="Optional key prefix prepended to every GCS object. (MM_TRACE__PREFIX)",
     )
     local_dir: str = Field(
-        default="./traces",
+        default="./data/traces",
         description="Directory for the 'local' backend. (MM_TRACE__LOCAL_DIR)",
     )
 

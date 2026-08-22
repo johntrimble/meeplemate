@@ -52,7 +52,7 @@ flowchart TD
     F --> G{"Does every quote really<br/>appear in the passages?"}
 
     G -->|Yes| H([Return the answer,<br/>marked verified])
-    G -->|No| I{"Rewritten it<br/>five times?"}
+    G -->|No| I{"Validated it<br/>three times?"}
     I -->|No| F
     I -->|Yes| J([Return the answer,<br/>marked unverified])
 ```
@@ -75,6 +75,7 @@ rewrite instead.
 **Passages are searched for once and then reused.** The final pass over the pooled
 passages skips searching entirely, because the subquestions already did that work.
 
-**An unverified answer still reaches the player.** After five failed rewrites the
-system stops trying and returns the answer flagged as unverified, rather than
-failing outright.
+**An unverified answer still reaches the player.** The quote check runs at most
+three times per answer (`MAX_VALIDATION_ATTEMPTS` in `meeplemate/qa_graph.py`),
+which leaves room for two rewrites. After that the system stops trying and
+returns the answer flagged as unverified, rather than failing outright.

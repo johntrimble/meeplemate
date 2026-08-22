@@ -32,11 +32,11 @@ Selected via `TraceConfig` (`MM_TRACE__*`), defaults to **off** (`noop`):
 | Env var | Default | Description |
 | --- | --- | --- |
 | `MM_TRACE__BACKEND` | `noop` | `noop` (off), `local` (dev/testing), or `gcs` (prod) |
-| `MM_TRACE__LOCAL_DIR` | `./traces` | Directory for the `local` backend |
+| `MM_TRACE__LOCAL_DIR` | `./data/traces` | Directory for the `local` backend |
 | `MM_TRACE__BUCKET` | — | GCS bucket name (required when backend is `gcs`) |
 | `MM_TRACE__PREFIX` | `` | Optional key prefix prepended to every GCS object |
 
-- **Dev/testing:** `MM_TRACE__BACKEND=local` writes `./traces/<chat_id>/<message_id>.json.gz`.
+- **Dev/testing:** `MM_TRACE__BACKEND=local` writes `./data/traces/<chat_id>/<message_id>.json.gz`.
 - **Prod:** `MM_TRACE__BACKEND=gcs MM_TRACE__BUCKET=<bucket>`.
 
 ## Provisioning the GCS bucket (out-of-band)

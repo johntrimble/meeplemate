@@ -1,32 +1,36 @@
-## Running the Backend
+# Development
 
-From inside the dev container:
+Everything here runs **from inside the dev container**. See the
+[README](README.md#getting-started) for bootstrapping and opening it.
+
+## Running the App
+
+```bash
+./script/server
+```
+
+Starts the API on `http://localhost:8000` and the Vite frontend on
+`http://localhost:5173`, and stops both on Ctrl+C. The frontend proxies `/api/*`
+to the backend automatically.
+
+To run just one half:
 
 ```bash
 uvicorn meeplemate.server.api:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-dir meeplemate
-```
-
-The API will be available at `http://localhost:8000`. The frontend Vite proxy forwards `/api/*` requests there automatically.
-
----
-
-## Running the Frontend
-
-From inside the dev container:
-
-```bash
 cd frontend && npm run dev
 ```
 
-The dev server starts on `http://localhost:5173`.
+## Frontend Configuration
 
-The frontend reads auth configuration from `frontend/.env.local`. To use the Firebase Auth Emulator (email/password login instead of Google OAuth):
+Frontend environment variables live in `frontend/.env.local`, which is never
+committed. [`frontend/.env.example`](frontend/.env.example) documents all of
+them — Firebase credentials, auth bypass, and the Firebase Auth emulator — and
+[`docs/auth.md`](docs/auth.md#bypass-mode-local-development) explains what each
+mode is for.
 
-```
-VITE_FIREBASE_EMULATOR=true
-```
-
-The emulator host defaults to `window.location.hostname:9099`, so it automatically works whether you access via `localhost`, `ubuntu-box.local`, or any other hostname — as long as port 9099 is reachable at that address. Set `VITE_FIREBASE_EMULATOR_HOST` explicitly only when the browser can't reach the emulator at the same hostname (e.g. inside a Docker container).
+The short version: `VITE_AUTH_BYPASS=true` skips Firebase entirely, and
+`VITE_FIREBASE_EMULATOR=true` swaps the Google popup for the emulator's
+email/password form.
 
 ### Simulating a Cloud Run cold start
 
@@ -37,6 +41,9 @@ cd frontend && VITE_SIMULATE_COLD_START=30 npm run dev
 ```
 
 For the first 30 seconds after the dev server boots, every `/api/*` request returns a plain-text `500` (`"...no available instance."`), exactly like the Cloud Run proxy during a real cold start. The UI keeps showing its normal loading indicators, and after a few seconds those indicators switch their text to "Waking up the server..." (not an error). Everything recovers automatically once the window elapses and requests reach the real backend.
+
+`./script/server` picks the variable up too, and prints a banner when the
+simulation is on.
 
 ---
 
@@ -77,22 +84,9 @@ alembic revision --autogenerate -m "describe change"
 alembic upgrade head
 ```
 
-## Ingest Data into Prod
+---
 
-> To process a rulebook PDF into an ingested package in the first place (OCR →
-> chunking → local import), see [docs/ingestion.md](docs/ingestion.md). The steps
-> below cover only pushing an already-ingested package to the prod database.
+## Ingesting Rulebooks
 
-Get database url from meeplemate-infra repo:
-
-```bash
-terraform output database_url
-```
-
-Add output to `.env.ingest.prod` as `MM_PG__URL`.
-
-Run the ingest script with the environment variables:
-
-```bash
-env $(grep -v '^\s*#' .env.ingest.prod | grep -v '^\s*$' | xargs) mm-ingest import-documents data/ingested/some-game
-```
+Processing a rulebook PDF into an ingested package, and pushing one to the prod
+database, are both covered in [docs/ingestion.md](docs/ingestion.md).

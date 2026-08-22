@@ -134,16 +134,13 @@ print('estimate  ', c.estimated_tokens_per_request)
 
 ## What the defaults mean
 
-| | share | tokens | dollars |
-|---|---:|---:|---:|
-| user 8H | 28% | 800,000 | $0.11 |
-| user 7D | 30% | 857,143 | $0.12 |
-| user 30D | 100% | 2,857,143 | $0.40 |
-| app 8H | 10% | 35,714,286 | $5.00 |
-| app 7D | 35% | 125,000,000 | $17.50 |
-| app 30D | 100% | 357,142,857 | $50.00 |
+For the actual quotas your config produces, run the snippet in
+[Checking what you got](#checking-what-you-got) — it prints all six windows in
+tokens and dollars. What follows is what those numbers *buy*, which is the part
+worth writing down.
 
-Measured against the `2026-07-07` eval group, where a question costs ~62,000 weighted tokens on average:
+At the stock $0.40 per user / $50 app budgets, measured against the `2026-07-07`
+eval group, where a question costs ~62,000 weighted tokens on average:
 
 - **~12 questions per 8-hour game session**, with 10 or more in ~89% of sessions
 - ~1 session per week per user, ~4.6 sessions per month
@@ -202,7 +199,7 @@ It is derived from the two `observed_*` settings, which come from eval data:
 python script/count_tokens.py 2026-07-07
 ```
 
-Take `in/run` and `out/run` from the `OVERALL` row and set `observed_input_tokens_per_request` and `observed_output_tokens_per_request`. See [eval-debugging-guide.md](eval-debugging-guide.md) for generating run groups.
+Take `in/run` and `out/run` from the `OVERALL` row and set `observed_input_tokens_per_request` and `observed_output_tokens_per_request`. See [eval.md](eval.md) for generating run groups.
 
 ---
 

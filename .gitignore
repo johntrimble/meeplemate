@@ -1,8 +1,16 @@
 __pycache__
+
+# Secrets: every .env variant is ignored, except the committed examples.
+# A bare `.env` matches only that exact name, which used to leave files like
+# .env.ingest.prod (prod database password) stageable.
 .env
+.env.*
+!.env.example
+
 pretrained_models
 munchkin_rules
 .venv
 /data
 *.egg-info
 .playwright-mcp/
+reference_repositories/

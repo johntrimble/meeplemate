@@ -4,12 +4,17 @@
         "**/.git/subtree-cache/**": true,
         "**/node_modules/**": true,
         "**/.venv/**": true,
-        "/reference_repositories/**": true,
-        "/data/**": true
+        "reference_repositories/**": true,
+        "data/**": true,
+        "**/.mypy_cache/**": true,
+        "**/.pytest_cache/**": true,
+        "**/.ruff_cache/**": true,
+        "**/__pycache__/**": true
     },
     "notebook.output.wordWrap": true,
     "python.analysis.typeCheckingMode": "standard",
     "python.analysis.exclude": [
+        "**/.*",
         "**/node_modules",
         "**/__pycache__",
         ".git",
