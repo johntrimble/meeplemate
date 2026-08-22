@@ -31,7 +31,8 @@
         "ms-toolsai.jupyter",
         "github.copilot",
         "anthropic.claude-code",
-        "bircni.compress-preview"
+        "bircni.compress-preview",
+        "mechatroner.rainbow-csv"
       ]
     }
   }
