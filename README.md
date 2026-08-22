@@ -143,7 +143,7 @@ flowchart TD
         g1["Retrieve chunks<br/>(hybrid search tool)"] --> g2["Answer with quoted citations"]
         g2 --> g3["Format"]
         g3 --> g4{"Every quote verifiable<br/>against the source?"}
-        g4 -->|"repair · up to 5×"| g3
+        g4 -->|"repair · up to 3 passes"| g3
         g4 -->|"yes"| g5["Respond"]
     end
 
@@ -152,10 +152,12 @@ flowchart TD
 
 1. **Refine.** History is trimmed to a token budget and the latest turn is rewritten into a self-contained query (so "what about during combat?" becomes a standalone question).
 2. **Analyze & classify.** The model is forced to call the retrieval tool, then labels the question **simple** or **complex** and, if complex, produces 2–5 sub-questions.
-3. **Answer.** Each question is handled by a "game agent" that retrieves evidence, drafts an answer with inline quotes, formats it, and then **validates every quote** against the retrieved text — looping back to fix problems up to five times. Complex questions run one game agent per sub-question concurrently and merge the results.
+3. **Answer.** Each question is handled by a "game agent" that retrieves evidence, drafts an answer with inline quotes, formats it, and then **validates every quote** against the retrieved text — the check runs up to three times (`MAX_VALIDATION_ATTEMPTS`), so a bad quote gets two chances to be repaired before the answer is returned flagged unverified. Complex questions run one game agent per sub-question concurrently and merge the results.
 4. **Ground & respond.** Progress events are streamed while the graph runs. When it completes, the verified answer is emitted through the same SSE connection and stored as the assistant's message; token usage is recorded for rate limiting.
 
 Every answer-pipeline model call flows through a **failover chat model**: it tries configured models in priority order and trips a per-model circuit breaker after repeated failures (defaults: 3 consecutive failures, 300s cooldown). When multiple endpoints are configured, this lets the pipeline route around a flaky endpoint instead of immediately failing the request.
+
+[`docs/qa-flow.md`](docs/qa-flow.md) walks the same flow in detail, including what happens to a sub-answer whose quotes don't check out.
 
 ---
 
@@ -286,8 +288,12 @@ A few decisions worth calling out (full reasoning in [`docs/auth.md`](docs/auth.
 Answer quality is measured, not eyeballed. The `mm-eval` CLI runs the **production** QA graph over YAML-defined golden cases (`meeplemate/eval/test_cases.yaml`), persists the full run traces, and scores each answer with:
 
 - **Correctness** — a `deepeval` `GEval` LLM-judge checking the answer reaches the same substantive conclusion as the reference answer.
+- **First-pass quote validity** (`FirstPassQuoteValidityMetric`) — the fraction of quotes the model got right *unaided*, before any repair. A repaired quote still cost an LLM call, so it counts against this one.
+- **Quote retention** (`QuoteRetentionMetric`) — the fraction of generated quotes that survived into the answer, repaired or not. The gap between this and first-pass validity is exactly how much work the repair loop is absorbing.
 - **Valid-quote rate** (`ValidQuoteMetric`) — the fraction of quotes in the answer that pass verification against the source.
 - **Runaway-generation rate** (`RunawayGenerationsMetric`) — the fraction of generations that finished cleanly rather than hitting the length limit.
+
+Retrieval can also be scored on its own, with no LLM calls, against the `evidence:` quotes in the same test cases — see [Retrieval design](#retrieval-design).
 
 The judge itself is a local vLLM model, and there's tooling for **grid / sampling hyperparameter search** (`eval/grid_search.py`, `eval/sampling_search.py`), multi-run **variance analysis**, run-to-run comparison, and per-model **cost accounting**.
 
@@ -344,7 +350,7 @@ The example environment enables authentication bypass (`MM_AUTH_BYPASS=true` and
 
 ## Command-line tools
 
-Three working CLIs are registered in `pyproject.toml` and run from inside the dev container:
+Three working CLIs run from inside the dev container:
 
 | Command | Purpose |
 |---|---|

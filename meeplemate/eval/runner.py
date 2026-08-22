@@ -21,8 +21,10 @@ from meeplemate.chatloop import QAServiceInput
 from meeplemate.component_system import subsystem, System
 from meeplemate.config import Config, QAService, create_app_system, factory
 from meeplemate.eval import (
+    existing_run_files,
     get_test_run_file_path,
     load_persisted_run,
+    uncompressed_run_file_path,
     TestRunTracer
 )
 from meeplemate.eval.metrics import (
@@ -139,8 +141,15 @@ class E2ERunner(Runner):
             return []
         
         existing_runs = []
-        # Find all the *.run*.json files
-        for run_file in group_runs_dir.glob("*.run*.json"):
+        # Find all the *.run*.json files, compressed or not. Globbing the
+        # uncompressed spelling first means that a run present in both forms is
+        # picked up once, as the uncompressed copy.
+        seen = set()
+        for run_file in [*group_runs_dir.glob("*.run*.json"), *group_runs_dir.glob("*.run*.json.gz")]:
+            key = uncompressed_run_file_path(run_file).name
+            if key in seen:
+                continue
+            seen.add(key)
             existing_runs.append(run_file)
         return existing_runs
 
@@ -263,15 +272,20 @@ class E2ERunner(Runner):
                         run_number
                     )
 
-                    if run_file_path.exists():
+                    existing_run_file_paths = existing_run_files(run_file_path)
+                    if existing_run_file_paths:
                         if skip_existing:
-                            logger.info("Run file already exists, skipping generation", test_case=golden.name, run_file_path=str(run_file_path))
+                            logger.info("Run file already exists, skipping generation", test_case=golden.name, run_file_path=str(existing_run_file_paths[0]))
                             continue
                         elif overwrite:
-                            run_file_path.unlink()
-                            logger.info("Deleted existing run file", path=str(run_file_path))
+                            # Delete every form of the run: leaving an uncompressed
+                            # copy behind would make the new write look like a
+                            # duplicate persist and raise.
+                            for existing_run_file_path in existing_run_file_paths:
+                                existing_run_file_path.unlink()
+                                logger.info("Deleted existing run file", path=str(existing_run_file_path))
                         else:
-                            raise FileExistsError(f"Run file already exists: {run_file_path}")
+                            raise FileExistsError(f"Run file already exists: {existing_run_file_paths[0]}")
                     
                     run_file_path.parent.mkdir(parents=True, exist_ok=True)
 

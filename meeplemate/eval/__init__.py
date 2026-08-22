@@ -1,7 +1,8 @@
 from importlib import resources
 from langchain.chat_models import BaseChatModel
 from structlog import get_logger
-from typing import Iterator, Sequence, TypedDict, override, Callable
+from typing import IO, Iterator, Sequence, TypedDict, override, Callable
+import gzip
 import json
 
 from langchain_core.tracers import Run
@@ -28,6 +29,14 @@ from deepeval.models.base_model import DeepEvalBaseLLM
 from deepeval.dataset.golden import Golden
 
 logger = get_logger(__name__)    
+
+# Run files are written gzip-compressed: the traces are highly repetitive JSON and
+# compress by better than 10x. Readers accept either form, so run groups generated
+# before compression was introduced keep working untouched.
+RUN_FILE_SUFFIX = ".json.gz"
+UNCOMPRESSED_RUN_FILE_SUFFIX = ".json"
+GZIP_MAGIC = b"\x1f\x8b"
+COMPRESS_LEVEL = 6
 
 # Load test_cases.yaml from this module
 test_suites = slurp_yaml(resources.files(__package__).joinpath("test_cases.yaml"))
@@ -75,20 +84,22 @@ def get_test_run_file_path(
 
     Returns:
         Path to the run file. Examples:
-        - run_number=None: eval_runs_dir/2026-01-25/test_suite__test_case.json
-        - run_number=1: eval_runs_dir/2026-01-25/test_suite__test_case.run001.json
+        - run_number=None: eval_runs_dir/2026-01-25/test_suite__test_case.json.gz
+        - run_number=1: eval_runs_dir/2026-01-25/test_suite__test_case.run001.json.gz
     """
     test_suite = snake_case(test_suite)
     test_case = snake_case(test_case)
     group_output_dir = eval_runs_dir / test_group_run_id
     group_output_dir.mkdir(exist_ok=True)
 
-    # Construct filename with optional run suffix
+    # Construct filename with optional run suffix. This is the path new runs are
+    # written to, so it is always the compressed spelling; resolve_run_file() maps
+    # it back to whichever form is actually on disk.
     base_name = f"{test_suite}__{test_case}"
     if run_number is not None:
-        filename = f"{base_name}.run{str(run_number).zfill(3)}.json"
+        filename = f"{base_name}.run{str(run_number).zfill(3)}{RUN_FILE_SUFFIX}"
     else:
-        filename = f"{base_name}.json"
+        filename = f"{base_name}{RUN_FILE_SUFFIX}"
 
     run_file = group_output_dir / filename
     return run_file
@@ -117,19 +128,69 @@ def parse_group_run_id(group_run_id: str) -> tuple[str, int | None]:
         return group_run_id, None
 
 
-def load_persisted_run(run_file_path: Path|str) -> Run:
-    """Load a persisted Run object from a JSON file.
+def uncompressed_run_file_path(run_file_path: Path) -> Path:
+    """Strip the .gz from a run file path, if it has one."""
+    if run_file_path.suffix == ".gz":
+        return run_file_path.with_suffix("")
+    return run_file_path
 
-    Args:
-        run_file_path: Path to the JSON file containing the persisted run
 
-    Returns:
-        Run object reconstructed from the persisted data
+def existing_run_files(run_file_path: Path|str) -> list[Path]:
+    """Every on-disk form of a run file, uncompressed first.
+
+    A run is written as .json.gz but may exist as plain .json from before
+    compression, and briefly as both if a compressed run was written alongside an
+    old uncompressed one. Callers that delete a run need all of them; callers that
+    read one want the first.
     """
     if isinstance(run_file_path, str):
         run_file_path = Path(run_file_path)
 
-    with run_file_path.open("r") as f:
+    uncompressed = uncompressed_run_file_path(run_file_path)
+    compressed = uncompressed.with_name(uncompressed.name + ".gz")
+    return [path for path in (uncompressed, compressed) if path.exists()]
+
+
+def resolve_run_file(run_file_path: Path|str) -> Path|None:
+    """Find the run file on disk, given either spelling of its path.
+
+    Prefers the uncompressed file when a run exists in both forms. Returns None if
+    neither exists, so callers can skip a missing run the way they skipped a failed
+    .exists() before.
+    """
+    existing = existing_run_files(run_file_path)
+    return existing[0] if existing else None
+
+
+def open_run_file(run_file_path: Path) -> IO[str]:
+    """Open a run file for reading as text, decompressing it if it is gzipped.
+
+    Sniffs the magic bytes rather than trusting the extension, so a run file that
+    was compressed or decompressed without being renamed still reads.
+    """
+    with run_file_path.open("rb") as f:
+        is_gzipped = f.read(2) == GZIP_MAGIC
+
+    if is_gzipped:
+        return gzip.open(run_file_path, "rt", encoding="utf-8")
+    return run_file_path.open("r", encoding="utf-8")
+
+
+def load_persisted_run(run_file_path: Path|str) -> Run:
+    """Load a persisted Run object from a run file.
+
+    Args:
+        run_file_path: Path to the run file, compressed (.json.gz) or not (.json).
+            Either spelling resolves to whichever form is on disk.
+
+    Returns:
+        Run object reconstructed from the persisted data
+    """
+    resolved = resolve_run_file(run_file_path)
+    if resolved is None:
+        raise FileNotFoundError(f"No run file at {run_file_path}, with or without .gz")
+
+    with open_run_file(resolved) as f:
         run_dict = json.load(f)
 
     # Use parse_obj to reconstruct the Run from the dict
@@ -332,43 +393,6 @@ def get_llm_calls(run: Run) -> list[Run]:
     return collect_runs_by_type(run, "llm")
 
 
-def extract_token_usage_from_run(run: Run) -> dict[str, dict[str, int]]:
-    """Sum token usage per model for a run, deduplicating by LLM run ID.
-
-    Returns:
-        Dict mapping model_name -> {"input_tokens": N, "output_tokens": N}
-    """
-    llm_runs = get_llm_calls(run)
-    seen_ids: set[str] = set()
-    usage_by_model: dict[str, dict[str, int]] = {}
-
-    for llm_run in llm_runs:
-        run_id = str(llm_run.id)
-        if run_id in seen_ids:
-            continue
-        seen_ids.add(run_id)
-
-        try:
-            generations = (llm_run.outputs or {}).get("generations", [])
-            if not generations or not generations[0]:
-                continue
-            gen = generations[0][0]
-            msg = gen.get("message", {}) if isinstance(gen, dict) else {}
-            kwargs = msg.get("kwargs", {}) if isinstance(msg, dict) else {}
-            usage = kwargs.get("usage_metadata")
-            if not usage:
-                continue
-            model_name = kwargs.get("response_metadata", {}).get("model_name", "unknown")
-            if model_name not in usage_by_model:
-                usage_by_model[model_name] = {"input_tokens": 0, "output_tokens": 0}
-            usage_by_model[model_name]["input_tokens"] += usage.get("input_tokens", 0) or 0
-            usage_by_model[model_name]["output_tokens"] += usage.get("output_tokens", 0) or 0
-        except Exception:
-            continue
-
-    return usage_by_model
-
-
 def get_run_summary(run: Run) -> dict:
     """Get a summary of a run including timing and statistics.
 
@@ -466,15 +490,16 @@ class TestRunTracer(AsyncBaseTracer):
         )
         run_file.parent.mkdir(parents=True, exist_ok=True)
 
-        if run_file.exists():
+        existing_run_file = resolve_run_file(run_file)
+        if existing_run_file is not None:
             logger.error(
                 "Attempted to overwrite existing run file!",
-                run_file=str(run_file),
-                existing_size=run_file.stat().st_size,
+                run_file=str(existing_run_file),
+                existing_size=existing_run_file.stat().st_size,
                 metadata=metadata,
             )
             raise FileExistsError(
-                f"Run file already exists: {run_file}. "
+                f"Run file already exists: {existing_run_file}. "
                 f"This suggests a duplicate persist for the same test case/run number. "
                 f"Metadata: test_suite={metadata['test_suite']}, "
                 f"test_case={metadata['test_case']}, "
@@ -482,7 +507,7 @@ class TestRunTracer(AsyncBaseTracer):
                 f"group_run_id={metadata['test_group_run_id']}"
             )
 
-        with run_file.open("w") as f:
+        with gzip.open(run_file, "wt", encoding="utf-8", compresslevel=COMPRESS_LEVEL) as f:
             # Convert Run to dict and serialize with custom encoder that handles
             # UUIDs, datetimes, and LangChain objects (AIMessage, etc.)
             run_dict = _run_to_dict(run)

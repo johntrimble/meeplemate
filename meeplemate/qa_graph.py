@@ -2336,7 +2336,7 @@ def build_question_answer_graph(
         if invalid_quotes:
             documents = get_evidence(state)
             logger.info("Response contains invalid quotes", invalid_quote_count=len(invalid_quotes), validation_attempts=validation_attempts, query=state["query"], document_count=len(documents))
-            # This node re-runs up to 5 times per request, so the evidence set and the
+            # This node re-runs up to MAX_VALIDATION_ATTEMPTS times per request, so the evidence set and the
             # full response are DEBUG-only — at INFO they dominate the log volume.
             logger.debug("Invalid quote context", invalid_quotes=invalid_quotes, documents=documents, response=state["response"])
         if invalid_quotes and validation_attempts < MAX_VALIDATION_ATTEMPTS:
