@@ -30,7 +30,8 @@
         "ms-python.python",
         "ms-toolsai.jupyter",
         "github.copilot",
-        "anthropic.claude-code"
+        "anthropic.claude-code",
+        "bircni.compress-preview"
       ]
     }
   }
