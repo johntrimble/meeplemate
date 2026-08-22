@@ -86,14 +86,29 @@ the `in/run` and `out/run` columns of the `OVERALL` row. See
 
 ```
 data/evals/
-├── generation_runs/<group-run-id>/     # one JSON per run: the full LangGraph trace
-│   └── <suite>__<case>.run<NNN>.json   #   inputs, outputs, child_runs
-└── qa_evals/<group-run-id>/            # deepeval scoring output
+├── generation_runs/<group-run-id>/       # one file per run: the full LangGraph trace
+│   └── <suite>__<case>.run<NNN>.json.gz  #   inputs, outputs, child_runs
+└── qa_evals/<group-run-id>/              # deepeval scoring output
 ```
 
 A run file's `outputs` carries `response`, `evidence`, and (for questions
 classified COMPLEX) `clarifying_questions` — enough to tell a retrieval failure
 from a reasoning one without opening the trace tree.
+
+Run files are written gzip-compressed. The traces are highly repetitive JSON and
+shrink by better than 10x, which matters because a single run is routinely
+several MB and a group run is hundreds of them. Readers take either form and
+prefer the uncompressed one, so run groups generated before compression keep
+working untouched and can be backfilled whenever:
+
+```bash
+find data/evals/generation_runs -name '*.json' -exec gzip -6 {} +
+```
+
+Nothing in the eval CLI writes uncompressed runs any more, so reach for `zcat`
+(or `gzip -dc`) when inspecting one by hand. The same layout, and the same
+compression, applies under `data/evals/sampling_param_search/<group>/` — the
+grid search reuses the same runner.
 
 ## Related
 

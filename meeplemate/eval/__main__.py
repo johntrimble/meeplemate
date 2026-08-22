@@ -27,6 +27,7 @@ from meeplemate.eval import (
     snake_case,
     test_suites,
     get_test_run_file_path,
+    resolve_run_file,
     parse_group_run_id,
     next_group_run_id,
     load_goldens
@@ -97,8 +98,8 @@ async def _print_summary_of_run(filter: str = "*", group_run_id: str | None = No
             if not fnmatch.fnmatch(test_case["name"], filter):
                 continue
 
-            run_file = get_test_run_file_path(eval_runs_dir, base_group_run_id, test_suite["name"], test_case["name"], run_number=run_number)
-            if not run_file.exists():
+            run_file = resolve_run_file(get_test_run_file_path(eval_runs_dir, base_group_run_id, test_suite["name"], test_case["name"], run_number=run_number))
+            if run_file is None:
                 continue
 
             run = load_persisted_run(run_file)
@@ -186,15 +187,15 @@ async def _run_qa_eval(filter: str, base_group_run_id: str, llm: LocalModel):
                 if "reference_answer" not in test_case:
                     continue
 
-                run_file = get_test_run_file_path(
+                run_file = resolve_run_file(get_test_run_file_path(
                     get_eval_generation_runs_dir(),
                     parsed_base_id,
                     test_suite["name"],
                     test_case["name"],
                     run_number=run_number
-                )
+                ))
 
-                if not run_file.exists():
+                if run_file is None:
                     continue
 
                 run = load_persisted_run(run_file)

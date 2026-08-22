@@ -4,7 +4,7 @@
 Usage:
     python script/count_tokens.py <run-group-or-path> [<path>...] [mode]
 
-    <run-group-or-path>  Run group name (e.g. 2026-07-07) or path(s) to JSON file(s)
+    <run-group-or-path>  Run group name (e.g. 2026-07-07) or path(s) to trace file(s)
     --per-run            One row per run file, grouped by test case
     --per-call           One row per LLM call, in trace order
     --by-node            Aggregate by LangGraph node
@@ -22,6 +22,7 @@ child emits no span -- either way, one span per attempt, never nested.
 """
 from __future__ import annotations
 
+import gzip
 import json
 import statistics
 import sys
@@ -104,11 +105,34 @@ def collect(span: dict, run: str) -> list[Call]:
     return calls
 
 
+def run_name(path: Path) -> str:
+    """The run's name, with the .json/.json.gz tail stripped."""
+    return path.name.removesuffix(".gz").removesuffix(".json")
+
+
+def load_trace(path: Path) -> dict:
+    """Read a trace file, decompressing it if it is gzipped.
+
+    Run files are written as .json.gz, but older run groups are plain .json. The
+    magic bytes decide, so a file that was compressed or decompressed without
+    being renamed still reads.
+    """
+    with path.open("rb") as fh:
+        is_gzipped = fh.read(2) == b"\x1f\x8b"
+    opener = gzip.open if is_gzipped else open
+    with opener(path, "rt", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def resolve(arg: str) -> list[Path]:
     """A path (file or directory) or a run group name under data/evals/generation_runs."""
     for candidate in (Path(arg), RUN_GROUPS / arg):
         if candidate.is_dir():
-            return sorted(candidate.rglob("*.json"))
+            # Uncompressed first, so a run present in both forms is counted once.
+            found: dict[str, Path] = {}
+            for path in [*candidate.rglob("*.json"), *candidate.rglob("*.json.gz")]:
+                found.setdefault(str(path.parent / run_name(path)), path)
+            return [found[key] for key in sorted(found)]
         if candidate.is_file():
             return [candidate]
     sys.exit(f"Error: could not find '{arg}' as a path or run group name")
@@ -265,8 +289,7 @@ def main(argv: list[str]) -> None:
 
     calls: list[Call] = []
     for path in targets:
-        with path.open() as fh:
-            calls.extend(collect(json.load(fh), path.stem))
+        calls.extend(collect(load_trace(path), run_name(path)))
 
     if not calls:
         sys.exit("No LLM calls found.")

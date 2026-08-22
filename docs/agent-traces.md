@@ -21,7 +21,9 @@ user reports on.
   `asyncio.to_thread`, authenticated via Application Default Credentials.
 - `meeplemate/tracing/serialization.py` — run-tree serialization/transform helpers, shared
   with the eval harness. LangChain plumbing nodes (`Runnable*`) are pruned by default to
-  keep traces small.
+  keep traces small. The eval harness writes its run files the same way — gzipped JSON
+  under a `.json.gz` name (see [eval.md](eval.md#where-the-output-lands)) — but persists
+  to the eval output directory rather than through a `TraceSink`.
 - Failures while serializing or uploading are swallowed and logged — persisting a trace
   never breaks the user-facing response.
 

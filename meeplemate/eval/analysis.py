@@ -35,7 +35,7 @@ def get_generation_runs_dir():
 def find_run_numbers(base_group_run_id: str) -> list[int | None]:
     """Find all run numbers for a given group_run_id by scanning generation files.
 
-    Searches the generation_runs directory for files with .run00X.json suffix.
+    Searches the generation_runs directory for files with a .run00X.json[.gz] suffix.
 
     Args:
         base_group_run_id: Base identifier (e.g., "2026-01-25")
@@ -51,18 +51,18 @@ def find_run_numbers(base_group_run_id: str) -> list[int | None]:
 
     run_numbers = set()
 
-    # Check for .run00X.json files in the base directory
+    # Check for .run00X.json files in the base directory, compressed or not
     base_path = gen_dir / base_group_run_id
     if base_path.exists() and base_path.is_dir():
-        for file_path in base_path.glob("*.json"):
+        for file_path in [*base_path.glob("*.json"), *base_path.glob("*.json.gz")]:
             filename = file_path.name
 
-            # Check if it's a numbered run file (*.run00X.json)
+            # Check if it's a numbered run file (*.run00X.json[.gz])
             if ".run" in filename:
-                # Extract run number: "test_suite__test_case.run001.json" -> "001"
+                # Extract run number: "test_suite__test_case.run001.json.gz" -> "001"
                 parts = filename.rsplit(".run", 1)
                 if len(parts) == 2:
-                    run_part = parts[1].replace(".json", "")
+                    run_part = parts[1].removesuffix(".gz").removesuffix(".json")
                     try:
                         run_num = int(run_part)
                         run_numbers.add(run_num)
@@ -84,7 +84,7 @@ def find_run_groups(base_group_run_id: str) -> list[str]:
     """Find all run groups matching the pattern.
 
     Given a base group_run_id like "2026-01-25", finds all matching runs by
-    searching for files with .run00X.json suffix in the generation_runs directory.
+    searching for files with a .run00X.json[.gz] suffix in the generation_runs directory.
 
     Args:
         base_group_run_id: Base identifier (e.g., "2026-01-25")
