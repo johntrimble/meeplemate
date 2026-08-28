@@ -1,0 +1,73 @@
+# Configuration for `mm-eval mine-questions` — eval-corpus generation.
+#
+# WHY THIS FILE EXISTS
+# Mining wants a thinking model with a large output budget; serving wants a fast
+# non-thinking one. Those are incompatible on a single model entry, so mining
+# gets its own config, selected with `mm-eval mine-questions --config-file`.
+#
+# THIS FILE MUST BE COMPLETE, NOT A FRAGMENT.
+# YamlConfigSettingsSource (meeplemate/config.py) reads ONE file and does not
+# merge with any other. `chat`, `embedding` and `model_name` are required with no
+# defaults, so everything below has to be restated even where it is identical to
+# config-dev.yaml.
+#
+# KEEP IN SYNC WITH config-dev.yaml.
+# Only the marked deltas should differ. Anything else drifting apart — the pg
+# URL, the embedding model — means a mining run is reading a different corpus
+# than the eval it feeds, and nothing will announce it.
+
+model_name: "Qwen/Qwen3.6-35B-A3B"
+
+pg:
+  url: "postgresql+asyncpg://postgres:password@postgres:5432/postgres"
+  pool_size: 10
+  max_overflow: 20
+
+chat:
+  max_failures: 3
+  cooldown_seconds: 300
+
+  models:
+  - model_name: "Qwen/Qwen3.6-35B-A3B"
+    endpoint_type: "openai"
+    endpoint: "https://llm.johntrimble.dev/v1"
+    timeout: 900
+
+    # --- DELTA vs config-dev.yaml -------------------------------------------
+    # Thinking on. Measured against this endpoint on a concept-extraction call:
+    # 96 output tokens with thinking off, 2536 with it on — a 26x increase on the
+    # cheapest call in the pipeline. The generation call carries a ~6k prompt and
+    # asks for five questions, so size for the worst case, not the average.
+    #
+    # Note the endpoint does not surface reasoning_content through the
+    # structured-output path: langchain sees only the parsed JSON. The thinking
+    # happens and is billed, but it cannot be read back — judge it by question
+    # quality, not by inspecting traces.
+    max_new_tokens: 32768
+
+    chat_template_kwargs:
+      enable_thinking: true
+    # ------------------------------------------------------------------------
+
+    # Sampling is copied verbatim from config-dev.yaml and is NOT tuned for
+    # thinking — those values came from a grid search against the non-thinking
+    # model. Treat them as a starting point.
+    #
+    # presence_penalty is the one to suspect first: it penalises tokens that have
+    # already appeared, which is harmless over a 96-token answer and a different
+    # proposition over a 2500-token reasoning trace, where the model needs to
+    # keep restating the same rule terms.
+    temperature: 0.7
+    top_p: 0.8
+    presence_penalty: 0.8
+
+embedding:
+  model: "BAAI/bge-small-en-v1.5"
+  query_instruction: "Represent this sentence for searching relevant passages: "
+
+qa_chain_config:
+  reword_documents: true
+  self_consistency: true
+  thread_of_thought: true
+  consistency_kwargs:
+    samples: 3

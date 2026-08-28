@@ -649,5 +649,399 @@ def retrieval(filter: str, token_budget: int):
     asyncio.run(_run())
 
 
+@cli.command("mine-questions")
+@click.argument("game-id", required=True)
+@click.option("--run-id", default=None,
+              help="Output file stem. Defaults to today's date, auto-incremented.")
+@click.option("--limit", default=None, type=int,
+              help="Number of seed chunks to process. Default: every parent chunk.")
+@click.option("--offset", default=0, type=int,
+              help="Index into the deterministic seed order to start at.")
+@click.option("--concepts-per-seed", default=2, type=int)
+@click.option("--questions-per-seed", default=5, type=int)
+@click.option("--max-question-words", default=25, type=int,
+              help="Length target rendered into the generation prompt. Boardbarian is used "
+                   "mostly from a phone, and the hand-written cases in test_cases.yaml have "
+                   "a median of 13 words. Advisory: the model is asked, not clipped.")
+@click.option("--max-answer-tokens", default=6144, type=int,
+              help="Token cap for the generation call. The config default (3072) is "
+                   "tuned for a QA answer and truncates reasoning plus N questions. "
+                   "Raise well above this for a thinking model.")
+@click.option("--max-concept-tokens", default=8192, type=int,
+              help="Token cap for the concept-extraction call. Non-thinking needs ~100; "
+                   "thinking measured at ~2500 on this endpoint, and a seed whose trace "
+                   "runs past the cap is lost entirely.")
+@click.option("--dense-k", default=40, type=int,
+              help="Dense candidates per concept. Effectively capped at 40 by the index's "
+                   "hnsw.ef_search default, so raising this alone does not widen the arm.")
+@click.option("--bm25-k", default=30, type=int, help="Lexical candidates per concept.")
+@click.option("--rrf-k", default=60.0, type=float)
+@click.option("--per-concept-cap", default=6, type=int)
+@click.option("--max-context-chunks", default=12, type=int,
+              help="Chunks in the generation context, seed included. Keep it small.")
+@click.option("--adjacency-radius", default=1, type=int,
+              help="Drop retrieved chunks within N positions of the seed in corpus order.")
+@click.option("--min-seed-chars", default=200, type=int,
+              help="Skip parent chunks shorter than this (title pages, credits, tables).")
+@click.option("--dupe-threshold", default=0.92, type=float)
+@click.option("--concurrency", default=4, type=int)
+@click.option("--config-file", default=None, type=click.Path(path_type=Path),
+              help="Config YAML to use instead of $MM_CONFIG_FILE, e.g. config-mining.yaml "
+                   "(thinking on, large output budget).")
+@click.option("--endpoint", default=None,
+              help="Override the chat endpoint for this run.")
+@click.option("--output-dir", default=None, type=click.Path(path_type=Path),
+              help="Where run files land. Default: <project>/eval_gen.")
+@click.option("--resume", is_flag=True, default=False,
+              help="Skip seeds already present in the run file.")
+@click.option("--dedupe-only", is_flag=True, default=False,
+              help="Recompute dedupe over an existing run file. Makes no LLM calls.")
+@click.option("--drop-duplicates", is_flag=True, default=False,
+              help="Omit near-duplicates from the output instead of annotating them.")
+@click.option("--include-context-text", is_flag=True, default=False,
+              help="Embed chunk text in the YAML. For single-seed debugging only.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print the seed list and corpus stats. Makes no LLM calls.")
+def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: int,
+                   concepts_per_seed: int, questions_per_seed: int,
+                   max_question_words: int,
+                   max_answer_tokens: int, max_concept_tokens: int, dense_k: int,
+                   bm25_k: int, rrf_k: float, per_concept_cap: int,
+                   max_context_chunks: int, adjacency_radius: int, min_seed_chars: int,
+                   dupe_threshold: float, concurrency: int,
+                   config_file: Path | None, endpoint: str | None,
+                   output_dir: Path | None, resume: bool, dedupe_only: bool,
+                   drop_duplicates: bool, include_context_text: bool, dry_run: bool):
+    """Mine candidate eval questions from a game's rulebook chunks.
+
+    Steps 1-2 of eval-corpus generation: for each parent chunk, name two rule
+    concepts it leaves unresolved, retrieve those concepts across the corpus,
+    assemble a small multi-chunk context, and generate candidate questions from
+    it. Then flag near-duplicates against the batch and test_cases.yaml.
+
+    Answer generation, answer-based filtering and human review are downstream and
+    manual — this writes a review queue, not test cases.
+
+    Retrieval here deliberately uses MINING settings rather than production ones:
+    large k, no adaptive-k, no token budget, no document-order re-sort. Assembling
+    context behind the production cutoffs would restrict the eval set to questions
+    production retrieval already finds.
+    """
+    import logging
+    import os
+
+    import numpy as np
+
+    from meeplemate.config import Config
+    from meeplemate.eval.mining import (
+        EXTRACT_CONCEPTS_PROMPT,
+        GENERATE_CANDIDATES_PROMPT,
+        ExtractedConcepts,
+        GeneratedCandidates,
+        MiningDeps,
+        MiningParams,
+        SeedResult,
+        build_run_document,
+        candidate_id,
+        dump_run_yaml,
+        eval_gen_run_path,
+        load_existing_questions,
+        load_parents,
+        load_run_document,
+        dedupe_candidates,
+        mine_seed,
+        next_run_id,
+        seed_ids_in_document,
+    )
+
+    if output_dir is None:
+        output_dir = get_eval_and_generation_output_dir().parent.parent / "eval_gen"
+    game_dir = Path(output_dir) / game_id
+
+    async def _run():
+        # MM_CONFIG_FILE is read by YamlConfigSettingsSource at Config()
+        # construction, so the override has to land before that. There is no
+        # layering: the named file replaces config-dev.yaml wholesale rather
+        # than merging with it.
+        if config_file:
+            resolved = Path(config_file).resolve()
+            if not resolved.exists():
+                raise click.ClickException(f"Config file not found: {resolved}")
+            os.environ["MM_CONFIG_FILE"] = str(resolved)
+        cfg = Config()
+        names = ["docstore", "vector_store", "bm25_searcher", "chat_model",
+                 "embedding_model", "_embedding_model",
+                 "game_data_store", "game_version_store"]
+        system = create_eval_system(names=names, config=cfg)
+        # create_eval_system rewrites config.chat.models[0].endpoint before
+        # returning, so an override has to be applied to the same Config object
+        # *after* the call. Component factories run at astart(), not here, which
+        # is what makes the late mutation land. Setting it earlier is discarded.
+        if endpoint:
+            cfg.chat.models[0].endpoint = endpoint
+
+        async with system.astart() as svc:
+            gkey = (await svc["game_version_store"].amget([game_id]))[0]
+            if gkey is None:
+                raise click.ClickException(f"No current game version for game_id {game_id!r}")
+            manifest = (await svc["game_data_store"].amget([gkey]))[0]
+            if manifest is None:
+                raise click.ClickException(f"No manifest for game key {gkey!r}")
+            game_version = manifest["game_version"]
+            game_name = manifest.get("name", game_id)
+
+            parents = await load_parents(svc["docstore"], gkey)
+            if not parents:
+                raise click.ClickException(f"No parent chunks found for {game_id!r}")
+            parents_by_id = {p.parent_id: p for p in parents}
+
+            resolved_run_id = run_id or next_run_id(game_dir)
+            run_path = eval_gen_run_path(output_dir, game_id, resolved_run_id)
+
+            existing = load_existing_questions()
+            embeddings = svc["_embedding_model"]
+
+            async def _dedupe(results: Sequence[SeedResult]) -> dict:
+                """Embed and compare. Symmetric, so aembed_documents both sides.
+
+                embedding_model is instruction-wrapped for retrieval and prepends
+                a query instruction on aembed_query only; mixing a query vector
+                with a document vector gives similarities that look plausible and
+                are wrong. _embedding_model is the raw model.
+                """
+                ids, questions = [], []
+                for r in results:
+                    for i, q in enumerate(r.questions):
+                        ids.append(candidate_id(game_id, r.seed_ordinal, i))
+                        questions.append(q)
+                if not ids:
+                    return {}
+                cand_vecs = np.array(await embeddings.aembed_documents(questions))
+                exist_vecs = (
+                    np.array(await embeddings.aembed_documents([e.question for e in existing]))
+                    if existing else np.zeros((0, cand_vecs.shape[1]))
+                )
+                verdicts = dedupe_candidates(
+                    ids, questions, cand_vecs, existing, exist_vecs,
+                    game_id=game_id, threshold=dupe_threshold,
+                )
+                return dict(zip(ids, verdicts))
+
+            # --dedupe-only: reduce over an existing file, no LLM calls. Retuning
+            # a threshold should not cost a full sweep of generations.
+            if dedupe_only:
+                if not run_path.exists():
+                    raise click.ClickException(f"No run file at {run_path}")
+                doc = load_run_document(run_path)
+                ids = [c["id"] for c in doc.get("candidates") or []]
+                questions = [c["question"] for c in doc.get("candidates") or []]
+                if not ids:
+                    raise click.ClickException(f"No candidates in {run_path}")
+                click.echo(f"Re-deduping {len(ids)} candidates at threshold {dupe_threshold}")
+                cand_vecs = np.array(await embeddings.aembed_documents(questions))
+                exist_vecs = (
+                    np.array(await embeddings.aembed_documents([e.question for e in existing]))
+                    if existing else np.zeros((0, cand_vecs.shape[1]))
+                )
+                verdicts = dedupe_candidates(
+                    ids, questions, cand_vecs, existing, exist_vecs,
+                    game_id=game_id, threshold=dupe_threshold,
+                )
+                by_id = dict(zip(ids, verdicts))
+                for candidate in doc.get("candidates") or []:
+                    v = by_id[candidate["id"]]
+                    candidate["dedupe"] = {
+                        "status": v.status,
+                        "max_similarity": v.max_similarity,
+                        "nearest": (
+                            {"kind": v.nearest_kind, "ref": v.nearest_ref,
+                             "question": v.nearest_question, "similarity": v.max_similarity}
+                            if v.nearest_ref is not None else None
+                        ),
+                        "cross_game_max_similarity": v.cross_game_max_similarity,
+                        "near_duplicates": [
+                            {"kind": k, "ref": r, "similarity": round(s, 4)}
+                            for k, r, s in v.near_duplicates
+                        ],
+                    }
+                doc["run"].setdefault("params", {})["dupe_threshold"] = dupe_threshold
+                if drop_duplicates:
+                    doc["candidates"] = [
+                        c for c in doc["candidates"] if c["dedupe"]["status"] == "unique"
+                    ]
+                dump_run_yaml(doc, run_path)
+                _report(verdicts, doc, run_path)
+                return
+
+            # Seed selection: deterministic corpus order, so --offset is stable
+            # and a resumed run picks up where it left off.
+            eligible = [p for p in parents if len(p.content) >= min_seed_chars]
+            skipped_short = len(parents) - len(eligible)
+            numbered = list(enumerate(eligible))[offset:]
+            if limit is not None:
+                numbered = numbered[:limit]
+
+            already: set[str] = set()
+            if resume and run_path.exists():
+                already = seed_ids_in_document(load_run_document(run_path))
+                numbered = [(i, p) for i, p in numbered if p.parent_id not in already]
+
+            click.echo(f"{game_id}: {len(parents)} parent chunks, {skipped_short} below "
+                       f"--min-seed-chars, {len(numbered)} seeds to process")
+            if resume and already:
+                click.echo(f"  resuming: {len(already)} seeds already in {run_path.name}")
+
+            if dry_run:
+                for i, p in numbered[:20]:
+                    click.echo(f"  [{i:4d}] {p.rulebook_name} p.{p.page_num or p.page_ordinal} "
+                               f"({len(p.content)} chars)")
+                if len(numbered) > 20:
+                    click.echo(f"  ... and {len(numbered) - 20} more")
+                return
+
+            if not numbered:
+                raise click.ClickException("No seeds to process")
+
+            # max_tokens has to go through with_structured_output; binding it on
+            # the model first is silently discarded (see qa_graph.py). The config
+            # default is 3072, tuned for a QA answer — reasoning plus N questions
+            # runs past it and the seed dies with LengthFinishReasonError.
+            concept_chain = EXTRACT_CONCEPTS_PROMPT | svc["chat_model"].with_structured_output(
+                ExtractedConcepts, max_tokens=max_concept_tokens
+            )
+            question_chain = GENERATE_CANDIDATES_PROMPT | svc["chat_model"].with_structured_output(
+                GeneratedCandidates, max_tokens=max_answer_tokens
+            )
+            deps = MiningDeps(
+                vector_store=svc["vector_store"], bm25=svc["bm25_searcher"],
+                concept_chain=concept_chain, question_chain=question_chain,
+                ordered_parents=parents, parents_by_id=parents_by_id,
+                game_id=game_id, game_name=game_name, game_version=game_version,
+            )
+            params = MiningParams(
+                concepts_per_seed=concepts_per_seed, questions_per_seed=questions_per_seed,
+                dense_k=dense_k, bm25_k=bm25_k, rrf_k=rrf_k,
+                per_concept_cap=per_concept_cap, max_context_chunks=max_context_chunks,
+                adjacency_radius=adjacency_radius,
+                max_question_words=max_question_words,
+            )
+            run_meta = {
+                "run_id": resolved_run_id, "game_id": game_id, "game_version": game_version,
+                "status": "partial",
+                "params": {
+                    "chat_model": cfg.chat.models[0].model_name,
+                    "endpoint": cfg.chat.models[0].endpoint,
+                    "config_file": os.environ.get("MM_CONFIG_FILE", ""),
+                    # Thinking is invisible in the output (the endpoint does not
+                    # surface reasoning_content through structured output), so
+                    # this flag is the only record that a run used it.
+                    "enable_thinking": bool(
+                        (cfg.chat.models[0].chat_template_kwargs or {}).get("enable_thinking")
+                    ),
+                    "model_max_new_tokens": cfg.chat.models[0].max_new_tokens,
+                    "embedding_model": cfg.embedding.model,
+                    "concepts_per_seed": concepts_per_seed,
+                    "questions_per_seed": questions_per_seed,
+                    "max_question_words": max_question_words,
+                    "max_answer_tokens": max_answer_tokens,
+                    "max_concept_tokens": max_concept_tokens,
+                    "dense_k": dense_k, "bm25_k": bm25_k, "rrf_k": rrf_k,
+                    "per_concept_cap": per_concept_cap,
+                    "max_context_chunks": max_context_chunks,
+                    "adjacency_radius": adjacency_radius,
+                    "min_seed_chars": min_seed_chars,
+                    "dupe_threshold": dupe_threshold,
+                    "seed_offset": offset, "seed_limit": limit,
+                    "concurrency": concurrency,
+                },
+                "seeds": {"total_parents": len(parents), "skipped_short": skipped_short},
+            }
+
+            # Quiet structlog so the per-seed progress lines stay readable; the
+            # retrieval command does the same for its summary table.
+            structlog.configure(
+                wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING)
+            )
+
+            sem = asyncio.Semaphore(concurrency)
+
+            async def _one(seed, ordinal):
+                async with sem:
+                    return await mine_seed(seed, ordinal, deps=deps, params=params)
+
+            tasks = [asyncio.create_task(_one(p, i)) for i, p in numbered]
+            results: list[SeedResult] = []
+            # Preserve anything already on disk so --resume accumulates rather
+            # than replacing. Prior candidates are re-emitted verbatim.
+            prior_doc = load_run_document(run_path) if (resume and run_path.exists()) else None
+
+            done = 0
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                results.append(result)
+                done += 1
+                status = "ok" if result.ok else f"SKIP ({result.error})"
+                # concept overlap: 1.0 means both concepts retrieved the same
+                # chunks, so the context is one cluster instead of two.
+                click.echo(f"  [{done}/{len(tasks)}] seed {result.seed_ordinal:4d} "
+                           f"{result.seed.rulebook_name[:24]:24s} "
+                           f"{len(result.questions)} questions  "
+                           f"overlap={result.concept_overlap:.2f}  {status}")
+                # Flush after every seed. The whole file is rewritten atomically,
+                # which is cheap without chunk text and keeps one file format.
+                doc = build_run_document(
+                    run_meta, sorted(results, key=lambda r: r.seed_ordinal), {},
+                    include_context_text=include_context_text,
+                )
+                if prior_doc:
+                    doc["candidates"] = (prior_doc.get("candidates") or []) + doc["candidates"]
+                dump_run_yaml(doc, run_path)
+
+            if all(r.error is not None for r in results):
+                raise click.ClickException(
+                    f"Every seed failed. First error: {results[0].error}"
+                )
+
+            results.sort(key=lambda r: r.seed_ordinal)
+            verdicts = await _dedupe(results)
+            run_meta["status"] = "complete"
+            doc = build_run_document(
+                run_meta, results, verdicts,
+                include_context_text=include_context_text,
+                drop_duplicates=drop_duplicates,
+            )
+            if prior_doc:
+                doc["candidates"] = (prior_doc.get("candidates") or []) + doc["candidates"]
+            dump_run_yaml(doc, run_path)
+            _report(list(verdicts.values()), doc, run_path)
+
+    def _report(verdicts, doc, run_path: Path) -> None:
+        from meeplemate.eval.mining import length_histogram, similarity_histogram
+
+        counts = {"unique": 0, "near_candidate": 0, "near_existing": 0}
+        for v in verdicts:
+            counts[v.status] += 1
+        click.echo()
+        click.echo(f"candidates: {len(verdicts)}  unique={counts['unique']} "
+                   f"near_candidate={counts['near_candidate']} "
+                   f"near_existing={counts['near_existing']}")
+        click.echo("max_similarity histogram:")
+        for lo, hi, n in similarity_histogram(verdicts):
+            if n:
+                click.echo(f"  {lo:.1f}-{hi:.1f} {'#' * min(n, 60)} {n}")
+        questions = [c["question"] for c in doc.get("candidates") or ()]
+        if questions:
+            words = sorted(len(q.split()) for q in questions)
+            median = words[len(words) // 2]
+            click.echo(f"\nquestion length: median {median} words "
+                       f"(test_cases.yaml median is 13)")
+            for label, n in length_histogram(questions):
+                if n:
+                    click.echo(f"  {label:>6} {'#' * min(n, 60)} {n}")
+        click.echo(f"\nwrote {run_path}")
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     cli()
