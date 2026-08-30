@@ -4,7 +4,6 @@ import { RefreshCw, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { BrandMark } from '@/components/BrandMark'
 import { LoadingLabel } from '@/components/LoadingLabel'
 import { type Game } from '@/data/games'
 import { UserMenu } from '@/components/UserMenu'
@@ -110,39 +109,41 @@ export default function SelectGamePage() {
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-border bg-background shrink-0">
         <div className="max-w-5xl mx-auto px-4 py-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <BrandMark className="size-7" />
-              <h1 className="text-lg font-semibold text-foreground">Select a Game</h1>
+          {/* The visible title earned its own 48px row on a phone - a sixth of
+              a small viewport, permanently, since the header is sticky. The
+              grid's own "Recently Used" / "All Games" headings already say what
+              the page is, so search takes the row and the title goes sr-only
+              rather than disappearing outright. */}
+          <h1 className="sr-only">Select a Game</h1>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 min-w-0">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setQuery('')
+                }}
+                placeholder="Search games…"
+                aria-label="Search games"
+                className="pl-9 pr-10"
+              />
+              {isSearching && (
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  aria-label="Clear search"
+                  className="absolute right-0.5 top-1/2 -translate-y-1/2 flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring after:absolute after:-inset-1 after:content-['']"
+                >
+                  <X className="size-4" />
+                </button>
+              )}
             </div>
             <UserMenu className="w-9 h-9" />
-          </div>
-          <div className="relative mt-3">
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground"
-              aria-hidden="true"
-            />
-            <Input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') setQuery('')
-              }}
-              placeholder="Search games…"
-              aria-label="Search games"
-              className="pl-9 pr-9"
-            />
-            {isSearching && (
-              <button
-                type="button"
-                onClick={() => setQuery('')}
-                aria-label="Clear search"
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <X className="size-4" />
-              </button>
-            )}
           </div>
         </div>
       </header>
