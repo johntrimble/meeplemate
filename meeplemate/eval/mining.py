@@ -52,6 +52,7 @@ from typing import (
     Optional,
     Sequence,
     TypedDict,
+    TypeVar,
 )
 
 import numpy as np
@@ -63,6 +64,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from meeplemate.util import atomic_write_text
 
 logger = structlog.get_logger(__name__)
+
+T = TypeVar("T")
 
 
 #: Arms a parent chunk can be retrieved by, in a stable order for the YAML.
@@ -237,6 +240,29 @@ def order_parents(parents: Iterable[ParentRef]) -> list[ParentRef]:
     adjacency filter and ``--offset`` quietly wrong.
     """
     return sorted(parents, key=lambda p: p.sort_key)
+
+
+def sample_seeds(seeds: Sequence[T], count: int) -> list[T]:
+    """Evenly spaced subsample of ``seeds``, preserving corpus order.
+
+    Evenly spaced rather than random, for two reasons. The seed set has to be
+    stable so ``--resume`` picks up the same seeds on a second invocation, and
+    proportional coverage across rulebooks and chapters falls out for free.
+
+    Contiguous ``--offset``/``--limit`` windows give neither: an 8-seed Oathsworn
+    run at offset 40 produced 40 questions that were all about one section of
+    one rulebook (saving, swapping, Tally, Epilogue), because those eight
+    parents sit next to each other in the book. A partial sweep of a 1,300-chunk
+    game with ``--limit`` samples one chapter, not the game.
+
+    ``count`` at or above the population is a no-op, so callers do not have to
+    special-case a small game.
+    """
+    n = len(seeds)
+    if count <= 0 or count >= n:
+        return list(seeds)
+    # Strictly increasing while count < n, so indices never repeat.
+    return [seeds[(i * n) // count] for i in range(count)]
 
 
 def adjacency_block(
@@ -883,171 +909,52 @@ def _context_rows(
     return rows
 
 
-def build_run_document(
-    run_meta: dict[str, Any],
-    seed_results: Sequence[SeedResult],
-    verdicts: Mapping[str, DedupeVerdict],
-    *,
-    include_context_text: bool = False,
-    drop_duplicates: bool = False,
+def build_seed_record(
+    game_id: str, result: SeedResult, *, include_context_text: bool = False
 ) -> dict[str, Any]:
-    """Assemble the full run document, ready for ``dump_run_yaml``.
+    """One seed's outcome as a standalone record.
 
-    Key order is meaningful here — ``question`` comes before ``context`` so a
-    reviewer is not scrolling past twelve context rows to reach the thing being
-    reviewed — which is why ``dump_run_yaml`` disables ``sort_keys``.
+    Seed-level facts -- concepts, context, overlap -- live here once rather than
+    being repeated on each of the five candidates, which is how the earlier flat
+    document carried them.
+
+    A failed seed still produces a record, holding the error and no candidates.
+    That is what lets ``--resume`` skip it the way it skips a success, and makes
+    "which seed failed and why" answerable without a run summary.
     """
-    game_id = run_meta["game_id"]
-
-    failures = [
-        {
-            "parent_id": r.seed.parent_id,
-            "seed_ordinal": r.seed_ordinal,
-            "error": r.error,
-        }
-        for r in seed_results
-        if r.error is not None
-    ]
-
-    candidates: list[dict[str, Any]] = []
-    for result in seed_results:
-        if result.selection is None:
-            continue
-        for q_index, question in enumerate(result.questions):
-            cid = candidate_id(game_id, result.seed_ordinal, q_index)
-            verdict = verdicts.get(cid)
-            if drop_duplicates and verdict is not None and verdict.status != "unique":
-                continue
-            entry: dict[str, Any] = {
-                "id": cid,
-                "question": question,
-                # The generation prompt asks for phone-length questions but
-                # cannot enforce it. This is how you tell whether it worked,
-                # without re-counting by hand across two runs.
-                "word_count": len(question.split()),
-                "seed": {
-                    "parent_id": result.seed.parent_id,
-                    "seed_ordinal": result.seed_ordinal,
-                    "rulebook": result.seed.rulebook_name,
-                    "page_ordinal": result.seed.page_ordinal,
-                    "page_num": result.seed.page_num,
-                },
-                "concepts": list(result.concepts),
-                # High overlap means the two concepts retrieved the same chunks,
-                # so the context is one cluster rather than two and the question
-                # came from the prompt rather than from the retrieval.
-                "concept_retrieval_overlap": result.concept_overlap,
-                "context": _context_rows(
-                    result.selection, include_text=include_context_text
-                ),
-                "context_chunk_count": len(result.selection.entries),
-                "dropped_adjacent": len(result.selection.dropped_adjacent),
+    return {
+        "seed_ordinal": result.seed_ordinal,
+        "seed": {
+            "parent_id": result.seed.parent_id,
+            "rulebook": result.seed.rulebook_name,
+            "page_ordinal": result.seed.page_ordinal,
+            "page_num": result.seed.page_num,
+        },
+        "error": result.error,
+        "concepts": list(result.concepts),
+        # High overlap means the two concepts retrieved the same chunks, so the
+        # context is one cluster rather than two and the questions came from the
+        # prompt rather than from the retrieval.
+        "concept_retrieval_overlap": result.concept_overlap,
+        "context": (
+            _context_rows(result.selection, include_text=include_context_text)
+            if result.selection is not None else []
+        ),
+        "context_chunk_count": (
+            len(result.selection.entries) if result.selection is not None else 0
+        ),
+        "dropped_adjacent": (
+            len(result.selection.dropped_adjacent) if result.selection is not None else 0
+        ),
+        "candidates": [
+            {
+                "id": candidate_id(game_id, result.seed_ordinal, i),
+                "question": q,
+                "word_count": len(q.split()),
             }
-            if verdict is not None:
-                entry["dedupe"] = {
-                    "status": verdict.status,
-                    "max_similarity": verdict.max_similarity,
-                    "nearest": (
-                        {
-                            "kind": verdict.nearest_kind,
-                            "ref": verdict.nearest_ref,
-                            "question": verdict.nearest_question,
-                            "similarity": verdict.max_similarity,
-                        }
-                        if verdict.nearest_ref is not None
-                        else None
-                    ),
-                    "cross_game_max_similarity": verdict.cross_game_max_similarity,
-                    "near_duplicates": [
-                        {"kind": kind, "ref": ref, "similarity": round(sim, 4)}
-                        for kind, ref, sim in verdict.near_duplicates
-                    ],
-                }
-            candidates.append(entry)
-
-    seeds_meta = dict(run_meta.get("seeds") or {})
-    seeds_meta.update(
-        {
-            "attempted": len(seed_results),
-            "succeeded": sum(1 for r in seed_results if r.ok),
-            "failed": len(failures),
-            "failures": failures,
-        }
-    )
-
-    run_block = {
-        "run_id": run_meta["run_id"],
-        "game_id": game_id,
-        "game_version": run_meta.get("game_version", ""),
-        "generated_at": run_meta.get(
-            "generated_at", datetime.now(timezone.utc).isoformat()
-        ),
-        "status": run_meta.get("status", "partial"),
-        "params": run_meta.get("params", {}),
-        "seeds": seeds_meta,
+            for i, q in enumerate(result.questions)
+        ],
     }
-    return {"run": run_block, "candidates": candidates}
-
-
-def dump_run_yaml(doc: dict[str, Any], path: Path) -> None:
-    """Atomically write a run document, preserving key order."""
-    atomic_write_text(
-        path,
-        lambda fp: yaml.dump(
-            doc,
-            fp,
-            Dumper=_MiningDumper,
-            sort_keys=False,
-            default_flow_style=False,
-            allow_unicode=True,
-            width=100,
-        ),
-    )
-
-
-def eval_gen_run_path(base_dir: Path, game_id: str, run_id: str) -> Path:
-    return Path(base_dir) / game_id / f"{run_id}.yaml"
-
-
-def next_run_id(game_dir: Path) -> str:
-    """Today's date, auto-incremented on collision.
-
-    Mirrors ``next_group_run_id`` in ``meeplemate.eval`` so run ids read the same
-    way across the eval commands.
-    """
-    base = datetime.now().strftime("%Y-%m-%d")
-    game_dir = Path(game_dir)
-    if not (game_dir / f"{base}.yaml").exists():
-        return base
-    n = 2
-    while (game_dir / f"{base}-{n}.yaml").exists():
-        n += 1
-    return f"{base}-{n}"
-
-
-def seed_ids_in_document(doc: Mapping[str, Any]) -> set[str]:
-    """Seed parent ids already represented in a run file, for ``--resume``.
-
-    Includes failed seeds: a seed that timed out twice will time out again, and
-    re-running it on every resume would stall the sweep at the same chunk.
-    """
-    out: set[str] = set()
-    for candidate in doc.get("candidates") or ():
-        seed = candidate.get("seed") or {}
-        pid = seed.get("parent_id")
-        if pid:
-            out.add(pid)
-    seeds = (doc.get("run") or {}).get("seeds") or {}
-    for failure in seeds.get("failures") or ():
-        pid = failure.get("parent_id")
-        if pid:
-            out.add(pid)
-    return out
-
-
-def load_run_document(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as fp:
-        return yaml.safe_load(fp) or {}
 
 
 # ---------------------------------------------------------------------------

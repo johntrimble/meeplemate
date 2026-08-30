@@ -654,9 +654,15 @@ def retrieval(filter: str, token_budget: int):
 @click.option("--run-id", default=None,
               help="Output file stem. Defaults to today's date, auto-incremented.")
 @click.option("--limit", default=None, type=int,
-              help="Number of seed chunks to process. Default: every parent chunk.")
+              help="Number of seed chunks to process, taken contiguously from --offset. "
+                   "Default: every parent chunk. For a partial sweep use --sample "
+                   "instead; a contiguous window covers one chapter, not the game.")
 @click.option("--offset", default=0, type=int,
               help="Index into the deterministic seed order to start at.")
+@click.option("--sample", default=None, type=int,
+              help="Take N seeds evenly spread across the --offset/--limit window "
+                   "instead of the whole of it. Use this rather than --limit for a "
+                   "partial sweep: a contiguous window covers one chapter, not the game.")
 @click.option("--concepts-per-seed", default=2, type=int)
 @click.option("--questions-per-seed", default=5, type=int)
 @click.option("--max-question-words", default=25, type=int,
@@ -683,7 +689,11 @@ def retrieval(filter: str, token_budget: int):
               help="Drop retrieved chunks within N positions of the seed in corpus order.")
 @click.option("--min-seed-chars", default=200, type=int,
               help="Skip parent chunks shorter than this (title pages, credits, tables).")
-@click.option("--dupe-threshold", default=0.92, type=float)
+@click.option("--dupe-threshold", default=0.90, type=float,
+              help="Cosine similarity at or above which a candidate is flagged as a "
+                   "near-duplicate. 0.92 let obvious rewordings through -- measured on "
+                   "the 2026-08-28 run, pairs at 0.90-0.92 were the same question. "
+                   "Below ~0.88 it starts killing distinct questions about one rule.")
 @click.option("--concurrency", default=4, type=int)
 @click.option("--config-file", default=None, type=click.Path(path_type=Path),
               help="Config YAML to use instead of $MM_CONFIG_FILE, e.g. config-mining.yaml "
@@ -703,7 +713,7 @@ def retrieval(filter: str, token_budget: int):
 @click.option("--dry-run", is_flag=True, default=False,
               help="Print the seed list and corpus stats. Makes no LLM calls.")
 def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: int,
-                   concepts_per_seed: int, questions_per_seed: int,
+                   sample: int | None, concepts_per_seed: int, questions_per_seed: int,
                    max_question_words: int,
                    max_answer_tokens: int, max_concept_tokens: int, dense_k: int,
                    bm25_k: int, rrf_k: float, per_concept_cap: int,
@@ -741,22 +751,28 @@ def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: 
         MiningDeps,
         MiningParams,
         SeedResult,
-        build_run_document,
+        build_seed_record,
         candidate_id,
-        dump_run_yaml,
-        eval_gen_run_path,
+        dedupe_candidates,
         load_existing_questions,
         load_parents,
-        load_run_document,
-        dedupe_candidates,
         mine_seed,
-        next_run_id,
-        seed_ids_in_document,
+        sample_seeds,
+    )
+    from meeplemate.eval.eval_gen_layout import EvalGenLayout, next_group_run_id
+    from meeplemate.eval.eval_gen_store import (
+        dump_json,
+        load_json,
+        mined_parent_ids,
+        read_seed_records,
+        write_seed_record,
     )
 
     if output_dir is None:
-        output_dir = get_eval_and_generation_output_dir().parent.parent / "eval_gen"
-    game_dir = Path(output_dir) / game_id
+        output_dir = get_eval_and_generation_output_dir().parent / "eval_gen"
+    output_dir = Path(output_dir)
+    resolved_run_id = run_id or next_group_run_id(output_dir)
+    layout = EvalGenLayout(output_dir, resolved_run_id)
 
     async def _run():
         # MM_CONFIG_FILE is read by YamlConfigSettingsSource at Config()
@@ -795,9 +811,6 @@ def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: 
                 raise click.ClickException(f"No parent chunks found for {game_id!r}")
             parents_by_id = {p.parent_id: p for p in parents}
 
-            resolved_run_id = run_id or next_run_id(game_dir)
-            run_path = eval_gen_run_path(output_dir, game_id, resolved_run_id)
-
             existing = load_existing_questions()
             embeddings = svc["_embedding_model"]
 
@@ -830,13 +843,14 @@ def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: 
             # --dedupe-only: reduce over an existing file, no LLM calls. Retuning
             # a threshold should not cost a full sweep of generations.
             if dedupe_only:
-                if not run_path.exists():
-                    raise click.ClickException(f"No run file at {run_path}")
-                doc = load_run_document(run_path)
-                ids = [c["id"] for c in doc.get("candidates") or []]
-                questions = [c["question"] for c in doc.get("candidates") or []]
-                if not ids:
-                    raise click.ClickException(f"No candidates in {run_path}")
+                records = read_seed_records(layout, game_id)
+                pairs = [(c["id"], c["question"])
+                         for r in records for c in r.get("candidates") or ()]
+                if not pairs:
+                    raise click.ClickException(
+                        f"No mined candidates under {layout.mining_root(game_id)}")
+                ids = [i for i, _ in pairs]
+                questions = [q for _, q in pairs]
                 click.echo(f"Re-deduping {len(ids)} candidates at threshold {dupe_threshold}")
                 cand_vecs = np.array(await embeddings.aembed_documents(questions))
                 exist_vecs = (
@@ -847,30 +861,11 @@ def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: 
                     ids, questions, cand_vecs, existing, exist_vecs,
                     game_id=game_id, threshold=dupe_threshold,
                 )
-                by_id = dict(zip(ids, verdicts))
-                for candidate in doc.get("candidates") or []:
-                    v = by_id[candidate["id"]]
-                    candidate["dedupe"] = {
-                        "status": v.status,
-                        "max_similarity": v.max_similarity,
-                        "nearest": (
-                            {"kind": v.nearest_kind, "ref": v.nearest_ref,
-                             "question": v.nearest_question, "similarity": v.max_similarity}
-                            if v.nearest_ref is not None else None
-                        ),
-                        "cross_game_max_similarity": v.cross_game_max_similarity,
-                        "near_duplicates": [
-                            {"kind": k, "ref": r, "similarity": round(s, 4)}
-                            for k, r, s in v.near_duplicates
-                        ],
-                    }
-                doc["run"].setdefault("params", {})["dupe_threshold"] = dupe_threshold
-                if drop_duplicates:
-                    doc["candidates"] = [
-                        c for c in doc["candidates"] if c["dedupe"]["status"] == "unique"
-                    ]
-                dump_run_yaml(doc, run_path)
-                _report(verdicts, doc, run_path)
+                # Only the reduce file is rewritten. The seed records that fed it
+                # are immutable, which is what makes re-running this cheap and
+                # safe while a mining run is still in flight.
+                _write_dedupe(layout, game_id, dict(zip(ids, verdicts)), dupe_threshold)
+                _report(verdicts, layout, [game_id])
                 return
 
             # Seed selection: deterministic corpus order, so --offset is stable
@@ -880,16 +875,25 @@ def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: 
             numbered = list(enumerate(eligible))[offset:]
             if limit is not None:
                 numbered = numbered[:limit]
+            # Before the --resume filter, not after: sampling a pool that has
+            # already had the done seeds removed would pick a different set on
+            # every invocation and a resumed run would never converge.
+            if sample is not None:
+                numbered = sample_seeds(numbered, sample)
 
             already: set[str] = set()
-            if resume and run_path.exists():
-                already = seed_ids_in_document(load_run_document(run_path))
+            if resume:
+                # A directory listing, not a parse of the whole accumulated
+                # document -- and it matches on the parent id recorded inside
+                # each record, because the ordinal in the filename shifts when
+                # --min-seed-chars changes.
+                already = mined_parent_ids(layout, game_id)
                 numbered = [(i, p) for i, p in numbered if p.parent_id not in already]
 
             click.echo(f"{game_id}: {len(parents)} parent chunks, {skipped_short} below "
                        f"--min-seed-chars, {len(numbered)} seeds to process")
             if resume and already:
-                click.echo(f"  resuming: {len(already)} seeds already in {run_path.name}")
+                click.echo(f"  resuming: {len(already)} seeds already recorded")
 
             if dry_run:
                 for i, p in numbered[:20]:
@@ -951,7 +955,7 @@ def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: 
                     "adjacency_radius": adjacency_radius,
                     "min_seed_chars": min_seed_chars,
                     "dupe_threshold": dupe_threshold,
-                    "seed_offset": offset, "seed_limit": limit,
+                    "seed_offset": offset, "seed_limit": limit, "seed_sample": sample,
                     "concurrency": concurrency,
                 },
                 "seeds": {"total_parents": len(parents), "skipped_short": skipped_short},
@@ -971,9 +975,6 @@ def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: 
 
             tasks = [asyncio.create_task(_one(p, i)) for i, p in numbered]
             results: list[SeedResult] = []
-            # Preserve anything already on disk so --resume accumulates rather
-            # than replacing. Prior candidates are re-emitted verbatim.
-            prior_doc = load_run_document(run_path) if (resume and run_path.exists()) else None
 
             done = 0
             for coro in asyncio.as_completed(tasks):
@@ -987,35 +988,69 @@ def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: 
                            f"{result.seed.rulebook_name[:24]:24s} "
                            f"{len(result.questions)} questions  "
                            f"overlap={result.concept_overlap:.2f}  {status}")
-                # Flush after every seed. The whole file is rewritten atomically,
-                # which is cheap without chunk text and keeps one file format.
-                doc = build_run_document(
-                    run_meta, sorted(results, key=lambda r: r.seed_ordinal), {},
-                    include_context_text=include_context_text,
-                )
-                if prior_doc:
-                    doc["candidates"] = (prior_doc.get("candidates") or []) + doc["candidates"]
-                dump_run_yaml(doc, run_path)
+                # One file, written once, in its final state. Failures get a
+                # record too, so --resume skips them and --retry-failed is
+                # "delete the error records and resume".
+                write_seed_record(layout, game_id, build_seed_record(
+                    game_id, result, include_context_text=include_context_text))
 
-            if all(r.error is not None for r in results):
+            if results and all(r.error is not None for r in results):
                 raise click.ClickException(
                     f"Every seed failed. First error: {results[0].error}"
                 )
 
-            results.sort(key=lambda r: r.seed_ordinal)
-            verdicts = await _dedupe(results)
             run_meta["status"] = "complete"
-            doc = build_run_document(
-                run_meta, results, verdicts,
-                include_context_text=include_context_text,
-                drop_duplicates=drop_duplicates,
-            )
-            if prior_doc:
-                doc["candidates"] = (prior_doc.get("candidates") or []) + doc["candidates"]
-            dump_run_yaml(doc, run_path)
-            _report(list(verdicts.values()), doc, run_path)
+            run_meta["seeds"].update({
+                "attempted": len(results),
+                "succeeded": sum(1 for r in results if r.ok),
+                "failed": sum(1 for r in results if not r.ok),
+            })
+            dump_json(run_meta, layout.mining_run_file(game_id))
 
-    def _report(verdicts, doc, run_path: Path) -> None:
+            # Dedupe reduces over every candidate on disk, not just this
+            # invocation's -- a resumed run must compare against what came
+            # before it, or the second half never sees the first half's dupes.
+            records = read_seed_records(layout, game_id)
+            pairs = [(c["id"], c["question"])
+                     for r in records for c in r.get("candidates") or ()]
+            if pairs:
+                ids = [i for i, _ in pairs]
+                questions = [q for _, q in pairs]
+                cand_vecs = np.array(await embeddings.aembed_documents(questions))
+                exist_vecs = (
+                    np.array(await embeddings.aembed_documents([e.question for e in existing]))
+                    if existing else np.zeros((0, cand_vecs.shape[1]))
+                )
+                verdicts = dedupe_candidates(
+                    ids, questions, cand_vecs, existing, exist_vecs,
+                    game_id=game_id, threshold=dupe_threshold,
+                )
+                _write_dedupe(layout, game_id, dict(zip(ids, verdicts)), dupe_threshold)
+                _report(verdicts, layout, [game_id])
+
+    def _write_dedupe(layout, game_id: str, by_id: dict, threshold: float) -> None:
+        dump_json({
+            "game_id": game_id, "threshold": threshold,
+            "candidates": {
+                cid: {
+                    "status": v.status,
+                    "max_similarity": v.max_similarity,
+                    "nearest": (
+                        {"kind": v.nearest_kind, "ref": v.nearest_ref,
+                         "question": v.nearest_question, "similarity": v.max_similarity}
+                        if v.nearest_ref is not None else None
+                    ),
+                    "cross_game_max_similarity": v.cross_game_max_similarity,
+                    "near_duplicates": [
+                        {"kind": k, "ref": r, "similarity": round(s, 4)}
+                        for k, r, s in v.near_duplicates
+                    ],
+                }
+                for cid, v in by_id.items()
+            },
+        }, layout.dedupe_file(game_id))
+
+    def _report(verdicts, layout, games) -> None:
         from meeplemate.eval.mining import length_histogram, similarity_histogram
 
         counts = {"unique": 0, "near_candidate": 0, "near_existing": 0}
@@ -1029,18 +1064,393 @@ def mine_questions(game_id: str, run_id: str | None, limit: int | None, offset: 
         for lo, hi, n in similarity_histogram(verdicts):
             if n:
                 click.echo(f"  {lo:.1f}-{hi:.1f} {'#' * min(n, 60)} {n}")
-        questions = [c["question"] for c in doc.get("candidates") or ()]
+
+        questions = [c["question"] for g in games
+                     for r in read_seed_records(layout, g)
+                     for c in r.get("candidates") or ()]
         if questions:
             words = sorted(len(q.split()) for q in questions)
-            median = words[len(words) // 2]
-            click.echo(f"\nquestion length: median {median} words "
+            click.echo(f"\nquestion length: median {words[len(words) // 2]} words "
                        f"(test_cases.yaml median is 13)")
             for label, n in length_histogram(questions):
                 if n:
                     click.echo(f"  {label:>6} {'#' * min(n, 60)} {n}")
-        click.echo(f"\nwrote {run_path}")
+        click.echo(f"\nwrote {layout.mining_root(games[0])}")
 
     asyncio.run(_run())
+
+
+@cli.command("answer-candidates")
+@click.argument("game-id", required=True)
+@click.option("--run-id", required=True,
+              help="Group run id — the directory under data/eval_gen/ holding the "
+                   "mined seeds to answer.")
+@click.option("--runs", default=1, type=int,
+              help="Answer each candidate N times and report the lowest pairwise "
+                   "similarity as `consistency`. N>1 multiplies cost by N.")
+@click.option("--limit", default=None, type=int,
+              help="Answer at most this many candidates, taken contiguously. That is "
+                   "one chapter's worth on a large game -- prefer --sample.")
+@click.option("--sample", default=None, type=int,
+              help="Answer N candidates spread evenly across the run instead of the "
+                   "first N. Candidates are in seed order, so a contiguous --limit "
+                   "concentrates on one region of one rulebook.")
+@click.option("--concurrency", default=4, type=int)
+@click.option("--include-duplicates", is_flag=True, default=False,
+              help="Also answer candidates flagged as near-duplicates.")
+@click.option("--include-evidence-text", is_flag=True, default=False,
+              help="Embed the quoted passages in the YAML. For debugging one run.")
+@click.option("--drop", is_flag=True, default=False,
+              help="Remove candidates recommended 'drop' instead of annotating them.")
+@click.option("--resume", is_flag=True, default=False,
+              help="Skip candidates that already have a non-error answer block.")
+@click.option("--config-file", default=None, type=click.Path(path_type=Path),
+              help="Config YAML to use instead of $MM_CONFIG_FILE.")
+@click.option("--endpoint", default=None, help="Override the chat endpoint for this run.")
+@click.option("--output-dir", default=None, type=click.Path(path_type=Path),
+              help="Where run files live. Default: <project>/eval_gen.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Report how many candidates would be answered. Makes no LLM calls.")
+def answer_candidates(game_id: str, run_id: str, runs: int, limit: int | None,
+                      sample: int | None, concurrency: int, include_duplicates: bool,
+                      include_evidence_text: bool, drop: bool, resume: bool,
+                      config_file: Path | None, endpoint: str | None,
+                      output_dir: Path | None, dry_run: bool):
+    """Answer mined candidates with the QA pipeline and filter on the result.
+
+    Steps 3-4 of eval-corpus generation. Runs each candidate question through
+    the live Boardbarian agent, then judges the QUESTION using the answer as
+    evidence about it -- an answer that hedges, or explains that a component
+    does not exist, says the question was bad.
+
+    Annotates in place, under `answer:` on each candidate. Nothing is deleted
+    without --drop: this file is read by a person, and a filter's opinion is
+    something they are allowed to disagree with.
+    """
+    import os
+
+    from meeplemate.config import Config
+    from meeplemate.eval.answering import (
+        AnsweringDeps,
+        JUDGE_PROMPT,
+        JudgeResult,
+        answer_and_judge,
+        answer_block,
+        apply_answers,
+        candidates_to_answer,
+        recommendation_summary,
+        verdict_summary,
+    )
+    from meeplemate.eval.eval_gen_layout import EvalGenLayout
+    from meeplemate.eval.eval_gen_store import (
+        answered_candidate_ids,
+        dump_json,
+        iter_candidates,
+        load_json,
+        read_answers,
+        write_answer_record,
+    )
+
+    # MM_CONFIG_FILE is read by YamlConfigSettingsSource at Config()
+    # construction, so the override has to land before that.
+    if config_file:
+        resolved = Path(config_file).resolve()
+        if not resolved.exists():
+            raise click.ClickException(f"Config file not found: {resolved}")
+        os.environ["MM_CONFIG_FILE"] = str(resolved)
+    cfg = Config()
+
+    if output_dir is None:
+        output_dir = get_eval_and_generation_output_dir().parent / "eval_gen"
+    layout = EvalGenLayout(Path(output_dir), run_id)
+    if not layout.seeds_dir(game_id).exists():
+        raise click.ClickException(
+            f"No mined seeds at {layout.seeds_dir(game_id)} -- run mine-questions first")
+
+    dedupe = (load_json(layout.dedupe_file(game_id), {}) or {}).get("candidates", {})
+    done = answered_candidate_ids(layout, game_id) if resume else set()
+
+    all_candidates = [c for c, _ in iter_candidates(layout, game_id)]
+    pending = []
+    for cand in all_candidates:
+        if cand["id"] in done:
+            continue
+        if not include_duplicates:
+            status = (dedupe.get(cand["id"]) or {}).get("status")
+            if status not in (None, "unique"):
+                continue
+        pending.append(cand)
+    if limit is not None:
+        pending = pending[:limit]
+    # After --limit, so the two compose the way they do for mining, and the
+    # sampled set is stable across invocations for --resume.
+    if sample is not None:
+        from meeplemate.eval.mining import sample_seeds
+        pending = sample_seeds(pending, sample)
+
+    total = len(all_candidates)
+    click.echo(f"{layout.mining_root(game_id)}: {total} candidates, "
+               f"{len(pending)} to answer ({runs} QA run(s) + 1 judge call each)")
+    if dry_run:
+        for cand in pending[:20]:
+            click.echo(f"  {cand['id']}  {cand['question']}")
+        if len(pending) > 20:
+            click.echo(f"  ... and {len(pending) - 20} more")
+        return
+    if not pending:
+        raise click.ClickException("Nothing to answer")
+
+    system = create_eval_system(
+        names=["game_service", "qa_service", "chat_model", "_embedding_model"],
+        config=cfg,
+    )
+    # create_eval_system hardcodes the endpoint AFTER accepting config, so an
+    # override has to be applied to the same object after the call and before
+    # astart(), where the component factories actually read it.
+    if endpoint:
+        cfg.chat.models[0].endpoint = endpoint
+
+    async def _run():
+        async with system.astart() as svc:
+            manifest = await svc["game_service"].get_manifest(game_id)
+            if manifest is None:
+                raise click.ClickException(f"No manifest for game_id: {game_id}")
+
+            deps = AnsweringDeps(
+                qa_service=svc["qa_service"],
+                manifest=manifest,
+                judge_chain=JUDGE_PROMPT | svc["chat_model"].with_structured_output(
+                    JudgeResult
+                ),
+                embeddings=svc["_embedding_model"],
+                game_name=getattr(manifest, "name", None) or game_id,
+            )
+
+            sem = asyncio.Semaphore(concurrency)
+
+            async def one(cand):
+                async with sem:
+                    return await answer_and_judge(deps, cand, runs=runs)
+
+            done_n = 0
+            for coro in asyncio.as_completed([one(c) for c in pending]):
+                result = await coro
+                done_n += 1
+                block = answer_block(
+                    result, include_evidence_text=include_evidence_text
+                )
+                # One file per candidate, written once. No accumulating document
+                # to rewrite, so two shells can answer the same run at different
+                # --limit windows without clobbering each other.
+                write_answer_record(layout, game_id, result.candidate_id, {
+                    "candidate_id": result.candidate_id,
+                    "game_id": game_id,
+                    "question": result.question,
+                    "answer": block,
+                })
+                label = block.get("error") or (
+                    f"{block['recommendation']:<6} {block['verdict']}"
+                )
+                click.echo(f"  [{done_n}/{len(pending)}] {result.candidate_id}  {label}")
+
+            dump_json({
+                "group_run_id": run_id, "game_id": game_id,
+                "chat_model": cfg.chat.models[0].model_name,
+                "endpoint": cfg.chat.models[0].endpoint,
+                "runs": runs, "concurrency": concurrency,
+                "answered": len(pending),
+            }, layout.answers_run_file(game_id))
+
+            answers = read_answers(layout, game_id)
+            rec_counts: dict[str, int] = {}
+            ver_counts: dict[str, int] = {}
+            for a in answers.values():
+                blk = a.get("answer") or {}
+                key = blk.get("recommendation") or blk.get("status") or "?"
+                rec_counts[key] = rec_counts.get(key, 0) + 1
+                if blk.get("verdict"):
+                    ver_counts[blk["verdict"]] = ver_counts.get(blk["verdict"], 0) + 1
+            click.echo()
+            click.echo("  ".join(f"{k}={v}" for k, v in sorted(rec_counts.items())))
+            click.echo("  ".join(f"{k}={v}" for k, v in sorted(ver_counts.items())))
+            click.echo(f"\nwrote {layout.answers_root(game_id)}")
+
+    asyncio.run(_run())
+
+
+@cli.command("review")
+@click.argument("games", nargs=-1, required=True)
+@click.option("--run-id", required=True,
+              help="Group run id — the directory under data/eval_gen/.")
+@click.option("--port", default=8765, type=int, help="Port to serve on.")
+@click.option("--host", default="0.0.0.0",
+              help="Interface to bind. Defaults to all interfaces so the page is "
+                   "reachable from the host browser -- loopback inside the dev "
+                   "container is reachable only from inside it. Nothing here "
+                   "authenticates; pass 127.0.0.1 to restrict it.")
+@click.option("--decisions", default=None, type=click.Path(path_type=Path),
+              help="Decisions file. Default: "
+                   "data/eval_gen/<run-id>/decisions/decisions.json")
+@click.option("--eval-gen", default=None, type=click.Path(path_type=Path),
+              help="Directory holding <run-id>/. Default: <project>/data/eval_gen")
+@click.option("--title", default="Candidate Rules Questions", help="Page title.")
+def review(games: tuple[str, ...], run_id: str, port: int, host: str,
+           decisions: Path | None, eval_gen: Path | None, title: str):
+    """Serve the candidate review page for a mined + answered run.
+
+    Reads the mined seeds and answers for each game named under
+    data/eval_gen/<run-id>/, and persists every verdict, answer flag, note and
+    reference answer to that run's decisions/decisions.json as the reviewer
+    works. Decisions are scoped to the run id, not to a game: one
+    session spans every game in the run and candidate ids already carry theirs.
+
+        mm-eval review munchkin one_deck_dungeon --run-id 2026-08-28
+    """
+    from meeplemate.eval.eval_gen_layout import EvalGenLayout
+    from meeplemate.eval.review_page import build_page, load_run
+    from meeplemate.eval.review_server import build_app, read_decisions, serve
+
+    if eval_gen is None:
+        eval_gen = get_eval_and_generation_output_dir().parent / "eval_gen"
+    layout = EvalGenLayout(Path(eval_gen), run_id)
+
+    for game in games:
+        if not layout.seeds_dir(game).exists():
+            raise click.ClickException(
+                f"No mined seeds for {game!r} at {layout.seeds_dir(game)}")
+
+    try:
+        rows = load_run(layout, games)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not rows:
+        raise click.ClickException(
+            f"No answered candidates in run {run_id}. "
+            f"Run `mm-eval answer-candidates` first."
+        )
+
+    decisions_file = Path(decisions) if decisions else layout.decisions_file()
+    existing = read_decisions(decisions_file, run_id, len(rows))
+
+    kept = sum(1 for r in rows if r["rec"] == "keep")
+    click.echo(f"{len(rows)} candidates ({kept} keep) across {len(games)} game(s)")
+    click.echo(f"decisions: {decisions_file}"
+               + (f"  ({len(existing['decisions'])} already recorded)"
+                  if existing["decisions"] else "  (new)"))
+    shown = "localhost" if host in ("0.0.0.0", "::") else host
+    click.echo(f"\n  http://{shown}:{port}\n")
+    click.echo("Ctrl+C to stop.")
+
+    app = build_app(
+        # Re-read per request so a concurrent answer-candidates run shows up on
+        # reload rather than needing the server restarted.
+        render_page=lambda: build_page(
+            load_run(layout, games), run_id=run_id, games=games, title=title
+        ),
+        decisions_file=decisions_file,
+        run_id=run_id,
+        total=len(rows),
+    )
+    serve(app, host=host, port=port)
+
+
+@cli.command("promote")
+@click.argument("run-id", required=True)
+@click.option("--games", default=None,
+              help="Comma-separated game ids. Default: every game in the run.")
+@click.option("--out", default=None, type=click.Path(path_type=Path),
+              help="Output YAML. Default: the run's dataset/test_cases.yaml. Pass "
+                   "meeplemate/eval/test_cases/<run-id>.yaml to adopt it into the "
+                   "tracked eval corpus.")
+@click.option("--eval-gen", default=None, type=click.Path(path_type=Path),
+              help="Directory holding <run-id>/. Default: <project>/data/eval_gen")
+@click.option("--decisions", default=None, type=click.Path(path_type=Path),
+              help="Decisions file. Default: the run's decisions/decisions.json")
+@click.option("--include-rejected", is_flag=True, default=False,
+              help="Also promote candidates the reviewer rejected. Off by default: "
+                   "a correction may have been drafted before the verdict, and the "
+                   "verdict is the decision that counts.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Report what would be written. Writes nothing.")
+def promote(run_id: str, games: str | None, out: Path | None, eval_gen: Path | None,
+            decisions: Path | None, include_rejected: bool, dry_run: bool):
+    """Turn reviewed candidates into golden test cases.
+
+    Step 4 of eval-corpus generation. Reads the run's decisions and answer
+    records and writes one suite per game to
+    meeplemate/eval/test_cases/<run-id>.yaml, which the eval loader picks up
+    alongside the hand-written test_cases.yaml.
+
+    Derived entirely from decisions.json, so re-running after a correction
+    produces a clean diff rather than a hand-merge.
+
+        mm-eval promote 2026-08-28
+    """
+    from meeplemate.eval.eval_gen_layout import EvalGenLayout
+    from meeplemate.eval.eval_gen_store import load_json, read_answers
+    from meeplemate.eval.promote import build_suites, evidence_stats
+    from meeplemate.util import atomic_write_text
+
+    if eval_gen is None:
+        eval_gen = get_eval_and_generation_output_dir().parent / "eval_gen"
+    layout = EvalGenLayout(Path(eval_gen), run_id)
+
+    decisions_file = Path(decisions) if decisions else layout.decisions_file()
+    doc = load_json(decisions_file)
+    if not doc or not isinstance(doc.get("decisions"), list):
+        raise click.ClickException(f"No decisions at {decisions_file}")
+    rows = doc["decisions"]
+
+    game_ids = ([g.strip() for g in games.split(",") if g.strip()] if games
+                else sorted({r.get("game", "") for r in rows if r.get("game")}))
+    answers_by_id: dict[str, dict] = {}
+    for game in game_ids:
+        answers_by_id.update(read_answers(layout, game))
+
+    suites, skipped = build_suites(
+        run_id, [r for r in rows if r.get("game") in game_ids],
+        answers_by_id, include_rejected=include_rejected,
+    )
+    if not suites:
+        raise click.ClickException(
+            f"Nothing to promote from {decisions_file} — no candidates marked 'yes'.")
+
+    stats = evidence_stats(suites)
+    click.echo(f"{decisions_file}: {len(rows)} decisions")
+    for suite in suites:
+        n = len(suite["test_cases"])
+        ev = sum(len(c["evidence"]) for c in suite["test_cases"])
+        click.echo(f"  {suite['name']}: {n} cases, {ev} evidence quotes")
+    click.echo(f"\n{stats['cases']} cases  "
+               f"{stats['with_evidence']} with evidence  "
+               f"{stats['evidence_quotes']} quotes  "
+               f"{stats['reviewer_answers']} reviewer-written answers")
+    if stats.get("dropped_quotes"):
+        # Only numeric page citations parse; a quote cited "p. iv" is lost.
+        click.echo(f"  WARNING: {stats['dropped_quotes']} blockquote(s) had an "
+                   f"unparseable citation and were not written as evidence")
+    if stats["with_evidence"] < stats["cases"]:
+        # A case with no evidence still scores for correctness but is invisible
+        # to `mm-eval retrieval`, which is half of what a case is worth.
+        click.echo(f"  WARNING: {stats['cases'] - stats['with_evidence']} cases "
+                   f"have no evidence and will not be scored by `mm-eval retrieval`")
+    if skipped:
+        click.echo(f"  skipped (no answer to promote): {', '.join(skipped)}")
+
+    if out is None:
+        out = layout.dataset_file()
+    if dry_run:
+        click.echo(f"\nwould write {out}")
+        return
+
+    from meeplemate.eval.promote import dump_suites
+
+    dump_suites(suites, out, run_id=run_id, source=decisions_file)
+    click.echo(f"\nwrote {out}")
+    if out == layout.dataset_file():
+        # data/ is gitignored, so this file is not part of the eval corpus yet.
+        click.echo("\nThis is the run's dataset, not the tracked corpus. To adopt it:")
+        click.echo(f"  cp {out} meeplemate/eval/test_cases/{run_id}.yaml")
 
 
 if __name__ == "__main__":

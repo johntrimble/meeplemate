@@ -19,23 +19,20 @@ from meeplemate.eval.mining import (
     RetrievedHit,
     SeedResult,
     adjacency_block,
-    build_run_document,
+    build_seed_record,
+    sample_seeds,
     length_histogram,
     candidate_id,
     concept_retrieval_overlap,
     cosine_similarity_matrix,
     dedupe_candidates,
-    dump_run_yaml,
-    eval_gen_run_path,
     fuse_concept_hits,
-    next_run_id,
     normalise_concepts,
     normalise_questions,
     order_parents,
     parent_ref_from_document,
     parse_parent_key,
     retrieve_for_concept,
-    seed_ids_in_document,
     select_context,
 )
 
@@ -469,11 +466,11 @@ def test_dedupe_boundary_is_inclusive():
 
 
 # --------------------------------------------------------------------------
-# Serialisation
+# Seed records
 # --------------------------------------------------------------------------
 
 
-def _seed_result(ordinal=3, questions=("q1", "q2")):
+def _seed_result(ordinal=3, questions=("q1", "q2"), error=None):
     p = parent(page=ordinal)
     sel = ContextSelection(
         entries=(
@@ -483,75 +480,43 @@ def _seed_result(ordinal=3, questions=("q1", "q2")):
         dropped_over_cap=(),
     )
     return SeedResult(seed=p, seed_ordinal=ordinal, concepts=["a", "b"],
-                      selection=sel, questions=list(questions))
+                      selection=sel, questions=list(questions), error=error)
 
 
-def _run_meta():
-    return {"run_id": "2026-08-27", "game_id": GAME, "game_version": VER,
-            "status": "complete", "params": {}, "seeds": {"total_parents": 10}}
+def test_build_seed_record_ids_are_stable():
+    a = build_seed_record(GAME, _seed_result(3))
+    b = build_seed_record(GAME, _seed_result(3))
+    assert [c["id"] for c in a["candidates"]] == [c["id"] for c in b["candidates"]]
+    assert a["candidates"][0]["id"] == candidate_id(GAME, 3, 0)
 
 
-def test_build_run_document_ids_are_unique_and_stable():
-    results = [_seed_result(3), _seed_result(4)]
-    a = build_run_document(_run_meta(), results, {})
-    b = build_run_document(_run_meta(), results, {})
-    ids = [c["id"] for c in a["candidates"]]
-    assert ids == [c["id"] for c in b["candidates"]]
-    assert len(ids) == len(set(ids)) == 4
-    assert ids[0] == candidate_id(GAME, 3, 0)
+def test_seed_level_facts_are_recorded_once_not_per_candidate():
+    """Concepts and context belong to the seed; the flat format repeated them
+    on all five candidates."""
+    rec = build_seed_record(GAME, _seed_result(3))
+    assert rec["concepts"] == ["a", "b"]
+    assert "concepts" not in rec["candidates"][0]
+    assert "context" not in rec["candidates"][0]
 
 
-def test_build_run_document_records_failures_and_emits_no_candidates_for_them():
-    ok = _seed_result(3)
-    bad = SeedResult(seed=parent(page=9), seed_ordinal=9, error="TimeoutError()")
-    doc = build_run_document(_run_meta(), [ok, bad], {})
-    failures = doc["run"]["seeds"]["failures"]
-    assert len(failures) == 1 and failures[0]["seed_ordinal"] == 9
-    assert doc["run"]["seeds"]["succeeded"] == 1
-    assert all(c["seed"]["seed_ordinal"] != 9 for c in doc["candidates"])
+def test_failed_seed_still_produces_a_record():
+    """--resume skips it the way it skips a success, and --retry-failed can
+    find it. A failure that wrote nothing would be retried forever."""
+    rec = build_seed_record(GAME, _seed_result(7, questions=(), error="TimeoutError()"))
+    assert rec["error"] == "TimeoutError()"
+    assert rec["candidates"] == []
+    assert rec["seed"]["parent_id"]
 
 
-def test_dump_run_yaml_preserves_key_order(tmp_path):
-    doc = build_run_document(_run_meta(), [_seed_result()], {})
-    path = tmp_path / "run.yaml"
-    dump_run_yaml(doc, path)
-    text = path.read_text()
-    assert text.index("question:") < text.index("context:")
-    assert yaml.safe_load(text)["run"]["game_id"] == GAME
+def test_build_seed_record_carries_word_counts():
+    rec = build_seed_record(GAME, _seed_result(3, questions=("How many cards do I draw?",)))
+    assert rec["candidates"][0]["word_count"] == 6
 
 
-def test_dump_run_yaml_does_not_touch_the_global_dumper(tmp_path):
-    # Registering a str representer on yaml.SafeDumper itself would change every
-    # spit_yaml call in the process, including ingest's game manifests.
-    before = yaml.SafeDumper.yaml_representers.get(str)
-    dump_run_yaml(build_run_document(_run_meta(), [_seed_result()], {}), tmp_path / "r.yaml")
-    assert yaml.SafeDumper.yaml_representers.get(str) is before
-
-
-def test_seed_ids_in_document_includes_failures(tmp_path):
-    doc = {
-        "run": {"seeds": {"failures": [{"parent_id": "p-failed"}]}},
-        "candidates": [{"seed": {"parent_id": "p-ok"}}],
-    }
-    # Failures are included so a resumed sweep does not stall retrying a seed
-    # that will time out again.
-    assert seed_ids_in_document(doc) == {"p-ok", "p-failed"}
-
-
-def test_next_run_id_increments_on_collision(tmp_path):
-    from datetime import datetime
-
-    base = datetime.now().strftime("%Y-%m-%d")
-    game_dir = tmp_path / GAME
-    game_dir.mkdir()
-    assert next_run_id(game_dir) == base
-    (game_dir / f"{base}.yaml").touch()
-    assert next_run_id(game_dir) == f"{base}-2"
-
-
-def test_eval_gen_run_path_layout(tmp_path):
-    assert eval_gen_run_path(tmp_path, GAME, "2026-08-27") == \
-        tmp_path / GAME / "2026-08-27.yaml"
+def test_context_text_is_omitted_by_default():
+    assert "content" not in build_seed_record(GAME, _seed_result(3))["context"][0]
+    assert "content" in build_seed_record(
+        GAME, _seed_result(3), include_context_text=True)["context"][0]
 
 
 # --------------------------------------------------------------------------
@@ -577,13 +542,6 @@ def test_length_histogram_edges_are_inclusive_upper_bounds():
 
 def test_length_histogram_overflow_bucket_catches_the_long_tail():
     assert dict(length_histogram(["w " * 200]))["41+"] == 1
-
-
-def test_build_run_document_records_word_count():
-    doc = build_run_document(
-        _run_meta(), [_seed_result(questions=("How many cards do I draw?",))], {}
-    )
-    assert doc["candidates"][0]["word_count"] == 6
 
 
 def test_generation_prompt_renders_the_length_cap():
@@ -619,3 +577,51 @@ def test_generation_prompt_fences_off_the_worked_example():
     assert "DIFFERENT game" in rendered
     assert "do not exist in this game" in rendered
     assert rendered.count("Oathsworn") >= 2
+
+
+# --------------------------------------------------------------------------
+# Seed sampling
+# --------------------------------------------------------------------------
+
+
+def test_sample_seeds_spreads_across_the_population():
+    got = sample_seeds(list(range(10)), 3)
+    assert got == [0, 3, 6]
+
+
+def test_sample_seeds_preserves_corpus_order():
+    got = sample_seeds(list(range(1313)), 60)
+    assert got == sorted(got)
+
+
+def test_sample_seeds_never_repeats_an_index():
+    # (i * n) // count is strictly increasing only while count < n. A repeat
+    # would silently mine the same seed twice and inflate the candidate count.
+    for count in (1, 2, 7, 60, 199):
+        got = sample_seeds(list(range(1489)), count)
+        assert len(got) == len(set(got)) == count
+
+
+def test_sample_seeds_is_a_noop_when_count_meets_or_exceeds_population():
+    # Munchkin has 28 seeds; --sample 60 must not error or truncate.
+    assert sample_seeds(list(range(28)), 60) == list(range(28))
+    assert sample_seeds(list(range(28)), 28) == list(range(28))
+
+
+def test_sample_seeds_is_a_noop_on_zero_or_negative():
+    assert sample_seeds(list(range(5)), 0) == list(range(5))
+    assert sample_seeds(list(range(5)), -1) == list(range(5))
+
+
+def test_sample_seeds_is_deterministic_across_calls():
+    """--resume depends on this: a resumed run must pick the same seed set."""
+    pop = list(range(1489))
+    assert sample_seeds(pop, 200) == sample_seeds(pop, 200)
+
+
+def test_sample_seeds_covers_the_whole_range_not_just_the_front():
+    # The bug this guards is a partial sweep that samples one chapter. On a
+    # 1313-seed game a 60-seed sample must reach the last decile.
+    got = sample_seeds(list(range(1313)), 60)
+    assert got[0] < 25
+    assert got[-1] > 1313 * 0.9
