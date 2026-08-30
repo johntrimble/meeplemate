@@ -239,6 +239,17 @@ const SSE_STREAM = [
   'data: [DONE]\n\n',
 ].join('')
 
+// Carries real text, unlike SSE_STREAM, so a test can watch the indicator give
+// way to an actual answer.
+const ANSWER_STREAM = [
+  'data: {"type":"start","messageId":"msg-cold"}\n\n',
+  'data: {"type":"text-start","id":"t1"}\n\n',
+  'data: {"type":"text-delta","id":"t1","delta":"Forty-two."}\n\n',
+  'data: {"type":"text-end","id":"t1"}\n\n',
+  'data: {"type":"finish"}\n\n',
+  'data: [DONE]\n\n',
+].join('')
+
 const RATE_LIMIT_429_BODY = {
   detail: {
     error: 'rate_limit_exceeded',
@@ -278,6 +289,42 @@ test.describe('chat stream', () => {
 
     await expect(page.getByText('Something went wrong. Please try again.')).not.toBeVisible()
     await expect.poll(() => calls).toBeGreaterThanOrEqual(2)
+  })
+
+  // Issue #107. The sibling test above proves the retry loop recovers; this one
+  // proves the user is told anything is happening WHILE it grinds. Deliberately
+  // exercises the real `fetchWithRetry` loop rather than a held-open stream: the
+  // held-stream test in chat.spec.ts reproduces the same observable state, but
+  // only this one would catch an indicator that survives a pending request yet
+  // gets torn down by a failed-and-retried attempt.
+  test('shows the thinking indicator throughout cold-start retries', async ({ page }) => {
+    let cold = true
+    let calls = 0
+    await page.route(`**/api/chats/${CHAT_ID}/stream`, (route) => {
+      calls++
+      if (cold) {
+        return route.fulfill({ status: 500, contentType: 'text/plain', body: NO_INSTANCE_BODY })
+      }
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream', 'x-vercel-ai-ui-message-stream': 'v1' },
+        body: ANSWER_STREAM,
+      })
+    })
+
+    await page.goto(`/chat/${GAME_ID}/${CHAT_ID}`)
+    await page.getByPlaceholder('Ask anything').fill('How does combat work?')
+    await page.getByRole('button', { name: 'Send' }).click()
+
+    // Still up after several failed attempts - not just for the first one.
+    await expect.poll(() => calls).toBeGreaterThanOrEqual(3)
+    await expect(page.getByRole('status')).toContainText('Thinking...')
+    await expect(page.getByText('Something went wrong. Please try again.')).not.toBeVisible()
+
+    // The instance comes up: the answer arrives and the indicator stands down.
+    cold = false
+    await expect(page.getByText('Forty-two.')).toBeVisible()
+    await expect(page.getByRole('status')).toHaveCount(0)
   })
 
   test('a rate-limit 429 (JSON) is surfaced, not retried', async ({ page }) => {

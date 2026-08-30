@@ -22,6 +22,29 @@ const FINISH_SSE = [
 ].join('')
 const SSE_HEADERS = { 'Content-Type': 'text/event-stream', 'x-vercel-ai-ui-message-stream': 'v1' }
 
+// A stream that renders one line of text then finishes.
+const ANSWER_SSE = [
+  'data: {"type":"start","messageId":"m1"}\n\n',
+  'data: {"type":"text-start","id":"t1"}\n\n',
+  'data: {"type":"text-delta","id":"t1","delta":"Forty-two."}\n\n',
+  'data: {"type":"text-end","id":"t1"}\n\n',
+  'data: {"type":"finish"}\n\n',
+  'data: [DONE]\n\n',
+].join('')
+
+// The same, preceded by a reasoning part, so `Reasoning` reports a duration.
+const REASONING_SSE = [
+  'data: {"type":"start","messageId":"m1"}\n\n',
+  'data: {"type":"reasoning-start","id":"r1"}\n\n',
+  'data: {"type":"reasoning-delta","id":"r1","delta":"Checking the combat rules."}\n\n',
+  'data: {"type":"reasoning-end","id":"r1"}\n\n',
+  'data: {"type":"text-start","id":"t1"}\n\n',
+  'data: {"type":"text-delta","id":"t1","delta":"Forty-two."}\n\n',
+  'data: {"type":"text-end","id":"t1"}\n\n',
+  'data: {"type":"finish"}\n\n',
+  'data: [DONE]\n\n',
+].join('')
+
 test.beforeEach(async ({ page }) => {
   // Get past the consent gate; these specs are about chat, not consent.
   await acceptLegal(page)
@@ -327,4 +350,72 @@ test('verified blockquote div attribute is preserved in rendered HTML', async ({
   const blockquote = page.locator('div[data-quote-status="verified"] + [data-streamdown="blockquote"]')
   await expect(blockquote).toBeVisible()
   await expect(blockquote).toContainText('You may move up to three spaces')
+})
+
+// ---------------------------------------------------------------------------
+// Pending "Thinking..." indicator
+// ---------------------------------------------------------------------------
+
+// Issue #107: between send and the first streamed part there was nothing on
+// screen but the user's own bubble — a few seconds warm, up to a ~26s Cloud Run
+// cold start cold, during which the app looked frozen.
+test('shows a thinking indicator immediately, before any stream bytes arrive', async ({ page }) => {
+  await mockChatMessagesRoute(page, CHAT_ID, [])
+
+  // Hold the stream open with no bytes written — the cold-start / pre-first-token gap.
+  let releaseStream!: () => void
+  const streamHeld = new Promise<void>((r) => { releaseStream = r })
+  await page.route(`**/api/chats/${CHAT_ID}/stream`, async (route) => {
+    await streamHeld
+    await route.fulfill({ status: 200, headers: SSE_HEADERS, body: ANSWER_SSE })
+  })
+
+  await page.goto(`/chat/${GAME_ID}/${CHAT_ID}`)
+  await page.getByPlaceholder('Ask anything').fill('How does combat work?')
+  await page.getByRole('button', { name: 'Send' }).click()
+
+  // The question and an active indicator are both up while the request is still pending.
+  await expect(page.getByText('How does combat work?')).toBeVisible()
+  await expect(page.getByText('Thinking...')).toBeVisible()
+
+  // It announces to assistive tech - otherwise the send is 25-60s of silence.
+  const pending = page.getByRole('status')
+  await expect(pending).toContainText('Thinking...')
+
+  // ...and it is inert: no chevron, and not a tab stop that would drop focus to
+  // <body> when it unmounts. There is nothing to expand until reasoning arrives.
+  await expect(pending.locator('svg')).toHaveCount(1)
+  await expect(page.getByRole('button', { name: /Thinking/ })).toHaveCount(0)
+
+  // The answer lands and takes the placeholder's place.
+  releaseStream()
+  await expect(page.getByText('Forty-two.')).toBeVisible()
+  await expect(page.getByText('Thinking...')).not.toBeVisible()
+})
+
+// The placeholder must stay a SEPARATE component from the real `Reasoning` in
+// `AssistantMsg`. `Reasoning` starts its duration clock on the first render where
+// it is streaming, so one instance spanning the wait would bill the pre-stream
+// hold to "Thought for N seconds" — a wrong number that persists in the
+// transcript, unlike the transient shimmer.
+test('reasoning duration excludes the pre-stream wait', async ({ page }) => {
+  await mockChatMessagesRoute(page, CHAT_ID, [])
+
+  const HOLD_MS = 4000
+  await page.route(`**/api/chats/${CHAT_ID}/stream`, async (route) => {
+    await new Promise((r) => setTimeout(r, HOLD_MS))
+    await route.fulfill({ status: 200, headers: SSE_HEADERS, body: REASONING_SSE })
+  })
+
+  await page.goto(`/chat/${GAME_ID}/${CHAT_ID}`)
+  await page.getByPlaceholder('Ask anything').fill('How does combat work?')
+  await page.getByRole('button', { name: 'Send' }).click()
+
+  // Prove we got all the way through: reasoning, then the answer.
+  await expect(page.getByText('Forty-two.')).toBeVisible()
+
+  // The 4s hold must not appear in the reported thinking time.
+  const trigger = page.getByRole('button', { name: /Thinking|Thought for/ })
+  await expect(trigger).toBeVisible()
+  await expect(trigger).not.toHaveText(/Thought for (?:[3-9]|\d{2,}) seconds/)
 })

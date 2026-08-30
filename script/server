@@ -29,6 +29,10 @@ echo "Frontend running (PID $frontend_pid) on http://localhost:5173"
 if [[ "$VITE_SIMULATE_COLD_START" =~ ^[0-9]+$ ]] && [ "$VITE_SIMULATE_COLD_START" -gt 0 ]; then
     echo "Cold-start simulation ON: /api/* returns 500 for the first ${VITE_SIMULATE_COLD_START}s (unset VITE_SIMULATE_COLD_START to disable)"
 fi
+# Same guard as above: only claim the delay is on when the plugin will enable it.
+if [[ "$VITE_SIMULATE_STREAM_DELAY" =~ ^[0-9]+$ ]] && [ "$VITE_SIMULATE_STREAM_DELAY" -gt 0 ]; then
+    echo "Stream delay ON: each send waits ${VITE_SIMULATE_STREAM_DELAY}s before the backend streams (unset VITE_SIMULATE_STREAM_DELAY to disable)"
+fi
 echo "Press Ctrl+C to stop."
 
 wait

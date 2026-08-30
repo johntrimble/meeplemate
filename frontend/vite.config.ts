@@ -37,8 +37,43 @@ function simulateColdStart(): Plugin {
   }
 }
 
+/**
+ * Dev-only plugin that holds the chat stream open before any bytes are written,
+ * so a developer can actually look at the pending "Thinking..." state (issue
+ * #107) instead of blinking past it. When `VITE_SIMULATE_STREAM_DELAY=<seconds>`
+ * is set, every `POST /api/chats/{id}/stream` waits N seconds and then proxies to
+ * the real backend as usual.
+ *
+ *   VITE_SIMULATE_STREAM_DELAY=20 ./script/server
+ *
+ * Distinct from `simulateColdStart` above, which is about *recovery*: that one
+ * fails `/api/*` outright for a window after boot, which also stops the chat page
+ * from loading at all - fine for watching `fetchWithRetry` retry, useless for
+ * watching the send path. This one touches only the stream, arms on every send
+ * rather than once at boot, and delays rather than fails, so the response still
+ * streams in normally at the end.
+ */
+function simulateStreamDelay(): Plugin {
+  const seconds = Number(process.env.VITE_SIMULATE_STREAM_DELAY)
+  return {
+    name: 'simulate-stream-delay',
+    apply: 'serve',
+    configureServer(server) {
+      if (!Number.isFinite(seconds) || seconds <= 0) return
+      // Registered in the body so it runs ahead of Vite's `/api` proxy.
+      server.middlewares.use((req, _res, next) => {
+        if (/^\/api\/chats\/[^/]+\/stream/.test(req.url ?? '')) {
+          setTimeout(next, seconds * 1000)
+          return
+        }
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), simulateColdStart(), legalPages()],
+  plugins: [react(), tailwindcss(), simulateColdStart(), simulateStreamDelay(), legalPages()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
