@@ -9,6 +9,7 @@ interface UseGameListResult {
   error: string | null
   hasMore: boolean
   loadMore: () => void
+  refetch: () => void
 }
 
 export function useGameList(): UseGameListResult {
@@ -41,5 +42,6 @@ export function useGameList(): UseGameListResult {
     error: query.error ? (query.error as Error).message : null,
     hasMore: query.hasNextPage,
     loadMore: () => query.fetchNextPage(),
+    refetch: () => query.refetch(),
   }
 }
