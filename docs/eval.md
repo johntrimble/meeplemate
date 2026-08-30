@@ -2,8 +2,10 @@
 
 Answer quality is measured against golden test cases in
 [`meeplemate/eval/test_cases.yaml`](../meeplemate/eval/test_cases.yaml). Run
-everything **from inside the dev container**, with the chat model up
-(`docker compose up -d`) — the pipeline and the judge are both local vLLM.
+everything **from inside the dev container**, with Postgres up
+(`docker compose up -d`). The chat model is served from
+`https://llm.johntrimble.dev/v1`, not the local vLLM container —
+`create_eval_system` points there regardless of what compose is running.
 
 The CLI is `mm-eval`, equivalently `python -m meeplemate.eval`.
 
@@ -41,6 +43,9 @@ or `*` (the default) for everything.
 five metrics — Correctness, First-Pass Quote Validity, Quote Retention, Valid
 Quote, Runaway Generations. `run-qa-eval` runs **Correctness only**. If you care
 about quote health, score through `run-qa`.
+
+Growing that corpus is a separate workflow with its own commands and its own
+output tree — see [eval-corpus.md](eval-corpus.md).
 
 ## Cheaper checks
 
@@ -112,6 +117,7 @@ grid search reuses the same runner.
 
 ## Related
 
+- [eval-corpus.md](eval-corpus.md) — where new test cases come from
 - [qa-flow.md](qa-flow.md) — what the pipeline being measured actually does
 - Prompts live in [`meeplemate/prompts/`](../meeplemate/prompts/); metric
   definitions and their thresholds are in

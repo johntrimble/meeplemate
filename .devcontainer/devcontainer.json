@@ -17,6 +17,13 @@
     "SSH_AUTH_SOCK": ""
   },
 
+  // Re-apply machine-scope VS Code settings on every container start.
+  // Settings an extension declares as "scope": "machine" are ignored by VS Code
+  // when they appear in .vscode/settings.json, so they only take effect in the
+  // container's own store at ~/.vscode-server/data/Machine/settings.json --
+  // which is recreated from scratch whenever .vscode-server is rebuilt.
+  "postStartCommand": "python3 ${containerWorkspaceFolder}/script/configure_vscode_machine_settings.py",
+
   "customizations": {
     "vscode": {
       // Default settings for VS Code inside the container.

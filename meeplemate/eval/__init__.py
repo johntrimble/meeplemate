@@ -38,8 +38,27 @@ UNCOMPRESSED_RUN_FILE_SUFFIX = ".json"
 GZIP_MAGIC = b"\x1f\x8b"
 COMPRESS_LEVEL = 6
 
-# Load test_cases.yaml from this module
-test_suites = slurp_yaml(resources.files(__package__).joinpath("test_cases.yaml"))
+def _load_test_suites() -> list:
+    """Hand-written cases plus every promoted run.
+
+    `test_cases.yaml` is curated by hand. `test_cases/<run-id>.yaml` is written
+    by `mm-eval promote` from a review run and is regenerated wholesale, so the
+    two are kept apart rather than merged into one file a person also edits.
+
+    Sorted by filename so suite order is stable across machines; `iterdir()` is
+    not ordered, and unstable order shows up as churn in eval output.
+    """
+    root = resources.files(__package__)
+    suites = list(slurp_yaml(root.joinpath("test_cases.yaml")) or [])
+    promoted_dir = root.joinpath("test_cases")
+    if promoted_dir.is_dir():
+        for entry in sorted(promoted_dir.iterdir(), key=lambda p: p.name):
+            if entry.name.endswith((".yaml", ".yml")):
+                suites.extend(slurp_yaml(entry) or [])
+    return suites
+
+
+test_suites = _load_test_suites()
 
 def load_goldens() -> Sequence[Golden]:
     goldens: list[Golden] = []

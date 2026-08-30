@@ -38,8 +38,9 @@ services:
         GID: ${MY_GID}
 
     ports:
-    - 8000:8000 # Chainlit
+    - 8000:8000 # FastAPI backend (script/server)
     - 5173:5173 # vite
+    - 8765:8765 # mm-eval review
 
     # Mount the project root and data directory into the container.
     # This allows code and data changes on the host to be reflected in the container.
