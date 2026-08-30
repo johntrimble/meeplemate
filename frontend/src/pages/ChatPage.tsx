@@ -9,6 +9,7 @@ import {
   ReasoningContent,
   ReasoningTrigger,
 } from '@/components/ai-elements/reasoning'
+import { Shimmer } from '@/components/ai-elements/shimmer'
 import {
   Message,
   MessageAction,
@@ -28,6 +29,7 @@ import { LoadingLabel } from '@/components/LoadingLabel'
 import { fetchWithRetry } from '@/lib/fetchWithRetry'
 import { randomUUID } from '@/lib/uuid'
 import {
+  BrainIcon,
   CheckIcon,
   CopyIcon,
   MenuIcon,
@@ -293,6 +295,60 @@ function AssistantMsg({
           </MessageAction>
         </MessageActions>
       )}
+    </Message>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Pending assistant message
+// ---------------------------------------------------------------------------
+
+/**
+ * Placeholder shown between hitting send and the first streamed part arriving.
+ *
+ * Until that first part lands there is no assistant message to render, so the
+ * screen would otherwise sit unchanged on the user's own bubble - a few seconds
+ * warm, and up to a Cloud Run cold start (~26s) cold. This renders the very same
+ * shimmering "Thinking..." trigger `Reasoning` shows while it streams, so the
+ * real message arriving doesn't swap one indicator for another: the indicator is
+ * already on screen and simply gains content beneath it.
+ *
+ * Deliberately NOT a cold-start message ("Waking up the server...", as the list
+ * loaders use via `LoadingLabel`). Those load in well under a second when warm,
+ * so a slow one really is a boot. An answer here takes 25-60s warm, so the boot
+ * is a minority of the wait even when it happens - a boot-specific label would be
+ * wrong most of the time, and would have to be torn down exactly as the answer
+ * starts.
+ *
+ * Kept as its own component, never merged into `AssistantMsg`'s `Reasoning`
+ * instance: `Reasoning` starts its duration clock on the first render where it
+ * is streaming, so a single instance spanning the wait would bill the cold start
+ * to "Thought for N seconds". A separate instance means the real one still
+ * mounts at the first part and times only the thinking. Locked by
+ * "reasoning duration excludes the pre-stream wait" in e2e/chat.spec.ts.
+ *
+ * Deliberately NOT a `ReasoningTrigger`, even though that is what it imitates.
+ * The trigger is a focusable button carrying a chevron, and `Reasoning` auto-opens
+ * while streaming - so here it would render an *up* chevron (i.e. "collapse the
+ * open section") above nothing at all, and be a tab stop that vanishes when the
+ * answer arrives, dropping focus to <body>. An inert row keeps the icon and text
+ * in exactly the same place (measured: both at x=272); the only difference a user
+ * sees is that the chevron arrives with the real reasoning, which is precisely
+ * when there is first something to expand.
+ */
+function PendingMsg() {
+  return (
+    // `role="status"` (implicitly an aria-live=polite region) is the only thing on
+    // the page that tells a screen reader the send landed - without it the wait is
+    // 25-60s of silence.
+    <Message from="assistant">
+      <div
+        role="status"
+        className="not-prose mb-4 flex w-full items-center gap-2 text-muted-foreground text-sm"
+      >
+        <BrainIcon className="size-4" />
+        <Shimmer duration={1}>Thinking...</Shimmer>
+      </div>
     </Message>
   )
 }
@@ -733,6 +789,7 @@ function ChatView({
                 />
               ),
             )}
+            {status === 'submitted' && <PendingMsg />}
             {error && <ChatError error={error} onDismiss={handleDismiss} />}
             <div ref={bottomRef} />
           </div>
