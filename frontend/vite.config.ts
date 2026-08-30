@@ -61,8 +61,11 @@ function simulateStreamDelay(): Plugin {
     configureServer(server) {
       if (!Number.isFinite(seconds) || seconds <= 0) return
       // Registered in the body so it runs ahead of Vite's `/api` proxy.
+      // Matched narrowly - method included, and terminated so a future sibling
+      // route (`/stream-status`, say) doesn't silently inherit the delay. The
+      // `\?` alternative is needed because `req.url` carries the query string.
       server.middlewares.use((req, _res, next) => {
-        if (/^\/api\/chats\/[^/]+\/stream/.test(req.url ?? '')) {
+        if (req.method === 'POST' && /^\/api\/chats\/[^/]+\/stream(?:\?|$)/.test(req.url ?? '')) {
           setTimeout(next, seconds * 1000)
           return
         }
