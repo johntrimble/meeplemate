@@ -16,6 +16,7 @@ from meeplemate.postgres.bm25 import Bm25IndexBuilder
 from structlog import get_logger
 
 from meeplemate.util import amap, achain_from_aiterable, aslurp, aslurp_yaml, sem_guard
+import yaml
 
 logger = get_logger(__name__)
 
@@ -31,6 +32,51 @@ class ImportDocumentsJob:
     bm25_builder: Bm25IndexBuilder
     path: Path
     concurrency: int
+
+
+@dataclass
+class ImportStatusJob:
+    gp: GamePackage
+    game_data_store: BaseStore[str, Any]
+    game_version_store: BaseStore[str, Any]
+    game_questions_store: BaseStore[str, Any] | None = None
+
+
+async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
+    game_id = job.gp["game_id"]
+    game_version = job.gp.get("game_version", "")
+    game_key = get_game_key(job.gp)
+    current, existing = await asyncio.gather(
+        job.game_version_store.amget([game_id]),
+        job.game_data_store.amget([game_key]),
+    )
+    questions_path = get_game_example_questions_path(job.gp)
+    expected_questions = None
+    questions_match = True
+    if questions_path.exists() and job.game_questions_store is not None:
+        questions_data = yaml.safe_load(questions_path.read_text())
+        expected_questions = questions_data.get("questions") if isinstance(questions_data, dict) else None
+        if expected_questions:
+            stored_questions = (await job.game_questions_store.amget([game_id]))[0]
+            questions_match = stored_questions == expected_questions
+    is_current = current[0] == game_key
+    complete = is_current
+    if is_current:
+        action = "unchanged"
+    elif existing[0] is not None:
+        action = "reset"
+    else:
+        action = "import"
+    return {
+        "game_id": game_id,
+        "desired_version": game_version,
+        "desired_game_key": game_key,
+        "current_game_key": current[0],
+        "desired_version_exists": existing[0] is not None,
+        "complete": complete,
+        "action": action,
+        "questions_match": questions_match,
+    }
 
 
 async def import_game_data(job: ImportDocumentsJob) -> None:

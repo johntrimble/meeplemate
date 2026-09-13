@@ -1,4 +1,7 @@
 import asyncio
+import sys
+from contextlib import redirect_stdout
+import json
 from pathlib import Path
 import click
 from openai import AsyncOpenAI
@@ -8,8 +11,8 @@ from meeplemate.component_system import System, afactory, factory, subsystem
 from meeplemate.config import Config, create_app_system
 from meeplemate.ingest.chunkbuild import BuildChunksJob
 from meeplemate.ingest.cleardata import ClearOldDataJob
-from meeplemate.ingest.dataimport import ImportDocumentsJob, import_example_questions, run_import_documents
-from meeplemate.ingest.gamepackage import load_game_package
+from meeplemate.ingest.dataimport import ImportDocumentsJob, ImportStatusJob, import_example_questions, inspect_import, run_import_documents
+from meeplemate.ingest.gamepackage import get_game_key, load_game_package
 from meeplemate.ingest.layout import PackageLayout
 from meeplemate.ingest.initgp import InitGamePackageJob
 from meeplemate.ingest.ocr import BuildTextJob, OcrJob, PageNumberFixUpJob, PageNumberOcrJob
@@ -273,6 +276,35 @@ def build_chunks(path: Path):
 
 # uv run python -m meeplemate.ingest import-documents ./data/ingested/munchkin_rules/
 
+@cli.command("import-status")
+@click.argument("path", type=Path)
+def import_status(path: Path):
+    """Report whether a package's version is complete and currently published."""
+    settings: Config = Config()  # type: ignore
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "import_status_job": (
+                factory(ImportStatusJob)(gp=load_game_package(path, require_version=True)),
+                {
+                    "game_data_store": "game_data_store",
+                    "game_version_store": "game_version_store",
+                    "game_questions_store": "game_questions_store",
+                },
+            )
+        },
+        names=["import_status_job"],
+    )
+
+    async def _status():
+        with redirect_stdout(sys.stderr):
+            async with system.astart() as services:
+                result = await inspect_import(services["import_status_job"])
+        click.echo(json.dumps(result, sort_keys=True))
+
+    asyncio.run(_status())
+
 @cli.command()
 @click.argument("path", type=Path)
 @click.option("--overwrite", is_flag=True, help="Re-import in place even if this game_version already exists in the DB.")
@@ -437,8 +469,46 @@ def migrate_layout_command(path: Path, apply_changes: bool, verify: bool, source
         click.echo(f"{path}: verified")
 
 
+@cli.command("clear-game-version")
+@click.argument("path", type=Path)
+def clear_game_version(path: Path):
+    """Remove one package version only when it is not currently published."""
+    gp = load_game_package(path, require_version=True)
+    settings: Config = Config()  # type: ignore
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "clear_data_job": (
+                factory(ClearOldDataJob)(),
+                {
+                    "game_version_store": "game_version_store",
+                    "game_data_store": "game_data_store",
+                    "docstore": "docstore",
+                    "full_page_store": "full_page_store",
+                    "vector_store": "vector_store",
+                    "bm25_index": "bm25_index_builder",
+                },
+            )
+        },
+        names=["clear_data_job"],
+    )
+
+    async def _run():
+        async with system.astart() as services:
+            try:
+                await services["clear_data_job"].clear_unpublished_version(
+                    gp["game_id"], get_game_key(gp)
+                )
+            except ValueError as error:
+                raise click.ClickException(str(error)) from error
+
+    asyncio.run(_run())
+
+
 @cli.command()
-def clear_old_data():
+@click.option("--dry-run", is_flag=True, help="List obsolete versions without deleting them.")
+def clear_old_data(dry_run: bool):
     settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
@@ -448,7 +518,7 @@ def clear_old_data():
                 afactory(
                     ClearOldDataJob,
                     astart=ClearOldDataJob.run,
-                )(),
+                )(dry_run=dry_run),
                 {
                     "game_version_store": "game_version_store",
                     "game_data_store": "game_data_store",

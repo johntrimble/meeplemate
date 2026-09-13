@@ -26,6 +26,7 @@ class ClearOldDataJob:
     # a default after one that has one.
     bm25_index: Bm25IndexBuilder
 
+    dry_run: bool = False
     concurrency_semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(10))
 
 
@@ -109,24 +110,33 @@ class ClearOldDataJob:
         if callable(delete_partition):
             await delete_partition(game_version)  # type: ignore[misc]
 
+    async def clear_unpublished_version(self, game_id: str, game_key: str):
+        (current_game_key,) = await self.game_version_store.amget([game_id])
+        if current_game_key == game_key:
+            raise ValueError(f"Refusing to clear published game version: {game_key}")
+        await self.clear_old_version_data(game_key)
+
     async def clear_old_game_data(self, game_id: str):
         # Get the current version for the game
         (game_key, ) = await self.game_version_store.amget([game_id])
 
-        # If a key is prefixed by <game_id>#, and not prefixed by game_key, then
+        # game_data_store contains only whole-version records keyed exactly as <game_id>#<version>.
+        # Descendant document keys live in separate stores, so exact inequality is required;
+        # a version such as game#10 must not be mistaken for current game#1.
         # it's an old version of game_id data and should be deleted
         prefix = f"{game_id}#"
 
         # Get all old version keys
         old_version_keys = []
         async for key in cast(AsyncIterator, self.game_data_store.ayield_keys(prefix=prefix)):
-            if not key.startswith(game_key):
+            if key != game_key:
                 old_version_keys.append(key)
 
         # For each old version key, clear the game data and the associated chunks
         for key in old_version_keys:
-            logger.info("Clearing old version data for game", game_id=game_id, old_version_key=key)
-            await self.clear_old_version_data(key)
+            logger.info("Old version data for game", game_id=game_id, old_version_key=key, dry_run=self.dry_run)
+            if not self.dry_run:
+                await self.clear_old_version_data(key)
 
     async def run(self):
         # Get all game IDs
