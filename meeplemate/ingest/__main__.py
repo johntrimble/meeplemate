@@ -467,7 +467,8 @@ def migrate_layout_command(path: Path, apply_changes: bool, verify: bool, source
 
 
 @cli.command()
-def clear_old_data():
+@click.option("--dry-run", is_flag=True, help="List obsolete versions without deleting them.")
+def clear_old_data(dry_run: bool):
     settings: Config = Config() # type: ignore
     app_system: System = create_app_system(settings)
     system = subsystem(
@@ -477,7 +478,7 @@ def clear_old_data():
                 afactory(
                     ClearOldDataJob,
                     astart=ClearOldDataJob.run,
-                )(),
+                )(dry_run=dry_run),
                 {
                     "game_version_store": "game_version_store",
                     "game_data_store": "game_data_store",

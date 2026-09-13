@@ -26,6 +26,7 @@ class ClearOldDataJob:
     # a default after one that has one.
     bm25_index: Bm25IndexBuilder
 
+    dry_run: bool = False
     concurrency_semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(10))
 
 
@@ -120,13 +121,14 @@ class ClearOldDataJob:
         # Get all old version keys
         old_version_keys = []
         async for key in cast(AsyncIterator, self.game_data_store.ayield_keys(prefix=prefix)):
-            if not key.startswith(game_key):
+            if key != game_key:
                 old_version_keys.append(key)
 
         # For each old version key, clear the game data and the associated chunks
         for key in old_version_keys:
-            logger.info("Clearing old version data for game", game_id=game_id, old_version_key=key)
-            await self.clear_old_version_data(key)
+            logger.info("Old version data for game", game_id=game_id, old_version_key=key, dry_run=self.dry_run)
+            if not self.dry_run:
+                await self.clear_old_version_data(key)
 
     async def run(self):
         # Get all game IDs
