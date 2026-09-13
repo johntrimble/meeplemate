@@ -328,11 +328,23 @@ def import_documents(path: Path, overwrite: bool):
                     "full_page_store": "full_page_store",
                     "game_data_store": "game_data_store",
                     "bm25_builder": "bm25_index_builder",
+                    "clear_data_job": "clear_data_job",
                 },
-            )
+            ),
+            "clear_data_job": (
+                factory(ClearOldDataJob)(),
+                {
+                    "game_version_store": "game_version_store",
+                    "game_data_store": "game_data_store",
+                    "docstore": "docstore",
+                    "full_page_store": "full_page_store",
+                    "vector_store": "vector_store",
+                    "bm25_index": "bm25_index_builder",
+                },
+            ),
         }
     )
-    system = System.subsystem(system, names=["import_job"])
+    system = System.subsystem(system, names=["import_job", "clear_data_job"])
 
     async def _import_documents():
         async with system.astart() as services:
