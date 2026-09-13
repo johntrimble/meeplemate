@@ -289,6 +289,7 @@ def import_status(path: Path):
                     "game_data_store": "game_data_store",
                     "game_version_store": "game_version_store",
                     "bm25_builder": "bm25_index_builder",
+                    "game_questions_store": "game_questions_store",
                 },
             )
         },

@@ -16,6 +16,7 @@ from meeplemate.postgres.bm25 import Bm25IndexBuilder
 from structlog import get_logger
 
 from meeplemate.util import amap, achain_from_aiterable, aslurp, aslurp_yaml, sem_guard
+import yaml
 
 logger = get_logger(__name__)
 
@@ -39,6 +40,7 @@ class ImportStatusJob:
     game_data_store: BaseStore[str, Any]
     game_version_store: BaseStore[str, Any]
     bm25_builder: Bm25IndexBuilder
+    game_questions_store: BaseStore[str, Any] | None = None
 
 
 async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
@@ -50,6 +52,15 @@ async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
         job.game_data_store.amget([game_key]),
     )
     bm25 = await job.bm25_builder.astatus(game_version)
+    questions_path = get_game_example_questions_path(job.gp)
+    expected_questions = None
+    questions_match = True
+    if questions_path.exists() and job.game_questions_store is not None:
+        questions_data = yaml.safe_load(questions_path.read_text())
+        expected_questions = questions_data.get("questions") if isinstance(questions_data, dict) else None
+        if expected_questions:
+            stored_questions = (await job.game_questions_store.amget([game_id]))[0]
+            questions_match = stored_questions == expected_questions
     is_current = current[0] == game_key
     complete = is_current and existing[0] is not None and bm25 is not None and bm25["doc_count"] > 0
     if complete:
@@ -69,6 +80,7 @@ async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
         "bm25": bm25,
         "complete": complete,
         "action": action,
+        "questions_match": questions_match,
     }
 
 
