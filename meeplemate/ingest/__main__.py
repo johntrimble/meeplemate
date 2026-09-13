@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 import click
 from openai import AsyncOpenAI
@@ -8,7 +9,7 @@ from meeplemate.component_system import System, afactory, factory, subsystem
 from meeplemate.config import Config, create_app_system
 from meeplemate.ingest.chunkbuild import BuildChunksJob
 from meeplemate.ingest.cleardata import ClearOldDataJob
-from meeplemate.ingest.dataimport import ImportDocumentsJob, import_example_questions, run_import_documents
+from meeplemate.ingest.dataimport import ImportDocumentsJob, ImportStatusJob, import_example_questions, inspect_import, run_import_documents
 from meeplemate.ingest.gamepackage import load_game_package
 from meeplemate.ingest.layout import PackageLayout
 from meeplemate.ingest.initgp import InitGamePackageJob
@@ -272,6 +273,33 @@ def build_chunks(path: Path):
     asyncio.run(_run())
 
 # uv run python -m meeplemate.ingest import-documents ./data/ingested/munchkin_rules/
+
+@cli.command("import-status")
+@click.argument("path", type=Path)
+def import_status(path: Path):
+    """Report whether a package's version is complete and currently published."""
+    settings: Config = Config()  # type: ignore
+    app_system: System = create_app_system(settings)
+    system = subsystem(
+        app_system,
+        extra_components={
+            "import_status_job": (
+                factory(ImportStatusJob)(gp=load_game_package(path, require_version=True)),
+                {
+                    "game_data_store": "game_data_store",
+                    "game_version_store": "game_version_store",
+                    "bm25_builder": "bm25_index_builder",
+                },
+            )
+        },
+        names=["import_status_job"],
+    )
+
+    async def _status():
+        async with system.astart() as services:
+            click.echo(json.dumps(await inspect_import(services["import_status_job"]), sort_keys=True))
+
+    asyncio.run(_status())
 
 @cli.command()
 @click.argument("path", type=Path)

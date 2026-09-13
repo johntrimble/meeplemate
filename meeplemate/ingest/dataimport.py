@@ -33,6 +33,45 @@ class ImportDocumentsJob:
     concurrency: int
 
 
+@dataclass
+class ImportStatusJob:
+    gp: GamePackage
+    game_data_store: BaseStore[str, Any]
+    game_version_store: BaseStore[str, Any]
+    bm25_builder: Bm25IndexBuilder
+
+
+async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
+    game_id = job.gp["game_id"]
+    game_version = job.gp.get("game_version", "")
+    game_key = get_game_key(job.gp)
+    current, existing = await asyncio.gather(
+        job.game_version_store.amget([game_id]),
+        job.game_data_store.amget([game_key]),
+    )
+    bm25 = await job.bm25_builder.astatus(game_version)
+    is_current = current[0] == game_key
+    complete = is_current and existing[0] is not None and bm25 is not None and bm25["doc_count"] > 0
+    if complete:
+        action = "unchanged"
+    elif is_current:
+        action = "repair-current"
+    elif existing[0] is not None:
+        action = "resume"
+    else:
+        action = "import"
+    return {
+        "game_id": game_id,
+        "desired_version": game_version,
+        "desired_game_key": game_key,
+        "current_game_key": current[0],
+        "desired_version_exists": existing[0] is not None,
+        "bm25": bm25,
+        "complete": complete,
+        "action": action,
+    }
+
+
 async def import_game_data(job: ImportDocumentsJob) -> None:
     game_data = copy.deepcopy(job.gp)
     game_data.pop("path")
