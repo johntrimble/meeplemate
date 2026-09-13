@@ -39,7 +39,6 @@ class ImportDocumentsJob:
 @dataclass
 class ImportStatusJob:
     gp: GamePackage
-    game_data_store: BaseStore[str, Any]
     game_version_store: BaseStore[str, Any]
     game_questions_store: BaseStore[str, Any] | None = None
 
@@ -48,10 +47,7 @@ async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
     game_id = job.gp["game_id"]
     game_version = job.gp.get("game_version", "")
     game_key = get_game_key(job.gp)
-    current, existing = await asyncio.gather(
-        job.game_version_store.amget([game_id]),
-        job.game_data_store.amget([game_key]),
-    )
+    (current_game_key,) = await job.game_version_store.amget([game_id])
     questions_path = get_game_example_questions_path(job.gp)
     expected_questions = None
     questions_match = True
@@ -61,22 +57,12 @@ async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
         if expected_questions:
             stored_questions = (await job.game_questions_store.amget([game_id]))[0]
             questions_match = stored_questions == expected_questions
-    is_current = current[0] == game_key
-    complete = is_current
-    if is_current:
-        action = "unchanged"
-    elif existing[0] is not None:
-        action = "reset"
-    else:
-        action = "import"
     return {
         "game_id": game_id,
         "desired_version": game_version,
         "desired_game_key": game_key,
-        "current_game_key": current[0],
-        "desired_version_exists": existing[0] is not None,
-        "complete": complete,
-        "action": action,
+        "current_game_key": current_game_key,
+        "complete": current_game_key == game_key,
         "questions_match": questions_match,
     }
 
