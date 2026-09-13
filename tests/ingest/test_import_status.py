@@ -1,4 +1,3 @@
-from unittest.mock import AsyncMock
 from pathlib import Path
 
 import pytest
@@ -16,23 +15,21 @@ class Store:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("current", "existing", "bm25", "action", "complete"),
+    ("current", "existing", "action", "complete"),
     [
-        ("wingspan#v2", {"name": "Wingspan"}, {"doc_count": 2}, "unchanged", True),
-        ("wingspan#v1", None, None, "import", False),
-        ("wingspan#v1", {"name": "Wingspan"}, None, "resume", False),
-        ("wingspan#v2", {"name": "Wingspan"}, None, "repair-current", False),
-        ("wingspan#v2", {"name": "Wingspan"}, {"doc_count": 0}, "repair-current", False),
+        ("wingspan#v2", {"name": "Wingspan"}, "unchanged", True),
+        # Publication is authoritative: the pointer is written only after the
+        # complete import and BM25 build succeed.
+        ("wingspan#v2", None, "unchanged", True),
+        ("wingspan#v1", None, "import", False),
+        ("wingspan#v1", {"name": "Wingspan"}, "reset", False),
     ],
 )
-async def test_inspect_import_classifies_state(current, existing, bm25, action, complete):
-    builder = AsyncMock()
-    builder.astatus.return_value = bm25
+async def test_inspect_import_classifies_state(current, existing, action, complete):
     result = await inspect_import(ImportStatusJob(
-        gp={"game_id": "wingspan", "game_version": "v2", "path": Path('/nonexistent-package'), "name": "Wingspan", "rulebooks": []},
+        gp={"game_id": "wingspan", "game_version": "v2", "path": Path("/nonexistent-package"), "name": "Wingspan", "rulebooks": []},
         game_data_store=Store(existing),
         game_version_store=Store(current),
-        bm25_builder=builder,
     ))
     assert result["action"] == action
     assert result["complete"] is complete
@@ -41,14 +38,11 @@ async def test_inspect_import_classifies_state(current, existing, bm25, action, 
 
 @pytest.mark.asyncio
 async def test_status_detects_missing_questions_for_current_version(tmp_path):
-    (tmp_path / "example_questions.yaml").write_text('questions:\n  - How do I play?\n')
-    builder = AsyncMock()
-    builder.astatus.return_value = {"doc_count": 2}
+    (tmp_path / "example_questions.yaml").write_text("questions:\n  - How do I play?\n")
     result = await inspect_import(ImportStatusJob(
         gp={"game_id": "wingspan", "game_version": "v2", "path": tmp_path, "name": "Wingspan", "rulebooks": []},
         game_data_store=Store({"name": "Wingspan"}),
         game_version_store=Store("wingspan#v2"),
-        bm25_builder=builder,
         game_questions_store=Store(None),
     ))
     assert result["action"] == "unchanged"

@@ -110,11 +110,19 @@ class ClearOldDataJob:
         if callable(delete_partition):
             await delete_partition(game_version)  # type: ignore[misc]
 
+    async def clear_unpublished_version(self, game_id: str, game_key: str):
+        (current_game_key,) = await self.game_version_store.amget([game_id])
+        if current_game_key == game_key:
+            raise ValueError(f"Refusing to clear published game version: {game_key}")
+        await self.clear_old_version_data(game_key)
+
     async def clear_old_game_data(self, game_id: str):
         # Get the current version for the game
         (game_key, ) = await self.game_version_store.amget([game_id])
 
-        # If a key is prefixed by <game_id>#, and not prefixed by game_key, then
+        # game_data_store contains only whole-version records keyed exactly as <game_id>#<version>.
+        # Descendant document keys live in separate stores, so exact inequality is required;
+        # a version such as game#10 must not be mistaken for current game#1.
         # it's an old version of game_id data and should be deleted
         prefix = f"{game_id}#"
 

@@ -80,25 +80,6 @@ class Bm25IndexBuilder:
     k1: float = BM25_K1
     b: float = BM25_B
 
-    async def astatus(self, game_version: str) -> dict[str, int] | None:
-        """Return persisted index counts, or ``None`` when no index is published."""
-        if not game_version:
-            return None
-        async with self.engine.connect() as conn:
-            row = (await conn.execute(
-                text("""
-                    SELECT doc_count, term_count, posting_count
-                    FROM public.bm25_index_meta
-                    WHERE game_version = CAST(:gv AS uuid)
-                """),
-                {"gv": game_version},
-            )).mappings().one_or_none()
-        return None if row is None else {
-            "doc_count": row["doc_count"],
-            "term_count": row["term_count"],
-            "posting_count": row["posting_count"],
-        }
-
     async def abuild(self, game_id: str, game_version: str) -> dict[str, int]:
         """(Re)build the index for one game version. Returns row counts."""
         if not game_version:

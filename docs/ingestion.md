@@ -93,6 +93,9 @@ data/ingested/<game>/
 - `import-documents` errors if that version is already in the DB rather than
   overwriting it. Bump the version to land a re-ingest alongside the live one,
   or pass `--overwrite` to re-import in place. Preview superseded versions
+  If an unpublished import was interrupted, remove only that package version with
+  `mm-ingest clear-game-version <package>` before retrying the ordinary import.
+  This command refuses to remove the currently published version.
   with `mm-ingest clear-old-data --dry-run`, then remove them with
   `mm-ingest clear-old-data`.
 - A version bump alone needs no rebuild: `metadata/` and `chunks/` don't record

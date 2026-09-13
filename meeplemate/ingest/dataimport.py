@@ -39,7 +39,6 @@ class ImportStatusJob:
     gp: GamePackage
     game_data_store: BaseStore[str, Any]
     game_version_store: BaseStore[str, Any]
-    bm25_builder: Bm25IndexBuilder
     game_questions_store: BaseStore[str, Any] | None = None
 
 
@@ -51,7 +50,6 @@ async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
         job.game_version_store.amget([game_id]),
         job.game_data_store.amget([game_key]),
     )
-    bm25 = await job.bm25_builder.astatus(game_version)
     questions_path = get_game_example_questions_path(job.gp)
     expected_questions = None
     questions_match = True
@@ -62,13 +60,11 @@ async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
             stored_questions = (await job.game_questions_store.amget([game_id]))[0]
             questions_match = stored_questions == expected_questions
     is_current = current[0] == game_key
-    complete = is_current and existing[0] is not None and bm25 is not None and bm25["doc_count"] > 0
-    if complete:
+    complete = is_current
+    if is_current:
         action = "unchanged"
-    elif is_current:
-        action = "repair-current"
     elif existing[0] is not None:
-        action = "resume"
+        action = "reset"
     else:
         action = "import"
     return {
@@ -77,7 +73,6 @@ async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
         "desired_game_key": game_key,
         "current_game_key": current[0],
         "desired_version_exists": existing[0] is not None,
-        "bm25": bm25,
         "complete": complete,
         "action": action,
         "questions_match": questions_match,
