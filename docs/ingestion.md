@@ -92,7 +92,8 @@ data/ingested/<game>/
   without `version.txt`.
 - `import-documents` errors if that version is already in the DB rather than
   overwriting it. Bump the version to land a re-ingest alongside the live one,
-  or pass `--overwrite` to re-import in place. Drop superseded versions with
+  or pass `--overwrite` to re-import in place. Preview superseded versions
+  with `mm-ingest clear-old-data --dry-run`, then remove them with
   `mm-ingest clear-old-data`.
 - A version bump alone needs no rebuild: `metadata/` and `chunks/` don't record
   the version — `import-documents` stamps it onto every id at load time.
