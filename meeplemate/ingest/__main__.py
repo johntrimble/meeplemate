@@ -12,7 +12,7 @@ from meeplemate.config import Config, create_app_system
 from meeplemate.ingest.chunkbuild import BuildChunksJob
 from meeplemate.ingest.cleardata import ClearOldDataJob
 from meeplemate.ingest.dataimport import ImportDocumentsJob, ImportStatusJob, import_example_questions, inspect_import, run_import_documents
-from meeplemate.ingest.gamepackage import get_game_key, load_game_package
+from meeplemate.ingest.gamepackage import load_game_package
 from meeplemate.ingest.layout import PackageLayout
 from meeplemate.ingest.initgp import InitGamePackageJob
 from meeplemate.ingest.ocr import BuildTextJob, OcrJob, PageNumberFixUpJob, PageNumberOcrJob
@@ -288,7 +288,6 @@ def import_status(path: Path):
             "import_status_job": (
                 factory(ImportStatusJob)(gp=load_game_package(path, require_version=True)),
                 {
-                    "game_data_store": "game_data_store",
                     "game_version_store": "game_version_store",
                     "game_questions_store": "game_questions_store",
                 },
@@ -328,11 +327,23 @@ def import_documents(path: Path, overwrite: bool):
                     "full_page_store": "full_page_store",
                     "game_data_store": "game_data_store",
                     "bm25_builder": "bm25_index_builder",
+                    "clear_data_job": "clear_data_job",
                 },
-            )
+            ),
+            "clear_data_job": (
+                factory(ClearOldDataJob)(),
+                {
+                    "game_version_store": "game_version_store",
+                    "game_data_store": "game_data_store",
+                    "docstore": "docstore",
+                    "full_page_store": "full_page_store",
+                    "vector_store": "vector_store",
+                    "bm25_index": "bm25_index_builder",
+                },
+            ),
         }
     )
-    system = System.subsystem(system, names=["import_job"])
+    system = System.subsystem(system, names=["import_job", "clear_data_job"])
 
     async def _import_documents():
         async with system.astart() as services:
@@ -467,43 +478,6 @@ def migrate_layout_command(path: Path, apply_changes: bool, verify: bool, source
                 click.echo(f"  {problem}")
             raise click.ClickException("Verification failed")
         click.echo(f"{path}: verified")
-
-
-@cli.command("clear-game-version")
-@click.argument("path", type=Path)
-def clear_game_version(path: Path):
-    """Remove one package version only when it is not currently published."""
-    gp = load_game_package(path, require_version=True)
-    settings: Config = Config()  # type: ignore
-    app_system: System = create_app_system(settings)
-    system = subsystem(
-        app_system,
-        extra_components={
-            "clear_data_job": (
-                factory(ClearOldDataJob)(),
-                {
-                    "game_version_store": "game_version_store",
-                    "game_data_store": "game_data_store",
-                    "docstore": "docstore",
-                    "full_page_store": "full_page_store",
-                    "vector_store": "vector_store",
-                    "bm25_index": "bm25_index_builder",
-                },
-            )
-        },
-        names=["clear_data_job"],
-    )
-
-    async def _run():
-        async with system.astart() as services:
-            try:
-                await services["clear_data_job"].clear_unpublished_version(
-                    gp["game_id"], get_game_key(gp)
-                )
-            except ValueError as error:
-                raise click.ClickException(str(error)) from error
-
-    asyncio.run(_run())
 
 
 @cli.command()

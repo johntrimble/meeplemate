@@ -11,6 +11,7 @@ from langchain_core.stores import BaseStore
 from langchain_core.vectorstores.base import VectorStore
 
 from meeplemate.ingest.chunkbuild import ChildChunkDescriptor, ChunkDescriptor, child_chunks_for_chunk_iter, chunks_for_page_iter, get_child_chunk_path, get_chunk_path
+from meeplemate.ingest.cleardata import ClearOldDataJob
 from meeplemate.ingest.gamepackage import GamePackage, get_game_example_questions_path, get_game_presentation_path, get_page, get_pages_iter, page_to_document, get_game_key
 from meeplemate.postgres.bm25 import Bm25IndexBuilder
 from structlog import get_logger
@@ -30,6 +31,7 @@ class ImportDocumentsJob:
     game_version_store: BaseStore[str, Any]
     chunk_store: BaseStore[str, Document]
     bm25_builder: Bm25IndexBuilder
+    clear_data_job: ClearOldDataJob
     path: Path
     concurrency: int
 
@@ -37,7 +39,6 @@ class ImportDocumentsJob:
 @dataclass
 class ImportStatusJob:
     gp: GamePackage
-    game_data_store: BaseStore[str, Any]
     game_version_store: BaseStore[str, Any]
     game_questions_store: BaseStore[str, Any] | None = None
 
@@ -46,10 +47,7 @@ async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
     game_id = job.gp["game_id"]
     game_version = job.gp.get("game_version", "")
     game_key = get_game_key(job.gp)
-    current, existing = await asyncio.gather(
-        job.game_version_store.amget([game_id]),
-        job.game_data_store.amget([game_key]),
-    )
+    (current_game_key,) = await job.game_version_store.amget([game_id])
     questions_path = get_game_example_questions_path(job.gp)
     expected_questions = None
     questions_match = True
@@ -59,22 +57,12 @@ async def inspect_import(job: ImportStatusJob) -> dict[str, Any]:
         if expected_questions:
             stored_questions = (await job.game_questions_store.amget([game_id]))[0]
             questions_match = stored_questions == expected_questions
-    is_current = current[0] == game_key
-    complete = is_current
-    if is_current:
-        action = "unchanged"
-    elif existing[0] is not None:
-        action = "reset"
-    else:
-        action = "import"
     return {
         "game_id": game_id,
         "desired_version": game_version,
         "desired_game_key": game_key,
-        "current_game_key": current[0],
-        "desired_version_exists": existing[0] is not None,
-        "complete": complete,
-        "action": action,
+        "current_game_key": current_game_key,
+        "complete": current_game_key == game_key,
         "questions_match": questions_match,
     }
 
@@ -168,20 +156,27 @@ def add_game_metadata_to_document(document: Document, gp: GamePackage) -> Docume
     return document
 
 
-async def run_import_documents(job: ImportDocumentsJob, *, overwrite: bool = False) -> None:
-    # Refuse to silently clobber a version that has already been imported. The
-    # game data record is keyed by game_key (game_id#game_version) and written on
-    # every import, so its presence means this exact version is already in the DB.
+async def prepare_import_documents(job: ImportDocumentsJob, *, overwrite: bool = False) -> bool:
     game_key = get_game_key(job.gp)
-    if not overwrite:
-        existing = (await job.game_data_store.amget([game_key]))[0]
-        if existing is not None:
-            raise ValueError(
-                f"Game version already imported: {game_key}. Re-importing would "
-                f"overwrite the existing data in place. Bump the version first with "
-                f"`mm-ingest update-version <package>` to import as a new version, "
-                f"or pass --overwrite to re-import this version in place."
-            )
+    (current_game_key,) = await job.game_version_store.amget([job.gp["game_id"]])
+    if current_game_key == game_key and not overwrite:
+        logger.info("Game version is already published; skipping import", game_key=game_key)
+        return False
+
+    # The publication pointer is written only after every document and the BM25
+    # index are durable. Anything under a non-current version is therefore safe
+    # to treat as residue from an interrupted attempt. Clearing it also makes a
+    # first import safe: all cleanup operations are no-ops when nothing exists.
+    if current_game_key != game_key:
+        logger.info("Clearing unpublished game version before import", game_key=game_key)
+        await job.clear_data_job.clear_unpublished_version(job.gp["game_id"], game_key)
+    return True
+
+
+async def run_import_documents(job: ImportDocumentsJob, *, overwrite: bool = False) -> None:
+    if not await prepare_import_documents(job, overwrite=overwrite):
+        return
+    game_key = get_game_key(job.gp)
 
     # Ensure the vector store partition exists before spawning concurrent tasks
     ensure_partition = getattr(job.vector_store, "ensure_partition", None)

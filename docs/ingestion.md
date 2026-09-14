@@ -90,13 +90,11 @@ data/ingested/<game>/
 - `update-version` is required, including on a first ingest. `add-metadata`,
   `build-chunks`, `import-documents` and `rebuild-bm25` all refuse to run
   without `version.txt`.
-- `import-documents` errors if that version is already in the DB rather than
-  overwriting it. Bump the version to land a re-ingest alongside the live one,
-  or pass `--overwrite` to re-import in place. Preview superseded versions
-  If an unpublished import was interrupted, remove only that package version with
-  `mm-ingest clear-game-version <package>` before retrying the ordinary import.
-  This command refuses to remove the currently published version.
-  with `mm-ingest clear-old-data --dry-run`, then remove them with
+- `import-documents` is safe to retry. It skips a version that is already
+  published and clears residue from an interrupted, unpublished attempt before
+  importing again. Pass `--overwrite` only to deliberately rebuild the current
+  version in place. Preview superseded versions with
+  `mm-ingest clear-old-data --dry-run`, then remove them with
   `mm-ingest clear-old-data`.
 - A version bump alone needs no rebuild: `metadata/` and `chunks/` don't record
   the version — `import-documents` stamps it onto every id at load time.
@@ -128,11 +126,11 @@ env $(grep -v '^\s*#' .env.ingest.prod | grep -v '^\s*$' | xargs) \
   mm-ingest import-documents data/ingested/some-game
 ```
 
-The same gotchas apply, and they bite harder here: `import-documents` refuses a
-`game_version` already in the database unless you pass `--overwrite`, and
-`--overwrite` against prod rewrites the live version in place. Bumping the
-version with `update-version` and importing alongside is the safer route —
-the old version keeps serving until the new one is published.
+The same gotchas apply, and they bite harder here: `import-documents` skips a
+`game_version` that is already published, while `--overwrite` against prod
+rewrites the live version in place. Bumping the version with `update-version`
+and importing alongside is the safer route — the old version keeps serving
+until the new one is published.
 
 ## Re-ingesting
 
@@ -159,4 +157,3 @@ environment variable (`MM_INGEST__OCR__MODEL=... mm-ingest ocr $PKG`) or an
 `ingest:` block in the config file `MM_CONFIG_FILE` points at; env vars win.
 Neither [config-dev.yaml](../config-dev.yaml) nor [config.yaml](../config.yaml)
 sets `ingest:` today, so the defaults above are what runs.
-
