@@ -70,7 +70,7 @@ class Runner:
 def create_eval_system(names: Optional[Sequence[str]]=None, config:Config|None=None) -> System:
     if config is None:
         config = Config()
-    config.chat.models[0].endpoint = "http://192.168.0.44:8000/v1"
+    config.chat.models[0].endpoint = "https://llm.johntrimble.dev/v1"
 
     extra_components = {
         "deepeval_llm": (

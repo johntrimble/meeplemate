@@ -670,3 +670,190 @@
       page: 8
       quote: |
         The term 'Oathsworn' refers to all full characters or companions. Allies, other non-player controlled characters, the Grove Maiden's Sentinels and Ancient Guardian are not Oathsworn. These are considered to be friendly characters only.
+  - name: monster_move_range_attack
+    # https://boardgamegeek.com/thread/3722223/range-on-enemies-attacking
+    query: |
+      This might be an easy question that i missed, but when an enemy boss or minion has an ability/attack card and it has a range on it and it has movement (but does not say move exactly, just the move which means move up to) as well, do they move only enough hexes to just barely get in range to be able to do the attack? Or do they move as close as possible to the oathsworn then do the attack even if they are moving closer to them than needes to get within range of attack. For example Monster is 5 hexes away from OS, Card says move 5, attack range 3. Would that monster move only two hexes to hit the oathsworn since that gets it to range 3, or would it move as close as possible given it has enough movement to be adjacent? I understand los is needed as well.
+    reference_answer: |
+      No, the enemy does not stop simply upon entering the attack range; it moves as close as possible to the target (up to its full movement allowance) until it is **adjacent** to the target.
+
+      The general rule for enemy movement prioritizes reaching adjacency over stopping at a specific range value:
+
+      > Enemies will always attempt to move the shortest distance to be adjacent to their target.
+      > 
+      > (Encounter Rule Book, p. 20)
+
+      This means that if an enemy has enough movement points (e.g., Move 5) to reach the hex adjacent to its target, it will use those points to do so, even if it entered the attack range (e.g., Range 3) several hexes earlier. The attack range specified on the card defines the parameters for the attack itself, but the movement instruction dictates that the enemy's destination is the adjacent hex. If the enemy lacks sufficient movement points to reach adjacency, it stops at the furthest hex it can reach along the shortest path.
+    evidence:
+    - rulebook: Encounter Rule Book
+      page: 20
+      quote: |
+        Enemies will always attempt to move the shortest distance to be adjacent to their target.
+  - name: oathsworn_pass
+    query: |
+      Can I pass and then activate later in the same phase?
+    reference_answer: |
+      Yes, you are allowed to take another action or activate later in the same Oathsworn Phase after choosing to pass your turn.
+
+      The Oathsworn Phase continues until all players decide they no longer wish to take turns, meaning passing does not end your participation in the phase:
+
+      > In this phase, the players take turns, starting with the first player (chosen freely by the players at the start of the encounter) and proceeding clockwise around the table. Players take as many turns as they wish. The Oathsworn phase ends once all players have decided that they don't wish to take any more turns (usually when they run out of Animus or can't make good use of any more abilities).
+      > 
+      > (Encounter Rule Book, p. 8)
+
+      This is further clarified by the FAQ, which confirms that stopping turns is a specific choice distinct from simply passing:
+
+      > Q: Do I only get one turn per round as an Oathsworn?
+      > A: No, you get as many turns as you like (until you choose to stop) as laid out in page 8 of the Encounter Rule Book.
+      > 
+      > (Encounter Rule Book, p. 33)
+
+      Since passing is not equivalent to deciding to stop taking turns for the phase, you may resume acting later in the phase as long as you have not made the final decision to cease all further actions.
+  - name: ability_battleflow_effect_order
+    query: |
+      Does an ability Battleflow before or after its effects resolve?
+    reference_answer: |
+      The Battleflow keyword triggers **after** the card's effects resolve.
+
+      > To play an Ability Card from your hand, follow these steps: 1. Choose the Effect on a card. 2. Pay the cost of the card. 3. Resolve the card's effect. 4. Place the card in the appropriate cooldown position around your Player Board. 5. Battleflow other cards in the same cooldown position.
+      > 
+      > (Encounter Rule Book, p. 10)
+
+      The rules define resolving the card's effect as Step 3, while Battleflow is Step 5. Therefore, any movement, attacks, or other effects on the Ability Card are fully resolved before any Battleflow occurs.
+  - name: enemy_movement_adjacent_new_target
+    query: |
+      An enemy selects Oathsworn A because A is the closest target in LoS. While moving toward A, the enemy runs out of movement adjacent to Oathsworn B. Does it attack B?
+    reference_answer: |
+      No. The enemy will move as far as it can toward the original target (Oathsworn A) and its attack will be canceled if it cannot get in range to attack that target.
+
+      When an enemy selects a target, it does so by following these rules:
+
+      > Choose a target by following the steps below in order:
+      > 
+      > 1. If the Stage Card was drawn as a reaction to a location being broken, the damaged enemy will target the character who broke the location unless they are out of range (after considering movement and the range of the attack) or not in line of sight (LoS), in which case, proceed to step 2. If there are multiple bosses, then only the bosses who had locations broken by the attack will focus the location breaker. All other bosses will choose a target normally.
+      > 
+      > 2. If there is a specific target on the Stage Card or Special Rules Board, choose that target unless they are out of range (after considering movement and the range of the attack) or not in line of sight (LoS), in which case, proceed to step 3.
+      > 
+      > 3. If there is no target listed or the specified/reaction target is not in range and line of sight (LoS), the closest Oathsworn in LoS that the enemy can reach is the target. 'Closest' here means the Oathsworn that requires the lowest amount of movement to reach.
+      > 
+      > 4. If two targets are equally distant and the enemy has the Mob keyword, it will target the Oathsworn who is already adjacent to another enemy with the Mob keyword.
+      > 
+      > 5. If two targets are equally distant from the enemy, use the rule of North then West to determine the target.
+      > 
+      > 6. If there are no valid targets, the enemy will move as far as they can towards the closest Oathsworn (whether they are in LoS or not) who is not excluded from being targeted for any reason, with ties broken using steps 4 and 5 above. In this case, the enemy will perform as many of the other effects on the Stage card as it can.
+      > 
+      > (Encounter Rule Book, p. 19)
+
+      The only reason an enemy would select a target it cannot reach is if there are no valid targets available (Step 6). There is no rule that allows an enemy to change its target mid-movement. Once a target is selected, the enemy will continue to move toward that target until it either reaches it or runs out of movement. If it cannot reach the target and is not in range to attack, the attack is canceled.
+  - name: die_same_time_as_boss
+    query: |
+      Do I draw injury if I die at the same time as the boss?
+    reference_answer: |
+      Yes, you still draw an Injury card if you die at the same time as the boss.
+
+      If you die at the same time as the boss, you win the encounter:
+
+      > If both events happen at the same time, the Encounter is defeated.
+      >
+      > (Encounter Rule Book, p. 24)
+
+      However, the Oathsworn is still reduced to 0 HP and becomes unconscious:
+
+      > When an Oathsworn is reduced to 0 hit points, they  become  unconscious.
+      > 
+      > (Encounter Rule Book, p. 17)
+
+      The Oathsworn will receive an Injury card during "Tally Level, Loot and Losses":
+
+      > During  ‘Tally  Level,  Loot  and  Losses’  (See  page  24  for  more  details),  mark  a  tick  on  the  Knockout  Track  for  each  Oathsworn  that  went  unconscious.  They  each  receive  an  Injury  Card  from  the  Injury  Deck  and  also lose an additional item.
+      >
+      > (Encounter Rule Book, p. 17)
+  - name: knockback_into_multiple_models
+    query: |
+      If I knock a large enemy into several figures or obstacles at once, does it take collision damage for each collision?
+    reference_answer: |
+      Yes, a large enemy takes collision damage for each individual collision.
+
+      The general rule for knocking back characters establishes that hitting an obstacle or another character causes damage:
+
+      > If a character would be knocked back into a hex containing an obstacle, the character loses 1 HP from the HP die closest to the obstacle and remains on the hex adjacent to the obstacle. If a character would be knocked back into a hex containing another character, use the same rules as being knocked back into an obstacle, except that both characters lose 1 HP.
+      > 
+      > (Encounter Rule Book, p. 30)
+
+      For large characters specifically, the rulebook explicitly confirms that this damage is applied per collision event without a cap:
+
+      > If a large character is knocked back into multiple characters and/or obstacles, the large character will lose 1 Hit Point for each collision.
+      > 
+      > (Encounter Rule Book, p. 30)
+
+      Therefore, the large character loses 1 Hit Point for each individual collision when knocked back into multiple figures or obstacles.
+  - name: stage_change_during_reaction_resolution
+    query: |
+      If a stage change happens while resolving a reaction, do I switch to the new stage immediately?
+    reference_answer: |
+      Yes, if a stage change occurs while resolving a reaction, you switch to the new stage.
+
+      Stage cards are resolved when drawn from the top of the Stage Deck:
+
+      > Draw  the  top  face  up  card  of  the  Stage  Deck  and  resolve  its  effects.
+      > 
+      > (Encounter Rule Book, p. 18)
+
+      It is possible to trigger another stage card to be draw while resolving a stage card:
+
+      > For example: Jimmy draws a Stage Card and it indicates that his Penitent is attacked. As an interrupt, Jimmy plays an ability which causes the Boss to lose a HP die. This triggers a reaction and a second Stage Card is drawn. Resolve the second Stage Card after the first one has finished resolving.
+      >
+      > (Encounter Rule Book, p. 18)
+
+      When a Boss loses an HP die, it may trigger a stage change, in which all stage cards still in the Stage Deck for the previous stage are discarded:
+
+      > If any HP die is removed from a boss for any reason (except the final HP die on the Encounter Board), that location is said to be broken. When this happens, perform the following steps in order.
+      >
+      > 1. Check  the  Encounter  Special  Rules  Board  to  see  if  the  Encounter  stage  changes.
+      > 2. If  the  stage  changes,  discard  all  the  cards  from  the  previous  stage  from  the stage deck.
+      > 
+      > (Encounter Rule Book, p. 15)
+
+      Then a new stage card is drawn:
+
+      > Important: Whether or not the stage changes, draw and resolve all  steps  of  the  top  card  of  the  stage  deck  with  the  character  who  broke  the  location  as  the  target of the 'broken' enemy (See page 19 for more details).
+      >
+      > (Encounter Rule Book, p. 15)
+
+      When a stage card is drawn while resolving another stage card, the first card must be fully resolved before the second card is resolved:
+
+      > If  you  have  to  draw  another  Stage  Card  while one is still resolving, resolve the cards in the order they were drawn.
+      >
+      > (Encounter Rule Book, p. 18)
+
+      Therefore, a stage change happens immediately when the conditions are met, but the new stage card is not resolved until the current reaction is fully resolved.
+  - name: characters_block_los
+    query: |
+      Do characters block line of sight for ranged attacks?
+    reference_answer: |
+      No, characters do not block line of sight for ranged attacks in Oathsworn, and there are no specific exceptions regarding targeting through characters.
+
+      > Enemies and friendly characters do not block LoS.
+      > 
+      > (Encounter Rule Book, p. 12)
+
+      Line of sight is exclusively blocked by obstacles; neither enemy nor friendly units obstruct the path of ranged attacks.
+  - name: bleed_effects_no_damage
+    query: |
+      If an attack deals no damage, does its Bleed effect still apply?
+    reference_answer: |
+      Yes, the associated Bleed effect still applies to the target even if the attack deals no damage.
+
+      Bleed is a separate mechanic from direct damage; it is a token that causes Hit Point loss when triggered by specific cards, regardless of the damage dealt by the attack that applied it.
+
+      > A character with one or more Bleed Tokens will lose 1 or more HP when the token is triggered. These tokens are triggered by Ability Cards for Oathsworn or Stage Cards for Encounters.
+      > 
+      > (Story Rule Book, p. 16)
+
+      The amount of damage dealt is determined by a separate calculation involving the target's Defense Value, which can result in 0 HP loss without affecting the application of other effects like Bleed.
+
+      > To calculate how many Hit Points the target of an attack loses, divide the damage dealt by the target's Defense Value and round down (minimum of 0).
+      > 
+      > (Encounter Rule Book, p. 15)
+
+      Since the rules do not state that the application or magnitude of the Bleed effect depends on the damage dealt by the attack, the Bleed token is applied when the triggering card resolves, independent of whether the attack resulted in 0 HP damage.

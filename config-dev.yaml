@@ -32,7 +32,8 @@ chat:
   - model_name: "Qwen/Qwen3.6-35B-A3B"
     endpoint_type: "openai"
     # endpoint: "http://vllm:8000/v1"
-    endpoint: http://192.168.0.44:8000/v1
+    # endpoint: http://192.168.0.44:8000/v1
+    endpoint: "https://llm.johntrimble.dev/v1"
     max_new_tokens: 3072
     timeout: 900
 
