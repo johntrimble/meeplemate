@@ -15,11 +15,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # Start the api server (and ensure it stops when the script exits)
-uvicorn meeplemate.server.api:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-dir /workspace/meeplemate &
+uvicorn meeplemate.server.api:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-dir /workspaces/meeplemate/meeplemate &
 api_pid=$!
 
 # Start the frontend (and ensure it stops when the script exits)
-(cd /workspace/frontend && npm run dev) &
+(cd /workspaces/meeplemate/frontend && npm run dev) &
 frontend_pid=$!
 
 echo "API server running (PID $api_pid) on http://localhost:8000"

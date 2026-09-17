@@ -88,6 +88,16 @@ RUN apt-get update && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
+# Hindsight coding-agent memory. Only the package is baked in: `install` stages
+# a runtime into ~/.hindsight and wires ~/.claude, and both are named volumes
+# that mask whatever the image left there. Wiring therefore runs at container
+# start, from .devcontainer/script/hindsight-setup. A bare invocation prints
+# usage and writes nothing, so it is a safe smoke test that the binaries
+# resolve.
+ARG HINDSIGHT_VERSION=0.6.0
+RUN npm install -g @vectorize-io/hindsight-coding-agents@${HINDSIGHT_VERSION} \
+    && hindsight-coding-agents > /dev/null
+
 # Install Playwright Chromium for browser automation (@playwright/mcp and frontend tests)
 # We install @playwright/mcp globally first, then use its bundled playwright to
 # install chromium — this guarantees the browser version always matches the MCP
@@ -153,7 +163,9 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_PYTHON_PREFERENCE=only-system
 
 USER ${USERNAME}
-RUN ["/bin/bash", "-c", "mkdir /home/${USERNAME}/.claude && set -o pipefail && curl -fsSL https://claude.ai/install.sh | bash"]
+# Create the named-volume mount points as the user, so fresh volumes inherit
+# that ownership instead of root's.
+RUN ["/bin/bash", "-c", "mkdir -m 0700 /home/${USERNAME}/.claude /home/${USERNAME}/.hindsight /home/${USERNAME}/.codex /home/${USERNAME}/.agents && set -o pipefail && curl -fsSL https://claude.ai/install.sh | bash"]
 USER root
 
 # Copy over virtualenv
@@ -163,8 +175,8 @@ COPY --from=builder --chown=${USERNAME}:${USERNAME} /opt/venv /opt/venv
 COPY --from=builder --chown=${USERNAME}:${USERNAME} /opt/uv-bin /opt/uv-bin
 COPY --from=builder --chown=${USERNAME}:${USERNAME} /opt/uv-cache /opt/uv-cache
 
-# Create /workspace and /data directories
-RUN mkdir -p /workspace /data && chown -R $USERNAME:$USERNAME /workspace /data
+# Create /workspaces/meeplemate (mount point for the project) and /data
+RUN mkdir -p /workspaces/meeplemate /data && chown -R $USERNAME:$USERNAME /workspaces /data
 
 USER root
 # Add ENTRYPOINT script
@@ -180,4 +192,4 @@ ENV EDITOR=emacs
 USER $USERNAME
 
 # Set the working directory
-WORKDIR /workspace
+WORKDIR /workspaces/meeplemate

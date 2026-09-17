@@ -1,7 +1,15 @@
+# Pinned so the stack/volume identity is stable regardless of what the repo
+# directory is named or how compose is invoked (VS Code Dev Containers vs. a
+# plain `docker compose` from the CLI).
+name: meeplemate_devcontainer
+
 # Standard options we will include in our services.
 x-base-service: &base-service
-  # Include the .env file for environment variables (if it exists).
+  # Load the app's own .env (secrets/config, lives at the project root) first,
+  # then this directory's .env (devcontainer-only settings) so it can override.
   env_file:
+  - path: ../.env
+    required: false
   - path: .env
     required: false
 
@@ -30,12 +38,24 @@ services:
       context: ./services/dev/
       additional_contexts:
         # Allows referencing the project root in the Dockerfile
-        workspace: .
+        workspace: ..
       args:
         # Ensure the container user matches the host user for correct file permissions.
         # These are set in the .env file, which is initialized by script/bootstrap.
         UID: ${MY_UID}
         GID: ${MY_GID}
+
+    # The base anchor's env_file list is replaced, not merged, so repeat it.
+    # Hindsight is configured entirely through the environment and writes no
+    # config file, so its endpoint and token reach the container from
+    # ../.env.hindsight (see .env.hindsight.example). Only this service loads it.
+    env_file:
+    - path: ../.env
+      required: false
+    - path: .env
+      required: false
+    - path: ../.env.hindsight
+      required: false
 
     ports:
     - 8000:8000 # Chainlit
@@ -44,18 +64,33 @@ services:
     # Mount the project root and data directory into the container.
     # This allows code and data changes on the host to be reflected in the container.
     volumes:
-    # Mount the project root as /workspace (source code, scripts, etc)
-    - .:/workspace:cached
+    # Mount the project root under /workspaces/meeplemate (rather than
+    # directly at /workspace), leaving room to mount additional directories
+    # under /workspaces/ later without remounting this one.
+    - ..:/workspaces/meeplemate:cached
     # Persist data across container restarts (models, cache, etc)
-    - ./data:/data:cached
+    - ../data:/data:cached
     # Claude CLI data
     - claude_data:/home/vscode/.claude:cached
+    # Hindsight runtime staged by .devcontainer/script/hindsight-setup
+    - hindsight_data:/home/vscode/.hindsight
+    # Codex CLI data
+    - codex_data:/home/vscode/.codex
+    # User-level agent skills (~/.agents)
+    - agents_data:/home/vscode/.agents
 
     environment:
-    - FASTEMBED_CACHE_PATH=/workspace/data/fastembed_cache
+    - FASTEMBED_CACHE_PATH=/workspaces/meeplemate/data/fastembed_cache
+    - HINDSIGHT_SERVER_MODE=self-hosted
+    # One shared bank for this project. Not a secret, and set here rather than
+    # in .env.hindsight so it wins over any bank id that file carries.
+    - HINDSIGHT_BANK_ID=meeplemate
+    # The placeholder resolves per repository at hook time.
+    - HINDSIGHT_RETAIN_TAGS=project:{gitProject}
+    - CLAUDE_CONFIG_DIR=/home/vscode/.claude
 
-    # Set the working directory to where the workspace folder is mounted.
-    working_dir: /workspace
+    # Set the working directory to where the project folder is mounted.
+    working_dir: /workspaces/meeplemate
 
     # Keep the container running (useful for VS Code dev containers, debugging, etc).
     command: tail -f /dev/null
@@ -132,7 +167,7 @@ services:
 
     volumes:
       # vLLM uses HF cache under /root/.cache/huggingface in the official image
-      - ./data/vllm_data:/root/.cache/huggingface:cached
+      - ../data/vllm_data:/root/.cache/huggingface:cached
       - ./services/tgi/tokenizer_configs:/tokenizer_configs:ro
 
     deploy:
@@ -167,7 +202,7 @@ services:
 
     volumes:
       # vLLM uses HF cache under /root/.cache/huggingface in the official image
-      - ./data/vllm_ocr_data:/root/.cache/huggingface:cached
+      - ../data/vllm_ocr_data:/root/.cache/huggingface:cached
       - ./services/tgi/tokenizer_configs:/tokenizer_configs:ro
 
     deploy:
@@ -212,7 +247,7 @@ services:
 
     volumes:
       # vLLM uses HF cache under /root/.cache/huggingface in the official image
-      - ./data/vllm_ocr_data:/root/.cache/huggingface:cached
+      - ../data/vllm_ocr_data:/root/.cache/huggingface:cached
       - ./services/tgi/tokenizer_configs:/tokenizer_configs:ro
 
     deploy:
@@ -236,8 +271,8 @@ services:
       - OPENAI_API_KEYS=anything
       - WEBUI_AUTH=False
     volumes:
-    - ./data/open-webui/data:/app/backend/data
-    - ./data/open-webui/static:/app/backend/open_webui/static
+    - ../data/open-webui/data:/app/backend/data
+    - ../data/open-webui/static:/app/backend/open_webui/static
 
   firebase-emulator:
     ports:
@@ -261,5 +296,8 @@ services:
 
 volumes:
   claude_data:
+  hindsight_data:
+  codex_data:
+  agents_data:
   pgdata:
   firebase_emulator_data:

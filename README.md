@@ -319,8 +319,7 @@ frontend/                 # React + Vite SPA (see frontend/README.md)
 alembic/                  # database migrations
 docs/                     # deep-dive docs (ingestion, auth, rate limits, legal)
 notebooks/                # research notebooks
-services/                 # Dockerfiles for the dev container, OCR, emulator
-compose.yaml              # local GPU dev stack
+.devcontainer/             # dev container: compose.yaml, service Dockerfiles
 docker/Dockerfile.api     # production API image
 ```
 
@@ -328,14 +327,14 @@ docker/Dockerfile.api     # production API image
 
 ## Getting started
 
-Boardbarian runs inside a **VS Code Dev Container** defined by [`compose.yaml`](compose.yaml). The default stack includes the vLLM chat model, so an **NVIDIA GPU is required** for the full backend; the OCR models are additional and gated behind Compose profiles.
+Boardbarian runs inside a **VS Code Dev Container** defined by [`.devcontainer/compose.yaml`](.devcontainer/compose.yaml). The default stack includes the vLLM chat model, so an **NVIDIA GPU is required** for the full backend; the OCR models are additional and gated behind Compose profiles.
 
 1. **Prerequisites:** Docker + Docker Compose (v2.24+), and for the LLM services an NVIDIA GPU with the container toolkit.
-2. **Bootstrap.** This copies [`.env.example`](.env.example) to `.env` when needed, records your UID/GID, and creates the local data directories:
+2. **Bootstrap.** This copies [`.env.example`](.env.example) to `.env` and [`.devcontainer/.env.example`](.devcontainer/.env.example) to `.devcontainer/.env` when needed, records your UID/GID, and creates the local data directories:
    ```bash
    ./script/bootstrap
    ```
-3. **Open in the dev container:** in VS Code, *Dev Containers: Reopen in Container* — or bring the stack up manually with `docker compose up -d`.
+3. **Open in the dev container:** in VS Code, *Dev Containers: Reopen in Container* — or bring the stack up manually with `docker compose -f .devcontainer/compose.yaml --project-directory .devcontainer up -d`.
 4. **Run the API + frontend** *from inside the container*:
    ```bash
    ./script/server
