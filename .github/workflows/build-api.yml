@@ -12,14 +12,6 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/build-api.yml"
-  # Build and test only; the Push step is skipped for pull requests.
-  pull_request:
-    paths:
-      - "docker/**"
-      - "meeplemate/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/build-api.yml"
   workflow_dispatch:
 
 env:
@@ -198,7 +190,6 @@ jobs:
           expect_no_start "no usable key" -e MEEPLEMATE_SOPS_ENV="$ENCRYPTED"
 
       - name: Push
-        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
