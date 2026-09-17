@@ -7,8 +7,11 @@ ARG PYTHON_VERSION=3.12
 ARG FASTEMBED_MODEL=BAAI/bge-small-en-v1.5
 ARG TOKENIZER_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 ARG SOPS_VERSION=3.13.3
-# sha256 of sops-v${SOPS_VERSION}.linux.amd64, from the release's checksums.txt
-ARG SOPS_SHA256=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+# sha256 of sops-v${SOPS_VERSION}.linux.<arch>, from the release's checksums.txt
+ARG SOPS_SHA256_AMD64=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+ARG SOPS_SHA256_ARM64=53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77
+# Set by BuildKit to the target platform's architecture.
+ARG TARGETARCH
 
 # -- Stage 1: builder ----------------------------------------------------------
 FROM python:${PYTHON_VERSION} AS builder
@@ -53,17 +56,32 @@ RUN uv sync --python /usr/local/bin/python${PYTHON_VERSION} --no-dev
 RUN uv pip uninstall --python /opt/venv/bin/python sympy
 
 
-# -- Stage 2: runtime ---------------------------------------------------------
+# -- Stage 2: sops -------------------------------------------------------------
+# sops decrypts runtime credentials in the entrypoint. One stage per
+# architecture, because each binary has its own checksum; only the one matching
+# TARGETARCH is built, and an unsupported architecture fails with an unknown
+# stage. The build also fails if a download doesn't match its pinned checksum.
+FROM scratch AS sops-amd64
+ARG SOPS_VERSION
+ARG SOPS_SHA256_AMD64
+ADD --checksum=sha256:${SOPS_SHA256_AMD64} --chmod=0755 \
+    https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64 \
+    /sops
+
+FROM scratch AS sops-arm64
+ARG SOPS_VERSION
+ARG SOPS_SHA256_ARM64
+ADD --checksum=sha256:${SOPS_SHA256_ARM64} --chmod=0755 \
+    https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.arm64 \
+    /sops
+
+FROM sops-${TARGETARCH} AS sops
+
+
+# -- Stage 3: runtime ---------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim
 
-ARG SOPS_VERSION
-ARG SOPS_SHA256
-
-# sops decrypts runtime credentials in the entrypoint. The build fails if the
-# download doesn't match the pinned checksum.
-ADD --checksum=sha256:${SOPS_SHA256} --chmod=0755 \
-    https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64 \
-    /usr/local/bin/sops
+COPY --from=sops /sops /usr/local/bin/sops
 COPY --chmod=0755 docker/api-entrypoint.sh /usr/local/bin/api-entrypoint
 
 # Venv with pre-compiled bytecode
