@@ -3,13 +3,13 @@
   "name": "Meeplemate",
 
   // Points to the Docker Compose file that defines the services.
-  "dockerComposeFile": "../compose.yaml",
+  "dockerComposeFile": "compose.yaml",
 
   // The service within the Docker Compose file to use for the dev container.
   "service": "dev",
 
   // The folder to open in the container.
-  "workspaceFolder": "/workspace",
+  "workspaceFolder": "/workspaces/meeplemate",
 
   // VS Code specific customizations.
   // Disable SSH agent forwarding so the container cannot use host SSH keys.
@@ -23,7 +23,10 @@
       "settings": {
         // Sets the default Python interpreter to the one in the virtual
         // environment. This virtual environment is created by entrypoint.sh.
-        "python.defaultInterpreterPath": "${containerEnv:VENV_PATH}/bin/python"
+        "python.defaultInterpreterPath": "${containerEnv:VENV_PATH}/bin/python",
+        // Offer the Claude extension's bypass-permissions mode. This is a
+        // machine-scoped setting, so it has to be set in the container.
+        "claudeCode.allowDangerouslySkipPermissions": true
       },
       // Extensions to install in VS Code inside the container.
       "extensions": [

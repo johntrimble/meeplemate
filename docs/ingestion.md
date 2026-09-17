@@ -144,7 +144,7 @@ until the new one is published.
 
 The two OCR steps talk to separate vLLM services. Defaults come from
 `IngestConfig` in [config.py](../meeplemate/config.py) and match the
-[compose.yaml](../compose.yaml) service names and ports:
+[compose.yaml](../.devcontainer/compose.yaml) service names and ports:
 
 | Step | Compose service | Profile | Config key | Default URL |
 |------|-----------------|---------|------------|-------------|

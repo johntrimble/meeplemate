@@ -163,8 +163,8 @@ COPY --from=builder --chown=${USERNAME}:${USERNAME} /opt/venv /opt/venv
 COPY --from=builder --chown=${USERNAME}:${USERNAME} /opt/uv-bin /opt/uv-bin
 COPY --from=builder --chown=${USERNAME}:${USERNAME} /opt/uv-cache /opt/uv-cache
 
-# Create /workspace and /data directories
-RUN mkdir -p /workspace /data && chown -R $USERNAME:$USERNAME /workspace /data
+# Create /workspaces/meeplemate (mount point for the project) and /data
+RUN mkdir -p /workspaces/meeplemate /data && chown -R $USERNAME:$USERNAME /workspaces /data
 
 USER root
 # Add ENTRYPOINT script
@@ -180,4 +180,4 @@ ENV EDITOR=emacs
 USER $USERNAME
 
 # Set the working directory
-WORKDIR /workspace
+WORKDIR /workspaces/meeplemate

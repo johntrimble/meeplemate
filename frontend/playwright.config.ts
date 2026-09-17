@@ -19,7 +19,7 @@ export default defineConfig({
         'MM_FIREBASE__EMULATOR_HOST=firebase-emulator:9099',
         'uvicorn meeplemate.server.api:app --host 0.0.0.0 --port 8000',
       ].join(' '),
-      cwd: '/workspace',
+      cwd: '/workspaces/meeplemate',
       port: 8000,
       reuseExistingServer: true,
       timeout: 60_000,
