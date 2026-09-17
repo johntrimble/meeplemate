@@ -47,8 +47,10 @@ quote() {
 # sops runs its command as one string through `/bin/sh -c`, so the arguments
 # have to be quoted back into a single string. sops has already read the file
 # by then, so that shell removes it before exec-ing the command, which leaves
-# the command (e.g. uvicorn) receiving signals directly.
-command="rm -f -- $(quote "$sops_file"); exec"
+# the command (e.g. uvicorn) receiving signals directly. sops still needs the
+# age key to decrypt, so it can only be dropped here, in the shell sops starts;
+# otherwise it sits in the command's environment (and /proc/1/environ).
+command="unset SOPS_AGE_KEY SOPS_AGE_KEY_FILE; rm -f -- $(quote "$sops_file"); exec"
 for arg in "$@"; do
     command="$command $(quote "$arg")"
 done

@@ -12,6 +12,14 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/build-api.yml"
+  # Build and test only; the Push step is skipped for pull requests.
+  pull_request:
+    paths:
+      - "docker/**"
+      - "meeplemate/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/build-api.yml"
   workflow_dispatch:
 
 env:
@@ -170,7 +178,8 @@ jobs:
           assert cmd[1].rsplit("/", 1)[-1] == "uvicorn", f"PID 1 is {cmd}, not uvicorn"
           assert env.get("MM_MODEL_NAME") == "dummy", "MM_MODEL_NAME not decrypted"
           assert "MEEPLEMATE_SOPS_ENV" not in env, "ciphertext leaked into server env"
-          print("PASS: uvicorn is PID 1 with decrypted MM_* values")'
+          assert "SOPS_AGE_KEY" not in env, "age private key leaked into server env"
+          print("PASS: uvicorn is PID 1 with decrypted MM_* values and no age key")'
           docker rm -f api-sops-test >/dev/null
 
           expect_no_start() {
@@ -189,6 +198,7 @@ jobs:
           expect_no_start "no usable key" -e MEEPLEMATE_SOPS_ENV="$ENCRYPTED"
 
       - name: Push
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
