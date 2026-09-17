@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Wire Hindsight long-term memory into the coding agents in this container.
+#
+# Configuration is not this script's job: the hooks read HINDSIGHT_* straight
+# from the environment, which .devcontainer/compose.yaml supplies from
+# ../.env.hindsight. No config file is written, so there is nothing here to keep
+# in sync and no credential to place.
+#
+# What does need doing per container is the wiring — staging the runtime under
+# ~/.hindsight and registering hooks, the skill and the MCP server under each
+# agent's configuration directory. These are named volumes mounted over the
+# image, so the package in the image (see .devcontainer/services/dev/Dockerfile) cannot do
+# it at build time.
+#
+# Usage: .devcontainer/script/hindsight-setup [harness...]   (default: claude-code)
+set -euo pipefail
+
+CONFIG_FILE="${HINDSIGHT_CONFIG:-$HOME/.hindsight/coding-agent.json}"
+
+harnesses=("$@")
+if [ ${#harnesses[@]} -eq 0 ]; then
+    harnesses=(claude-code)
+fi
+
+skip() {
+    echo "hindsight: $1 — skipping setup." >&2
+    exit 0
+}
+
+error_exit() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+command -v hindsight-coding-agents > /dev/null 2>&1 \
+    || error_exit "hindsight-coding-agents is not on PATH. Rebuild the dev container to pick up .devcontainer/services/dev/Dockerfile."
+
+SERVER_MODE=${HINDSIGHT_SERVER_MODE:-cloud}
+case "$SERVER_MODE" in
+    self-hosted)
+        [ -n "${HINDSIGHT_API_URL:-}" ] \
+            || skip "HINDSIGHT_API_URL is not in the environment. Fill in .env.hindsight (see .env.hindsight.example) and recreate the container; a rebuild alone does not refresh its environment"
+        ;;
+    cloud)
+        [ -n "${HINDSIGHT_API_TOKEN:-}" ] || skip "HINDSIGHT_API_TOKEN is not in the environment"
+        ;;
+    daemon) ;;
+    *) error_exit "Unknown HINDSIGHT_SERVER_MODE '$SERVER_MODE' (cloud, self-hosted, or daemon)" ;;
+esac
+
+# A config file, if one exists, silently outranks every variable above — an
+# empty list counts as set. Nothing here writes one, so it would have to have
+# arrived by hand or from an older install.
+if [ -f "$CONFIG_FILE" ]; then
+    echo "WARNING: $CONFIG_FILE exists and overrides the environment; delete it to configure from .env.hindsight alone." >&2
+fi
+
+# `claude mcp add` registers the hindsight_* tools; without claude on PATH the
+# installer only warns and still exits 0, so make sure it can find it.
+export PATH="$HOME/.local/bin:$PATH"
+
+# No --server/--api-url/--api-token: passing them would write a config file
+# that overrides the environment. VS Code lifecycle commands can have a TTY;
+# disconnect stdin explicitly so the installer skips its server-selection wizard.
+# Its generic cloud-default message does not describe the hooks' effective
+# configuration: they read HINDSIGHT_* at runtime.
+hindsight-coding-agents install "${harnesses[@]}" < /dev/null
+
+for harness in "${harnesses[@]}"; do
+    case "$harness" in
+        claude-code)
+            settings="$HOME/.claude/settings.json"
+            if ! grep -q "hindsight" "$settings" 2> /dev/null; then
+                echo "WARNING: no hindsight hooks found in $settings" >&2
+            fi
+            ;;
+        codex)
+            hooks="$HOME/.codex/hooks.json"
+            config="$HOME/.codex/config.toml"
+            if ! grep -q "hindsight" "$hooks" 2> /dev/null; then
+                echo "WARNING: no hindsight hooks found in $hooks" >&2
+            fi
+            if ! grep -q '^\[mcp_servers\.hindsight\]$' "$config" 2> /dev/null; then
+                echo "WARNING: no hindsight MCP server found in $config" >&2
+            fi
+            ;;
+    esac
+done
+
+echo "hindsight: ${harnesses[*]} wired"
+echo "hindsight: server ${SERVER_MODE}${HINDSIGHT_API_URL:+ ($HINDSIGHT_API_URL)}, bank ${HINDSIGHT_BANK_ID:-<per repository>}, tags ${HINDSIGHT_RETAIN_TAGS:-<none>}"
+echo "hindsight: restart the agent so it loads the new hooks."

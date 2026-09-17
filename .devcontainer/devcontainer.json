@@ -11,6 +11,10 @@
   // The folder to open in the container.
   "workspaceFolder": "/workspaces/meeplemate",
 
+  // Wire Hindsight memory into Claude Code. ~/.claude and ~/.hindsight are
+  // named volumes, so this cannot happen at image build time.
+  "postCreateCommand": ".devcontainer/script/hindsight-setup",
+
   // VS Code specific customizations.
   // Disable SSH agent forwarding so the container cannot use host SSH keys.
   "remoteEnv": {

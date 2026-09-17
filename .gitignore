@@ -6,6 +6,7 @@ __pycache__
 .env
 .env.*
 !.env.example
+!.env.hindsight.example
 
 pretrained_models
 munchkin_rules
