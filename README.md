@@ -320,7 +320,7 @@ alembic/                  # database migrations
 docs/                     # deep-dive docs (ingestion, auth, rate limits, legal)
 notebooks/                # research notebooks
 .devcontainer/             # dev container: compose.yaml, service Dockerfiles
-docker/Dockerfile.api     # production API image
+docker/                   # production API image (Dockerfile.api) and its entrypoint
 ```
 
 ---
@@ -370,6 +370,8 @@ Configuration is layered [`pydantic-settings`](https://docs.pydantic.dev/latest/
 5. model defaults
 
 **Secrets** (database password, API keys) are typed `SecretStr` and come only from the environment / `.env` — they are never committed. The YAML files hold only non-secret settings: the model failover list and sampling parameters, embedding and Postgres settings, rate-limit budgets, Firebase project config, CORS, and tracing.
+
+**In the API image**, secrets can instead arrive as a [sops](https://github.com/getsops/sops)-encrypted dotenv file whose contents are in `MEEPLEMATE_SOPS_ENV`. The entrypoint ([`docker/api-entrypoint.sh`](docker/api-entrypoint.sh)) decrypts it, using Google application-default credentials for KMS or `SOPS_AGE_KEY` for age, and runs uvicorn with the decrypted `MM_*` variables in its environment. If the variable is set and decryption fails, the container exits before uvicorn starts. There is no fallback to plain variables. If the variable is unset, plain `MM_*` variables work as before.
 
 ---
 
